@@ -1,0 +1,485 @@
+"""Local HTTP API and static UI server.
+
+Stdlib only: ThreadingHTTPServer, no FastAPI. The plan names FastAPI, but the
+deliverable that matters is a UI that starts with one command and no install
+step; the routes are the same, so swapping the server later is a contained
+change.
+
+Bound to 127.0.0.1 and the Host header is checked, which closes the trivial
+DNS-rebinding path to the index. File-open endpoints take an index id, never a
+raw path, so a page cannot ask us to open something we never scanned.
+"""
+
+from __future__ import annotations
+
+import json
+import mimetypes
+import os
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+from .config import IndexConfig
+from .embed import get_embedder, get_visual_embedder
+from .indexer import IndexStats, run_index
+from .ocr import engine_report
+from .search import hybrid_search, similar_images, visual_text_search
+from .store import Store
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+KIND_MAP = {
+    "docs": ("text", "code", "pdf", "docx"),
+    "text": ("text",),
+    "code": ("code",),
+    "pdf": ("pdf",),
+    "docx": ("docx",),
+    "image": ("image",),
+}
+
+
+class IndexJob:
+    """One indexing run at a time, with progress the UI can poll."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.running = False
+        self.position = 0
+        self.total = 0
+        self.status = ""
+        self.path = ""
+        self.started_at = 0.0
+        self.finished_at = 0.0
+        self.result: dict | None = None
+        self.error: str | None = None
+        self.thread: threading.Thread | None = None
+
+    def snapshot(self) -> dict:
+        elapsed = (self.finished_at or time.time()) - self.started_at if self.started_at else 0.0
+        return {
+            "running": self.running,
+            "position": self.position,
+            "total": self.total,
+            "status": self.status,
+            "path": self.path,
+            "elapsed": round(elapsed, 1),
+            "result": self.result,
+            "error": self.error,
+        }
+
+    def start(self, roots: list[str], config: IndexConfig, db_path: Path, prune: bool) -> bool:
+        with self.lock:
+            if self.running:
+                return False
+            self.running = True
+            self.position = 0
+            self.total = 0
+            self.status = "starting"
+            self.path = ""
+            self.started_at = time.time()
+            self.finished_at = 0.0
+            self.result = None
+            self.error = None
+            self.thread = threading.Thread(
+                target=self._run, args=(roots, config, db_path, prune), daemon=True
+            )
+            self.thread.start()
+            return True
+
+    def _run(self, roots: list[str], config: IndexConfig, db_path: Path, prune: bool) -> None:
+        store = None
+        try:
+            embedder = get_embedder("auto", config.model_dir)
+            visual = get_visual_embedder(config.model_dir)
+            store = Store(db_path, embedder.name, embedder.dim)
+
+            def progress(position: int, total: int, status: str, path: str) -> None:
+                self.position = position
+                self.total = total
+                self.status = status
+                self.path = path
+
+            stats: IndexStats = run_index(
+                roots, config, store, embedder, visual, prune=prune, progress=progress
+            )
+            self.result = stats.as_dict()
+        except Exception as exc:
+            self.error = f"{type(exc).__name__}: {exc}"
+        finally:
+            if store is not None:
+                store.close()
+            self.running = False
+            self.finished_at = time.time()
+
+
+JOB = IndexJob()
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "SemFind/0.1"
+    config: IndexConfig
+    db_path: Path
+
+    # ------------------------------------------------------------- plumbing
+
+    def log_message(self, fmt: str, *args) -> None:  # quieter console
+        if os.environ.get("SEMFIND_VERBOSE"):
+            super().log_message(fmt, *args)
+
+    def _host_ok(self) -> bool:
+        host = (self.headers.get("Host") or "").split(":")[0]
+        return host in ALLOWED_HOSTS
+
+    def _send(self, status: int, body: bytes, content_type: str = "application/json; charset=utf-8") -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _json(self, payload, status: int = 200) -> None:
+        self._send(status, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+    def _error(self, message: str, status: int = 400) -> None:
+        self._json({"error": message}, status)
+
+    def _store(self, readonly: bool = True) -> Store:
+        embedder = get_embedder("auto", self.config.model_dir)
+        return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly)
+
+    # ------------------------------------------------------------------ GET
+
+    def do_GET(self) -> None:  # noqa: N802
+        if not self._host_ok():
+            self._error("bad host", 403)
+            return
+        parsed = urlparse(self.path)
+        route = parsed.path
+        query = parse_qs(parsed.query)
+
+        try:
+            if route.startswith("/api/"):
+                self._api_get(route, query)
+            else:
+                self._static(route)
+        except Exception as exc:
+            self._error(f"{type(exc).__name__}: {exc}", 500)
+
+    def _api_get(self, route: str, query: dict) -> None:
+        if route == "/api/search":
+            self._search(query)
+        elif route == "/api/stats":
+            self._stats()
+        elif route == "/api/status":
+            self._status()
+        elif route == "/api/progress":
+            self._json(JOB.snapshot())
+        elif route == "/api/thumb":
+            self._thumb(query)
+        elif route == "/api/similar":
+            self._similar(query)
+        elif route == "/api/images":
+            self._images(query)
+        elif route in ("/api/open", "/api/reveal"):
+            self._open_file(query, reveal=route.endswith("reveal"))
+        else:
+            self._error("unknown route", 404)
+
+    def _search(self, query: dict) -> None:
+        text = (query.get("q") or [""])[0].strip()
+        if not text:
+            self._json({"query": "", "ms": 0, "hits": [], "images": []})
+            return
+        limit = min(int((query.get("limit") or ["12"])[0]), 50)
+        kind_key = (query.get("kind") or [""])[0]
+        folder = (query.get("folder") or [""])[0] or None
+        since = (query.get("since") or [""])[0]
+
+        kinds = KIND_MAP.get(kind_key)
+        since_ts = None
+        if since:
+            try:
+                since_ts = time.mktime(time.strptime(since, "%Y-%m-%d"))
+            except ValueError:
+                since_ts = None
+
+        embedder = get_embedder("auto", self.config.model_dir)
+        store = self._store()
+        started = time.perf_counter()
+        try:
+            hits = hybrid_search(
+                store, embedder, text, limit=limit, kinds=kinds, folder=folder, since=since_ts
+            )
+            visual = get_visual_embedder(self.config.model_dir)
+            images = (
+                visual_text_search(store, visual, text, limit=8)
+                if getattr(visual, "supports_text", False)
+                else []
+            )
+        finally:
+            store.close()
+        elapsed = (time.perf_counter() - started) * 1000
+
+        self._json(
+            {
+                "query": text,
+                "ms": round(elapsed, 1),
+                "hits": [
+                    {
+                        "file_id": hit.file_id,
+                        "path": hit.path,
+                        "name": hit.name,
+                        "kind": hit.kind,
+                        "score": hit.score,
+                        "snippet": hit.snippet,
+                        "channels": list(hit.channels),
+                        "mtime": hit.mtime,
+                        "is_image": hit.is_image,
+                        "width": hit.width,
+                        "height": hit.height,
+                        "thumb": f"/api/thumb?id={hit.file_id}" if hit.is_image else None,
+                    }
+                    for hit in hits
+                ],
+                "images": [
+                    {
+                        "file_id": image.file_id,
+                        "path": image.path,
+                        "name": image.name,
+                        "score": image.score,
+                        "thumb": f"/api/thumb?id={image.file_id}",
+                    }
+                    for image in images
+                ],
+            }
+        )
+
+    def _stats(self) -> None:
+        store = self._store()
+        try:
+            stats = store.stats()
+        finally:
+            store.close()
+        self._json({"db": str(self.db_path), **stats})
+
+    def _status(self) -> None:
+        text_embedder = get_embedder("auto", self.config.model_dir)
+        visual = get_visual_embedder(self.config.model_dir)
+        self._json(
+            {
+                "text_embedder": text_embedder.name,
+                "visual_embedder": visual.name,
+                "visual_supports_text": bool(getattr(visual, "supports_text", False)),
+                "ocr": engine_report(self.config.ocr_languages),
+                "db": str(self.db_path),
+                "default_roots": _default_roots(),
+                "version": "0.1.0",
+            }
+        )
+
+    def _thumb(self, query: dict) -> None:
+        file_id = int((query.get("id") or ["0"])[0])
+        store = self._store()
+        try:
+            data = store.thumb(file_id)
+        finally:
+            store.close()
+        if not data:
+            self._error("no thumbnail", 404)
+            return
+        self._send(200, data, "image/jpeg")
+
+    def _images(self, query: dict) -> None:
+        limit = min(int((query.get("limit") or ["60"])[0]), 200)
+        offset = int((query.get("offset") or ["0"])[0])
+        store = self._store()
+        try:
+            rows = store.image_rows(limit, offset)
+        finally:
+            store.close()
+        self._json(
+            {
+                "images": [
+                    {
+                        "file_id": row["file_id"],
+                        "path": row["path"],
+                        "name": row["path"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
+                        "width": row["width"],
+                        "height": row["height"],
+                        "thumb": f"/api/thumb?id={row['file_id']}",
+                        "ocr": (row["ocr_text"] or "")[:180],
+                    }
+                    for row in rows
+                    if row["file_id"] is not None
+                ]
+            }
+        )
+
+    def _similar(self, query: dict) -> None:
+        file_id = int((query.get("id") or ["0"])[0])
+        visual = get_visual_embedder(self.config.model_dir)
+        store = self._store()
+        try:
+            hits = similar_images(store, visual, file_id, limit=12)
+        finally:
+            store.close()
+        self._json(
+            {
+                "images": [
+                    {
+                        "file_id": hit.file_id,
+                        "path": hit.path,
+                        "name": hit.name,
+                        "score": hit.score,
+                        "thumb": f"/api/thumb?id={hit.file_id}",
+                    }
+                    for hit in hits
+                ]
+            }
+        )
+
+    def _open_file(self, query: dict, reveal: bool) -> None:
+        file_id = int((query.get("id") or ["0"])[0])
+        store = self._store()
+        try:
+            row = store.file_by_id(file_id)
+        finally:
+            store.close()
+        if row is None:
+            self._error("unknown file", 404)
+            return
+        path = row["path"]
+        if not Path(path).exists():
+            self._error("file is gone from disk", 410)
+            return
+        try:
+            if sys.platform == "win32":
+                if reveal:
+                    subprocess.Popen(["explorer", "/select,", str(Path(path))])
+                else:
+                    os.startfile(path)  # noqa: S606
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path] if reveal else ["open", path])
+            else:
+                subprocess.Popen(["xdg-open", str(Path(path).parent if reveal else path)])
+        except OSError as exc:
+            self._error(f"cannot open: {exc}", 500)
+            return
+        self._json({"ok": True})
+
+    def _static(self, route: str) -> None:
+        relative = "index.html" if route in ("/", "") else unquote(route.lstrip("/"))
+        target = (WEB_DIR / relative).resolve()
+        if not str(target).startswith(str(WEB_DIR.resolve())) or not target.is_file():
+            self._error("not found", 404)
+            return
+        content_type, _ = mimetypes.guess_type(str(target))
+        self._send(200, target.read_bytes(), content_type or "application/octet-stream")
+
+    # ----------------------------------------------------------------- POST
+
+    def do_POST(self) -> None:  # noqa: N802
+        if not self._host_ok():
+            self._error("bad host", 403)
+            return
+        parsed = urlparse(self.path)
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            self._error("invalid json")
+            return
+
+        if parsed.path == "/api/index":
+            roots = payload.get("roots") or []
+            if not roots:
+                self._error("roots required")
+                return
+            prune = bool(payload.get("prune"))
+            started = JOB.start(roots, self.config, self.db_path, prune)
+            self._json({"started": started}, 202 if started else 409)
+        elif parsed.path == "/api/reindex":
+            self._reindex()
+        else:
+            self._error("unknown route", 404)
+
+    def _reindex(self) -> None:
+        store = self._store()
+        try:
+            rows = store.conn.execute("SELECT DISTINCT path FROM files").fetchall()
+        finally:
+            store.close()
+        roots = sorted({str(Path(row["path"]).parent) for row in rows})
+        if not roots:
+            self._error("index is empty", 409)
+            return
+        started = JOB.start(roots, self.config, self.db_path, False)
+        self._json({"started": started, "roots": roots}, 202 if started else 409)
+
+
+def _default_roots() -> list[str]:
+    """Folders worth indexing on a fresh install: documents, downloads, screenshots."""
+    home = Path.home()
+    candidates = [
+        home / "Documents",
+        home / "Downloads",
+        home / "Desktop",
+        home / "Pictures" / "Screenshots",
+        home / "Pictures",
+    ]
+    return [str(path) for path in candidates if path.is_dir()]
+
+
+def serve(
+    db_path: Path,
+    config: IndexConfig,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    open_browser: bool = False,
+) -> None:
+    Handler.config = config
+    Handler.db_path = db_path
+
+    server = None
+    for candidate in range(port, port + 20):
+        try:
+            server = ThreadingHTTPServer((host, candidate), Handler)
+            port = candidate
+            break
+        except OSError:
+            continue
+    if server is None:
+        raise RuntimeError("no free port in range")
+
+    url = f"http://{host}:{port}/"
+    print(f"SemFind UI  ->  {url}")
+    print(f"index       ->  {db_path}")
+    if open_browser:
+        threading.Timer(0.6, lambda: _open_browser(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopping")
+    finally:
+        server.server_close()
+
+
+def _open_browser(url: str) -> None:
+    try:
+        if sys.platform == "win32":
+            os.startfile(url)  # noqa: S606
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+        else:
+            subprocess.Popen(["xdg-open", url])
+    except OSError:
+        pass

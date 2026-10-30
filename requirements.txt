@@ -1,0 +1,12 @@
+numpy>=1.26
+pillow>=10.0
+
+# Windows OCR: bindings to the recogniser that ships with the OS.
+winrt-runtime; sys_platform == "win32"
+winrt-Windows.Foundation; sys_platform == "win32"
+winrt-Windows.Foundation.Collections; sys_platform == "win32"
+winrt-Windows.Globalization; sys_platform == "win32"
+winrt-Windows.Storage; sys_platform == "win32"
+winrt-Windows.Storage.Streams; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging; sys_platform == "win32"
+winrt-Windows.Media.Ocr; sys_platform == "win32"

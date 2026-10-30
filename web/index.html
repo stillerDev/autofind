@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SemFind — локальный поиск по файлам и скриншотам</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand-row">
+      <div class="brand">
+        <span class="mark"></span>
+        <span class="name">SemFind</span>
+        <span class="tag">локальный поиск</span>
+      </div>
+      <div class="spacer"></div>
+      <span class="pill" id="status-pill" title="Состояние индекса">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">проверяю индекс…</span>
+      </span>
+    </div>
+    <div class="search-row">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="M20 20l-3.5-3.5"></path>
+      </svg>
+      <input id="q" autocomplete="off" spellcheck="false"
+             placeholder="Фраза со скриншота, таблица бюджета, функция слияния…">
+      <span class="kbd">/</span>
+      <button class="go" id="go">Найти</button>
+    </div>
+  </header>
+
+  <div class="tools">
+    <button class="chip active" data-kind="">Всё</button>
+    <button class="chip" data-kind="docs">Документы</button>
+    <button class="chip" data-kind="code">Код</button>
+    <button class="chip" data-kind="pdf">PDF</button>
+    <button class="chip" data-kind="docx">DOCX</button>
+    <button class="chip" data-kind="image">Скриншоты</button>
+    <label class="field">
+      <span>папка</span>
+      <input id="folder" placeholder="любая" autocomplete="off">
+    </label>
+    <label class="field">
+      <span>с</span>
+      <input id="since" type="date">
+    </label>
+    <div class="meta-line" id="meta"></div>
+  </div>
+
+  <main>
+    <div id="content"></div>
+  </main>
+
+  <aside>
+    <div class="panel">
+      <h3>Индекс</h3>
+      <div class="stat-row"><span>файлов</span><b id="s-files">—</b></div>
+      <div class="stat-row"><span>фрагментов</span><b id="s-chunks">—</b></div>
+      <div class="stat-row"><span>скриншотов</span><b id="s-images">—</b></div>
+      <div class="stat-row"><span>с OCR-текстом</span><b id="s-ocr">—</b></div>
+      <div class="stat-row"><span>размер</span><b id="s-size">—</b></div>
+    </div>
+
+    <div class="panel">
+      <h3>Индексировать</h3>
+      <textarea class="paths" id="roots" spellcheck="false"
+                placeholder="По одной папке в строке"></textarea>
+      <label class="stat-row" style="cursor:pointer">
+        <span>удалять пропавшие</span>
+        <input type="checkbox" id="prune">
+      </label>
+      <button class="btn primary" id="index-btn" style="margin-top:8px">Индексировать</button>
+      <div class="progress"><div id="bar"></div></div>
+      <div class="progress-label" id="progress-label">готов к работе</div>
+    </div>
+
+    <div class="panel">
+      <h3>Движки</h3>
+      <div class="engines" id="engines">—</div>
+    </div>
+  </aside>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal" id="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="modal-title">Похожие скриншоты</h3>
+      <button class="close" id="modal-close">закрыть</button>
+    </div>
+    <div class="grid" id="modal-grid"></div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

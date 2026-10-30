@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "note": "Фиксированный набор из 20 запросов (раздел 6 плана). Эталонный ответ — имя файла, который обязан попасть в топ-10. Менять набор можно только целиком и только до начала замеров: иначе Recall@10 перестаёт быть сравнимой величиной.",
+  "corpus": "personal",
+  "layers": {
+    "text": "5 запросов по PDF и DOCX",
+    "code": "5 запросов по исходному коду",
+    "ocr": "5 запросов по тексту скриншотов",
+    "visual": "5 визуальных запросов к CLIP"
+  },
+  "queries": [
+    { "id": "t01", "layer": "text", "query": "таблица бюджета проекта", "expected": ["budget-2026.docx"] },
+    { "id": "t02", "layer": "text", "query": "условия договора аренды", "expected": ["arenda-2025.pdf"] },
+    { "id": "t03", "layer": "text", "query": "итоги встречи с подрядчиком", "expected": ["meeting-2026-09.docx"] },
+    { "id": "t04", "layer": "text", "query": "требования к отчётности", "expected": ["report-rules.pdf"] },
+    { "id": "t05", "layer": "text", "query": "план отпусков на следующий год", "expected": ["vacation-plan.docx"] },
+
+    { "id": "c01", "layer": "code", "query": "функция слияния результатов поиска", "expected": ["search.py"] },
+    { "id": "c02", "layer": "code", "query": "подключение к базе в режиме WAL", "expected": ["store.py"] },
+    { "id": "c03", "layer": "code", "query": "разбор docx через zipfile", "expected": ["extract/docx.py"] },
+    { "id": "c04", "layer": "code", "query": "таймаут HTTP-запроса", "expected": ["client.py"] },
+    { "id": "c05", "layer": "code", "query": "миграция схемы базы", "expected": ["migrations.py"] },
+
+    { "id": "o01", "layer": "ocr", "query": "неверный пароль при входе", "expected": ["screenshot-2026-10-12.png"] },
+    { "id": "o02", "layer": "ocr", "query": "настройка прокси в браузере", "expected": ["screen-proxy.png"] },
+    { "id": "o03", "layer": "ocr", "query": "ошибка сборки cannot find module", "expected": ["build-error.png"] },
+    { "id": "o04", "layer": "ocr", "query": "номер заказа в письме", "expected": ["order-confirm.png"] },
+    { "id": "o05", "layer": "ocr", "query": "график платежей по кредиту", "expected": ["credit-schedule.png"] },
+
+    { "id": "v01", "layer": "visual", "query": "дашборд с графиком продаж", "expected": ["dashboard.png"] },
+    { "id": "v02", "layer": "visual", "query": "тёмная тема редактора кода", "expected": ["editor-dark.png"] },
+    { "id": "v03", "layer": "visual", "query": "скриншот с таблицей и цифрами", "expected": ["table-shot.png"] },
+    { "id": "v04", "layer": "visual", "query": "схема архитектуры со стрелками", "expected": ["arch-diagram.png"] },
+    { "id": "v05", "layer": "visual", "query": "фотография белой доски с записями", "expected": ["whiteboard.jpg"] }
+  ]
+}

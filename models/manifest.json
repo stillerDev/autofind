@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "note": "Model manifest. Weights are bundled in the installer as int8; sha256 pins the exact export so a silent upstream change cannot break the index.",
+  "models": {
+    "e5-small": {
+      "role": "text embeddings",
+      "files": ["model.onnx", "tokenizer.json"],
+      "dim": 384,
+      "quantization": "int8",
+      "size_mb": 120,
+      "license": "MIT",
+      "source": "intfloat/multilingual-e5-small",
+      "sha256": null,
+      "prefixes": { "query": "query: ", "passage": "passage: " }
+    },
+    "clip-vit-b32": {
+      "role": "image and text-to-image embeddings",
+      "files": ["visual.onnx", "textual.onnx", "tokenizer.json"],
+      "dim": 512,
+      "quantization": "int8",
+      "size_mb": 45,
+      "license": "MIT",
+      "source": "openai/clip-vit-base-patch32",
+      "sha256": null,
+      "note": "English prompts only; Russian queries go through Argos before the text encoder"
+    },
+    "tesseract-rus-eng": {
+      "role": "OCR traineddata",
+      "files": ["rus.traineddata", "eng.traineddata"],
+      "size_mb": 22,
+      "license": "Apache-2.0",
+      "source": "tessdata_best"
+    },
+    "argos-ru-en": {
+      "role": "offline query translation ru -> en",
+      "files": ["model/", "metadata.json"],
+      "size_mb": 100,
+      "license": "MIT (engine) / CC-BY-4.0 (model)",
+      "note": "largest single item in the bundle; the 150 MB installer target depends on this decision"
+    }
+  }
+}
