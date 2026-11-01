@@ -40,6 +40,7 @@ with no model downloads:
 | Quality measurement | works | `eval` with Recall@10, MRR, ablation |
 | Privacy filter | works | path blocklist + `.gitignore` parity, `privacy purge` |
 | App | works | native window (WebView2), tray, `Ctrl+Alt+Space`, autostart |
+| Interface | works | English by default, Russian in one click, index in a drawer |
 
 Two upgrades are drop-in and change nothing else: `multilingual-e5-small` for
 semantic text vectors, and `CLIP ViT-B/32` for text-to-image search. Until they
@@ -252,6 +253,47 @@ copy of the pack open at once.
 
 `tools/make_icon.py` draws `web/icon.png` and `web/icon.ico` (16–256 px), so the
 icon is reproducible instead of a binary nobody can regenerate.
+
+## The interface
+
+![The index panel as a drawer](docs/ui-panel.png)
+
+Two things about the layout are decisions rather than taste.
+
+**The index is a drawer, not a column.** It used to be a permanent 320 px column
+on the right, which cost a third of the result width for four panels that are
+read once and then ignored for the rest of the session. It now opens over the
+results from one button in the header, with a scrim that is also a close button,
+and closing it never reflows the list you were reading. Everything the column
+held is still there — counts, roots, watch state, privacy, engines, shortcuts.
+
+**Every word is a key.** `web/i18n.js` holds two dictionaries, English as the
+source language, and the markup carries `data-i18n` attributes; anything drawn
+by `app.js` goes through `t()`. A language switch is one call: it re-renders the
+static text, the chips, the status line and the idle screen from the same data,
+and remembers the choice in `localStorage`. English is the default, including
+for a machine whose Windows is in Russian.
+
+The search engine does not own any words. A chip arrives from the server as a
+*kind* and a *value* — `{"kind": "week"}` or `{"kind": "daysAgo", "value": "3"}`
+— and the interface decides how to say it, because "modified: in the past week"
+is a sentence and the compiler is not the thing that knows the language of the
+person reading it. The same applies to hints and to type values. `tests/test_i18n.py`
+fails the build if a kind has no sentence in either language, if a key exists in
+one dictionary and not the other, or if a `data-i18n` attribute names a key that
+does not exist.
+
+Russian needs three plural forms and English two; the rule lives next to the
+strings. `3 snapshots` and `3 снимка` come from the same call.
+
+![The same idle screen after switching to Russian](docs/ui-ru.png)
+
+![Settings, with the language switch and the build's own numbers](docs/ui-settings.png)
+
+The gear opens the same dialog in both languages: the segmented switch, and an
+About list that reports what this install actually is — files and chunks, the
+database size, how many languages the OCR can read here, which embedders are
+loaded, and the version.
 
 ## Measured on this machine
 
@@ -536,7 +578,7 @@ SQLite file. An app-level blocklist, a pause switch and SQLCipher are open items
 python -m unittest discover -s tests -t .
 ```
 
-178 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
+190 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
 image preprocessing, visual features, thumbnails, real OCR including Japanese
 (skipped when no engine), the language table and the boot screen's greeting
 pool, `/api/ready`, FTS query sanitising, the full index→search cycle, kind filters,
@@ -544,7 +586,9 @@ incremental skips, screenshot dedup, similar-image search, the privacy
 blocklist, `.gitignore` parity, watcher diffing and startup cleanup, the eval
 metrics, the bundle estimate, the query grammar and intent compiler, fuzzy name
 scoring, the ranking bonuses, pagination, the MCP surface, the name index, the
-vector pack, grouping and the desktop-app plumbing (lock, geometry, autostart).
+vector pack, grouping, the desktop-app plumbing (lock, geometry, autostart) and
+the two dictionaries against each other, against the markup and against the
+kinds the query compiler can emit.
 
 `tests/queries/queries.json` holds the fixed 20-query acceptance set from the
 plan. Expected answers are still placeholders — attaching a real corpus is what
@@ -555,6 +599,9 @@ turns Recall@10 from a claim into a number.
 - `CLIP` and `e5` weights are not bundled; the installer budget is 378 MB
   against the plan's 150 MB, and that decision is still open.
 - Index encryption, an app blocklist and a global OCR pause switch.
+- Two interface languages. The dictionaries are the mechanism, not the
+  coverage: a third language is a table and a line in `LANGUAGES`, but nobody
+  has written one.
 - A signed installer: the app window, tray, hotkey and shortcuts exist, but
   there is no MSI and no code signing yet, so "install" is a command rather than
   a wizard.

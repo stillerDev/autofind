@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AutoFind — локальный поиск по файлам и скриншотам</title>
+  <title>AutoFind — local search over files and screenshots</title>
   <link rel="icon" href="/icon.png">
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -16,7 +16,7 @@
     <div class="boot-hello" id="boot-hello">Hello</div>
     <div class="boot-lang" id="boot-lang">English</div>
     <div class="boot-track"><span class="boot-bar" id="boot-bar"></span></div>
-    <div class="boot-stage" id="boot-stage">запускаю</div>
+    <div class="boot-stage" id="boot-stage">starting</div>
   </div>
 </div>
 <div class="app">
@@ -32,50 +32,75 @@
             <circle cx="11" cy="11" r="7"></circle>
             <path d="M20 20l-3.5-3.5"></path>
           </svg>
-          <input id="q" autocomplete="off" spellcheck="false" placeholder="поиск"
-                 aria-label="Поиск по файлам и скриншотам">
-          <button class="clear" id="clear" type="button" aria-label="Очистить">×</button>
+          <input id="q" autocomplete="off" spellcheck="false"
+                 data-i18n-placeholder="search.placeholder" data-i18n-aria="search.aria">
+          <button class="clear" id="clear" type="button" data-i18n-aria="search.clear">×</button>
         </div>
-        <!-- The window has no title bar, so this is the only way out of it.
-             Sits last, in the corner where Windows puts its own close button. -->
-        <div class="win-controls" id="win-controls" aria-label="Окно">
-          <button type="button" data-win="hide"
-                  title="Скрыть в трей (Ctrl+Alt+Space). Выход — в меню трея.">✕</button>
+
+        <div class="header-actions">
+          <!-- The index panel used to be a permanent right column: 320 px of
+               stats and buttons that were read once and then in the way. It is a
+               drawer now, opened from here, the way kensaku does it. -->
+          <button class="icon-btn" id="panel-btn" type="button"
+                  data-i18n-title="panel.toggle" data-i18n-aria="panel.toggle"
+                  aria-expanded="false" aria-controls="panel">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+                 stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+              <rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect>
+              <path d="M14.5 4.5v15"></path>
+              <path d="M17.5 9.5h1M17.5 12h1M17.5 14.5h1"></path>
+            </svg>
+          </button>
+          <button class="icon-btn" id="settings-btn" type="button"
+                  data-i18n-title="settings.title" data-i18n-aria="settings.title">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+                 stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                 stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3.2"></circle>
+              <path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l1.8-1.4-1.9-3.2-2.1.9a7.6 7.6 0 0 0-2.6-1.5L14.2 2h-4.4l-.4 2.3a7.6 7.6 0 0 0-2.6 1.5l-2.1-.9L2.8 8.1l1.8 1.4a7.6 7.6 0 0 0 0 3l-1.8 1.4 1.9 3.2 2.1-.9a7.6 7.6 0 0 0 2.6 1.5l.4 2.3h4.4l.4-2.3a7.6 7.6 0 0 0 2.6-1.5l2.1.9 1.9-3.2z"></path>
+            </svg>
+          </button>
+          <!-- The window has no title bar, so this is the only way out of it.
+               Sits last, in the corner where Windows puts its own close button. -->
+          <div class="win-controls" id="win-controls">
+            <button type="button" data-win="hide"
+                    data-i18n-title="win.hide" data-i18n-aria="win.hide">✕</button>
+          </div>
         </div>
       </div>
 
-      <nav class="menu" aria-label="Тип файлов">
-        <button class="chip active" data-kind="">Всё</button>
-        <button class="chip" data-kind="docs">Документы</button>
-        <button class="chip" data-kind="code">Код</button>
-        <button class="chip" data-kind="pdf">PDF</button>
-        <button class="chip" data-kind="docx">DOCX</button>
-        <button class="chip" data-kind="image">Скриншоты</button>
+      <nav class="menu" aria-label="File type">
+        <button class="chip active" data-kind="" data-i18n="kind.all">All</button>
+        <button class="chip" data-kind="docs" data-i18n="kind.docs">Documents</button>
+        <button class="chip" data-kind="code" data-i18n="kind.code">Code</button>
+        <button class="chip" data-kind="pdf" data-i18n="kind.pdf">PDF</button>
+        <button class="chip" data-kind="docx" data-i18n="kind.docx">DOCX</button>
+        <button class="chip" data-kind="image" data-i18n="kind.image">Screenshots</button>
       </nav>
     </div>
   </header>
 
   <div class="tools">
-    <span class="pill" id="status-pill" title="Состояние индекса">
+    <span class="pill" id="status-pill" data-i18n-title="tools.status">
       <span class="dot" id="status-dot"></span>
-      <span id="status-text">проверяю индекс…</span>
+      <span id="status-text" data-i18n="status.checking">checking the index…</span>
     </span>
     <label class="field">
-      <span>папка</span>
-      <input id="folder" placeholder="любая" autocomplete="off">
+      <span data-i18n="tools.folder">folder</span>
+      <input id="folder" data-i18n-placeholder="tools.any" autocomplete="off">
     </label>
     <label class="field">
-      <span>с</span>
+      <span data-i18n="tools.since">since</span>
       <input id="since" type="date">
     </label>
     <label class="field">
-      <span>сортировка</span>
-      <select id="sort" aria-label="Сортировка результатов">
-        <option value="best">по совпадению</option>
-        <option value="newest">новые</option>
-        <option value="oldest">старые</option>
-        <option value="largest">крупные</option>
-        <option value="name">по имени</option>
+      <span data-i18n="tools.sort">sort</span>
+      <select id="sort">
+        <option value="best" data-i18n="sort.best">best match</option>
+        <option value="newest" data-i18n="sort.newest">newest</option>
+        <option value="oldest" data-i18n="sort.oldest">oldest</option>
+        <option value="largest" data-i18n="sort.largest">largest</option>
+        <option value="name" data-i18n="sort.name">by name</option>
       </select>
     </label>
     <div class="meta-line" id="meta"></div>
@@ -84,68 +109,75 @@
   <main>
     <div id="content"></div>
   </main>
-
-  <aside>
-    <div class="panel">
-      <h3>Индекс</h3>
-      <div class="stat-grid">
-        <div class="stat"><span>файлов</span><b id="s-files">—</b></div>
-        <div class="stat"><span>фрагментов</span><b id="s-chunks">—</b></div>
-        <div class="stat"><span>скриншотов</span><b id="s-images">—</b></div>
-        <div class="stat"><span>с OCR</span><b id="s-ocr">—</b></div>
-        <div class="stat"><span>размер</span><b id="s-size">—</b></div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h3>Индексировать</h3>
-      <textarea class="paths" id="roots" rows="3" spellcheck="false"
-                placeholder="По одной папке в строке"></textarea>
-      <label class="stat-row" style="cursor:pointer">
-        <span>удалять пропавшие</span>
-        <input type="checkbox" id="prune">
-      </label>
-      <div class="btn-row">
-        <button class="btn primary" id="index-btn">Индексировать</button>
-        <button class="btn" id="watch-btn">Следить</button>
-      </div>
-      <div class="progress"><div id="bar"></div></div>
-      <div class="status-line">
-        <span class="progress-label" id="progress-label">готов к работе</span>
-        <span class="progress-label" id="watch-label">слежение выключено</span>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h3>Приватность</h3>
-      <div class="stat-row">
-        <span>фильтр <b id="p-enabled">—</b> · приватного <b id="p-count">—</b></span>
-        <button class="btn mini" id="purge-btn">убрать</button>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h3>Движки</h3>
-      <div class="engines" id="engines">—</div>
-    </div>
-
-    <div class="side-foot">
-      <span><kbd>/</kbd> фокус</span>
-      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span>
-      <span><kbd>space</kbd> просмотр</span>
-      <span><kbd>enter</kbd> открыть</span>
-      <span class="only-app"><kbd>ctrl</kbd><kbd>alt</kbd><kbd>space</kbd> окно</span>
-    </div>
-  </aside>
 </div>
+
+<div class="scrim" id="scrim"></div>
+
+<aside class="drawer" id="panel" aria-hidden="true">
+  <div class="drawer-head">
+    <h3 data-i18n="panel.index">Index</h3>
+    <button class="drawer-close" id="panel-close" type="button" data-i18n-aria="preview.close">×</button>
+  </div>
+
+  <div class="panel">
+    <div class="stat-grid">
+      <div class="stat"><span data-i18n="panel.files">files</span><b id="s-files">—</b></div>
+      <div class="stat"><span data-i18n="panel.chunks">chunks</span><b id="s-chunks">—</b></div>
+      <div class="stat"><span data-i18n="panel.screenshots">screenshots</span><b id="s-images">—</b></div>
+      <div class="stat"><span data-i18n="panel.withOcr">with OCR</span><b id="s-ocr">—</b></div>
+      <div class="stat"><span data-i18n="panel.size">size</span><b id="s-size">—</b></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3 data-i18n="panel.indexing">Index folders</h3>
+    <textarea class="paths" id="roots" rows="3" spellcheck="false"
+              data-i18n-placeholder="panel.rootsPlaceholder"></textarea>
+    <label class="stat-row" style="cursor:pointer">
+      <span data-i18n="panel.prune">remove missing</span>
+      <input type="checkbox" id="prune">
+    </label>
+    <div class="btn-row">
+      <button class="btn primary" id="index-btn" data-i18n="panel.start">Index</button>
+      <button class="btn" id="watch-btn" data-i18n="panel.watch">Watch</button>
+    </div>
+    <div class="progress"><div id="bar"></div></div>
+    <div class="status-line">
+      <span class="progress-label" id="progress-label" data-i18n="panel.ready">ready</span>
+      <span class="progress-label" id="watch-label" data-i18n="panel.watchingOff">watching is off</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3 data-i18n="panel.privacy">Privacy</h3>
+    <div class="stat-row">
+      <span><span data-i18n="panel.filter">filter</span> <b id="p-enabled">—</b>
+        · <span data-i18n="panel.private">private</span> <b id="p-count">—</b></span>
+      <button class="btn mini" id="purge-btn" data-i18n="panel.purge">remove</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3 data-i18n="panel.engines">Engines</h3>
+    <div class="engines" id="engines">—</div>
+  </div>
+
+  <div class="side-foot">
+    <span><kbd>/</kbd> <span data-i18n="hints.focus">focus</span></span>
+    <span><kbd>↑</kbd><kbd>↓</kbd> <span data-i18n="hints.select">select</span></span>
+    <span><kbd>space</kbd> <span data-i18n="hints.preview">preview</span></span>
+    <span><kbd>enter</kbd> <span data-i18n="hints.open">open</span></span>
+    <span class="only-app"><kbd>ctrl</kbd><kbd>alt</kbd><kbd>space</kbd> <span data-i18n="hints.window">window</span></span>
+  </div>
+</aside>
 
 <div class="toast" id="toast"></div>
 
 <div class="modal" id="preview">
   <div class="modal-card preview-card">
     <div class="modal-head">
-      <h3>Просмотр</h3>
-      <button class="close" id="preview-close">закрыть</button>
+      <h3 data-i18n="preview.title">Preview</h3>
+      <button class="close" id="preview-close" data-i18n="preview.close">close</button>
     </div>
     <div id="preview-body"></div>
   </div>
@@ -154,13 +186,37 @@
 <div class="modal" id="modal">
   <div class="modal-card">
     <div class="modal-head">
-      <h3 id="modal-title">Похожие скриншоты</h3>
-      <button class="close" id="modal-close">закрыть</button>
+      <h3 id="modal-title" data-i18n="results.similarImages">Similar images</h3>
+      <button class="close" id="modal-close" data-i18n="preview.close">close</button>
     </div>
     <div class="grid" id="modal-grid"></div>
   </div>
 </div>
 
+<div class="modal" id="settings" role="dialog" aria-modal="true">
+  <div class="modal-card settings-card" tabindex="-1">
+    <div class="modal-head">
+      <h3 data-i18n="settings.title">Settings</h3>
+      <button class="close" id="settings-close" data-i18n="settings.close">close</button>
+    </div>
+    <div class="settings-body">
+      <section class="settings-section">
+        <h4 data-i18n="settings.language">Language</h4>
+        <div class="segmented" id="lang-switch" role="radiogroup"
+             data-i18n-aria="settings.language">
+          <button type="button" data-lang="en" role="radio">English</button>
+          <button type="button" data-lang="ru" role="radio">Русский</button>
+        </div>
+        <p class="settings-note" data-i18n="settings.languageNote"></p>
+      </section>
+      <section class="settings-section">
+        <h4 data-i18n="settings.about">About</h4>
+        <dl class="about-grid" id="about"></dl>
+      </section>    </div>
+  </div>
+</div>
+
+<script src="/i18n.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

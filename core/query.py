@@ -122,17 +122,89 @@ class Term:
     phrase: bool = False
 
 
+# The words around a chip are a language; the chip itself is not. A chip is a
+# kind plus a value ("time" + "7d"), and whoever draws it decides how to say
+# that. The first version baked a Russian label into the parser, which meant the
+# interface could not be translated without string surgery on the search engine.
+CHIP_TEMPLATES: dict[str, str] = {
+    "time": "modified: {value}",
+    "yesterday": "modified: yesterday",
+    "today": "modified: today",
+    "dayBefore": "modified: the day before yesterday",
+    "week": "modified: in the past week",
+    "month": "modified: in the past month",
+    "year": "modified: in the past year",
+    "weekday": "modified: {value}",
+    "daysAgo": "modified: {value} days ago",
+    "lastDays": "modified: last {value} days",
+    "lastWeeks": "modified: last {value} weeks",
+    "lastMonths": "modified: last {value} months",
+    "size": "size: {value}",
+    "sizeMax": "size under {value}",
+    "sizeMin": "size over {value}",
+    "sizeLarge": "large files",
+    "sizeSmall": "small files",
+    "type": "type: {value}",
+    "ext": "extension: .{value}",
+    "lang": "language: {value}",
+    "sort": "sort: {value}",
+    "place": "in folder: {value}",
+    "filter": "regex {value}",
+    "exclude": "without “{value}”",
+}
+
+WEEKDAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
 @dataclass(slots=True)
 class Chip:
     """One interpretation the user is allowed to take back."""
 
-    kind: str  # time | size | type | sort | place | filter | exclude
-    label: str
+    kind: str  # see CHIP_TEMPLATES
+    value: str
     raw: str
     source: str
 
+    @property
+    def label(self) -> str:
+        """English rendering, for the CLI and for anything without a locale."""
+        if self.kind == "weekday":
+            value = f"last {WEEKDAY_NAMES[int(self.value)]}"
+        else:
+            value = self.value
+        return CHIP_TEMPLATES.get(self.kind, "{value}").format(value=value)
+
     def as_dict(self) -> dict:
-        return {"kind": self.kind, "label": self.label, "raw": self.raw, "source": self.source}
+        return {
+            "kind": self.kind,
+            "value": self.value,
+            "label": self.label,
+            "raw": self.raw,
+            "source": self.source,
+        }
+
+
+HINT_TEMPLATES: dict[str, str] = {
+    "unknown_lang": "unknown language “{value}”",
+    "folders_not_indexed": "folders are not indexed — search for files",
+    "bad_modified": "did not understand “modified:{value}” — use <7d, >30d or 7d..30d",
+    "bad_size": "did not understand “size:{value}” — use >2mb, <100kb or 1mb..10mb",
+}
+
+
+@dataclass(slots=True)
+class Hint:
+    """A thing the compiler could not read, said in a language-neutral way."""
+
+    kind: str
+    value: str = ""
+
+    @property
+    def text(self) -> str:
+        return HINT_TEMPLATES.get(self.kind, "{value}").format(value=self.value)
+
+    def as_dict(self) -> dict:
+        return {"kind": self.kind, "value": self.value, "text": self.text}
 
 
 @dataclass(slots=True)
@@ -151,7 +223,7 @@ class ParsedQuery:
     mode: str = "ranked"
     sort: str | None = None
     chips: list[Chip] = field(default_factory=list)
-    hints: list[str] = field(default_factory=list)
+    hints: list[Hint] = field(default_factory=list)
 
     # -- what the retrieval channels see ---------------------------------
     @property
@@ -354,13 +426,13 @@ def parse(raw: str, now: float | None = None) -> ParsedQuery:
             query.terms.append(Term(token.text, phrase=True))
         elif token.kind == "negated_word":
             query.not_paths.append(token.text)
-            query.chips.append(Chip("exclude", f"без «{token.text}»", f"-{token.text}", token.text))
+            query.chips.append(Chip("exclude", token.text, f"-{token.text}", token.text))
         elif token.kind == "negated_phrase":
             query.not_paths.append(token.text)
-            query.chips.append(Chip("exclude", f"без «{token.text}»", f'-"{token.text}"', token.text))
+            query.chips.append(Chip("exclude", token.text, f'-"{token.text}"', token.text))
         elif token.kind == "regex":
             query.regexes.append(token.text)
-            query.chips.append(Chip("filter", f"regex {token.text}", f're:"{token.text}"', token.text))
+            query.chips.append(Chip("filter", token.text, f're:"{token.text}"', token.text))
         elif token.kind == "key":
             _apply_key(query, token, now)
     return query
@@ -376,42 +448,42 @@ def _apply_key(query: ParsedQuery, token: Token, now: float | None) -> None:
         if key == "lang":
             exts = LANG_EXT.get(value.lower())
             if exts is None:
-                query.hints.append(f"неизвестный язык «{value}»")
+                query.hints.append(Hint("unknown_lang", value))
                 query.terms.append(Term(literal))
                 return
             query.exts |= exts
-            query.chips.append(Chip("type", f"язык: {value}", literal, literal))
+            query.chips.append(Chip("lang", value, literal, literal))
             return
 
         word = value.lower().lstrip(".")
         if key == "ext":
             query.exts.add("." + word)
-            query.chips.append(Chip("type", f"расширение: .{word}", literal, literal))
+            query.chips.append(Chip("ext", word, literal, literal))
             return
 
         if word in ("dir", "dirs", "folder", "folderа", "папка", "папки"):
-            query.hints.append("папки в индекс не попадают — ищите файлы")
+            query.hints.append(Hint("folders_not_indexed"))
             query.kinds.add("__dir__")
             return
         if word in ("file", "files", "файл", "файлы"):
             return
         if word in TYPE_KINDS:
             query.kinds |= TYPE_KINDS[word]
-            query.chips.append(Chip("type", f"тип: {value}", literal, literal))
+            query.chips.append(Chip("type", value, literal, literal))
             return
         if word in TYPE_EXTS:
             query.exts |= TYPE_EXTS[word]
-            query.chips.append(Chip("type", f"тип: {value}", literal, literal))
+            query.chips.append(Chip("type", value, literal, literal))
             return
         # Unknown category: read it as an extension, which is what a user
         # typing `type:md` means anyway.
         query.exts.add("." + word)
-        query.chips.append(Chip("type", f"расширение: .{word}", literal, literal))
+        query.chips.append(Chip("ext", word, literal, literal))
         return
 
     if key == "in":
         query.in_paths.append(value)
-        query.chips.append(Chip("place", f"в папке: {value}", literal, literal))
+        query.chips.append(Chip("place", value, literal, literal))
         return
 
     if key == "path":
@@ -431,21 +503,21 @@ def _apply_key(query: ParsedQuery, token: Token, now: float | None) -> None:
     if key == "modified":
         window = parse_modified(value, now)
         if window is None:
-            query.hints.append(f"не понял «modified:{value}» — нужно <7d, >30d или 7d..30d")
+            query.hints.append(Hint("bad_modified", value))
             query.terms.append(Term(literal))
             return
         query.modified = window
-        query.chips.append(Chip("time", f"изменён: {value}", literal, literal))
+        query.chips.append(Chip("time", value, literal, literal))
         return
 
     if key == "size":
         window = parse_size(value)
         if window is None:
-            query.hints.append(f"не понял «size:{value}» — нужно >2mb, <100kb или 1mb..10mb")
+            query.hints.append(Hint("bad_size", value))
             query.terms.append(Term(literal))
             return
         query.size = window
-        query.chips.append(Chip("size", f"размер: {value}", literal, literal))
+        query.chips.append(Chip("size", value, literal, literal))
         return
 
     if key == "mode":
@@ -461,7 +533,7 @@ def _apply_key(query: ParsedQuery, token: Token, now: float | None) -> None:
     if key == "visual":
         query.kinds.add("image")
         query.terms.append(Term(value))
-        query.chips.append(Chip("type", "тип: image", "type:image", literal))
+        query.chips.append(Chip("type", "image", "type:image", literal))
         return
 
     # Unknown key: keep it as text so a stray colon never empties the results.
@@ -481,44 +553,46 @@ _EN_WEEKDAYS = {
 
 # Ordered longest-first so «позавчера» is not eaten by «вчера», and the leading
 # preposition is part of the match so «за прошлую неделю» leaves no stray «за».
+# Each row is (pattern, filter, chip kind, chip value): the kind and the value
+# are the whole message, and the words around them belong to the interface.
 _TIME_RULES: list[tuple[str, str, str]] = [
-    (r"позавчера|day before yesterday", "modified:2d..3d", "изменён: позавчера"),
-    (r"\bвчерашн\w*\b|\bвчера\b|\byesterday\b", "modified:1d..2d", "изменён: вчера"),
-    (r"\bсегодняшн\w*\b|\bсегодня\b|\btoday\b", "modified:<1d", "изменён: сегодня"),
+    (r"позавчера|day before yesterday", "modified:2d..3d", "dayBefore"),
+    (r"\bвчерашн\w*\b|\bвчера\b|\byesterday\b", "modified:1d..2d", "yesterday"),
+    (r"\bсегодняшн\w*\b|\bсегодня\b|\btoday\b", "modified:<1d", "today"),
     (r"(?:за|на|в)\s+(?:последн\w*\s+|прошл\w*\s+|эт\w*\s+)?недел\w*|"
-     r"\b(?:last|this|past)\s+week\b", "modified:<7d", "изменён: за неделю"),
+     r"\b(?:last|this|past)\s+week\b", "modified:<7d", "week"),
     (r"(?:за|на|в)\s+(?:последн\w*\s+|прошл\w*\s+|эт\w*\s+)?месяц\w*|"
-     r"\b(?:last|this|past)\s+month\b", "modified:<30d", "изменён: за месяц"),
+     r"\b(?:last|this|past)\s+month\b", "modified:<30d", "month"),
     (r"(?:за|на|в)\s+(?:последн\w*\s+|прошл\w*\s+|эт\w*\s+)?год\w*|"
-     r"\b(?:last|this|past)\s+year\b", "modified:<365d", "изменён: за год"),
+     r"\b(?:last|this|past)\s+year\b", "modified:<365d", "year"),
 ]
 _SORT_RULES: list[tuple[str, str, str]] = [
     (r"\b(?:последн\w*|новейш\w*|самы\w*\s+нов\w*|свеж\w*)\b|"
-     r"\b(?:latest|newest|most recent)\b", "newest", "сортировка: новые"),
+     r"\b(?:latest|newest|most recent)\b", "newest", "newest"),
     (r"\b(?:старейш\w*|самы\w*\s+стар\w*|самы\w*\s+давн\w*)\b|\boldest\b",
-     "oldest", "сортировка: старые"),
+     "oldest", "oldest"),
     (r"\b(?:самы\w*\s+больш\w*|крупнейш\w*|самы\w*\s+тяжёл\w*)\b|"
-     r"\b(?:biggest|largest)\b", "largest", "сортировка: крупные"),
+     r"\b(?:biggest|largest)\b", "largest", "largest"),
 ]
 _SIZE_RULES: list[tuple[str, str, str]] = [
     (r"\b(?:меньше|до|не\s+больше)\s+(\d+(?:[.,]\d+)?)\s*(кб|мб|гб|kb|mb|gb)\b|"
-     r"\b(?:under|less than)\s+(\d+(?:\.\d+)?)\s*(kb|mb|gb)\b", "<", "размер: меньше"),
+     r"\b(?:under|less than)\s+(\d+(?:\.\d+)?)\s*(kb|mb|gb)\b", "<", "sizeMax"),
     (r"\b(?:больше|свыше|от)\s+(\d+(?:[.,]\d+)?)\s*(кб|мб|гб|kb|mb|gb)\b|"
-     r"\b(?:over|more than|larger than)\s+(\d+(?:\.\d+)?)\s*(kb|mb|gb)\b", ">", "размер: больше"),
+     r"\b(?:over|more than|larger than)\s+(\d+(?:\.\d+)?)\s*(kb|mb|gb)\b", ">", "sizeMin"),
     (r"\b(?:большие|крупные|огромные|тяжёлые|тяжелые)\b|\b(?:big|large|huge)\b",
-     ">100mb", "размер: крупные"),
+     ">100mb", "sizeLarge"),
     (r"\b(?:маленькие|мелкие|крошечные|небольшие)\b|\b(?:small|tiny)\b",
-     "<1mb", "размер: мелкие"),
+     "<1mb", "sizeSmall"),
 ]
 _TYPE_RULES: list[tuple[str, str, str]] = [
-    (r"\bскриншот\w*\b|\bскрин\w*\b|\bscreenshots?\b|\bcaptures?\b", "image", "тип: image"),
+    (r"\bскриншот\w*\b|\bскрин\w*\b|\bscreenshots?\b|\bcaptures?\b", "image", "image"),
     (r"\bфотк\w*\b|\bфото\b|\bкартинк\w*\b|\bизображени\w*\b|\bimages?\b|\bphotos?\b",
-     "image", "тип: image"),
-    (r"\bдокумент\w*\b|\bdocuments?\b|\bdocs?\b", "doc", "тип: doc"),
-    (r"\bтаблиц\w*\b|\bспредшит\w*\b|\bspreadsheets?\b", "sheet", "тип: sheet"),
+     "image", "image"),
+    (r"\bдокумент\w*\b|\bdocuments?\b|\bdocs?\b", "doc", "doc"),
+    (r"\bтаблиц\w*\b|\bспредшит\w*\b|\bspreadsheets?\b", "sheet", "sheet"),
     (r"\bпрезентаци\w*\b|\bслайд\w*\b|\bslides?\b|\bpresentations?\b", "presentation",
-     "тип: presentation"),
-    (r"\bpdf\b", "pdf", "тип: pdf"),
+     "presentation"),
+    (r"\bpdf\b", "pdf", "pdf"),
 ]
 
 
@@ -536,7 +610,7 @@ def _compile_time_travel(text: str, now: float, appends: list[str], chips: list[
             today = datetime.fromtimestamp(now).weekday()
             back = (today - target) % 7 or 7
             appends.append(f"modified:{back}d..{back + 1}d")
-            chips.append(Chip("time", f"изменён: {name}", f"modified:{back}d..{back + 1}d",
+            chips.append(Chip("weekday", str(target), f"modified:{back}d..{back + 1}d",
                               match.group(0)))
             text = text[:match.start()] + " " + text[match.end():]
 
@@ -545,7 +619,7 @@ def _compile_time_travel(text: str, now: float, appends: list[str], chips: list[
     if ago:
         days = int(ago.group(1) or ago.group(2))
         appends.append(f"modified:{days}d..{days + 1}d")
-        chips.append(Chip("time", f"изменён: {days} дн. назад", f"modified:{days}d..{days + 1}d",
+        chips.append(Chip("daysAgo", str(days), f"modified:{days}d..{days + 1}d",
                           ago.group(0)))
         text = text[:ago.start()] + " " + text[ago.end():]
 
@@ -554,11 +628,13 @@ def _compile_time_travel(text: str, now: float, appends: list[str], chips: list[
     if span:
         count = int(span.group(1) or span.group(3))
         unit = (span.group(2) or span.group(4) or "").lower()
-        factor = 30 if unit.startswith(("месяц", "month")) else 7 if unit.startswith(
-            ("недел", "week")) else 1
+        factor, kind = (
+            (30, "lastMonths") if unit.startswith(("месяц", "month"))
+            else (7, "lastWeeks") if unit.startswith(("недел", "week"))
+            else (1, "lastDays")
+        )
         appends.append(f"modified:<{count * factor}d")
-        chips.append(Chip("time", f"изменён: за {count}×{factor} дн.",
-                          f"modified:<{count * factor}d", span.group(0)))
+        chips.append(Chip(kind, str(count), f"modified:<{count * factor}d", span.group(0)))
         text = text[:span.start()] + " " + text[span.end():]
     return text
 
@@ -575,22 +651,22 @@ def compile_intent(raw: str, now: float | None = None) -> tuple[str, list[Chip]]
 
     work = _compile_time_travel(work, now, appends, chips)
 
-    for pattern, order, label in _SORT_RULES:
+    for pattern, order, value in _SORT_RULES:
         match = re.search(pattern, work, re.IGNORECASE)
         if match:
             work = work[:match.start()] + " " + work[match.end():]
             appends.append(f"sort:{order}")
-            chips.append(Chip("sort", label, f"sort:{order}", match.group(0).strip()))
+            chips.append(Chip("sort", value, f"sort:{order}", match.group(0).strip()))
             break
 
-    for pattern, spec, label in _TIME_RULES:
+    for pattern, spec, kind in _TIME_RULES:
         match = re.search(pattern, work, re.IGNORECASE)
         if match:
             work = work[:match.start()] + " " + work[match.end():]
             appends.append(spec)
-            chips.append(Chip("time", label, spec, match.group(0).strip()))
+            chips.append(Chip(kind, "", spec, match.group(0).strip()))
 
-    for pattern, sign, label in _SIZE_RULES:
+    for pattern, sign, kind in _SIZE_RULES:
         match = re.search(pattern, work, re.IGNORECASE)
         if not match:
             continue
@@ -599,20 +675,22 @@ def compile_intent(raw: str, now: float | None = None) -> tuple[str, list[Chip]]
             number = (match.group(1) or match.group(3) or "").replace(",", ".")
             unit = (match.group(2) or match.group(4) or "mb").lower()
             spec = f"size:{sign}{number}{unit}"
+            value = f"{number} {unit}"
         else:
             spec = f"size:{sign}"
+            value = ""
         appends.append(spec)
-        chips.append(Chip("size", label, spec, match.group(0).strip()))
+        chips.append(Chip(kind, value, spec, match.group(0).strip()))
         break
 
-    for pattern, kind, label in _TYPE_RULES:
+    for pattern, kind, value in _TYPE_RULES:
         match = re.search(pattern, work, re.IGNORECASE)
         if not match:
             continue
         work = work[:match.start()] + " " + work[match.end():]
         spec = f"type:{kind}"
         appends.append(spec)
-        chips.append(Chip("type", label, spec, match.group(0).strip()))
+        chips.append(Chip("type", value, spec, match.group(0).strip()))
 
     # «самые большие файлы» is a sort, not a search for the word «файлы». Once
     # something has been compiled, a leftover generic noun carries no meaning.

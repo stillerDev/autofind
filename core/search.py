@@ -109,7 +109,7 @@ class SearchPage:
     total: int
     facets: dict[str, int]
     chips: list[dict]
-    hints: list[str]
+    hints: list[dict]
     query: str
     mode: str
     sort: str
@@ -516,7 +516,7 @@ def search_page(
         total=total,
         facets=facets,
         chips=[chip.as_dict() for chip in parsed.chips],
-        hints=parsed.hints,
+        hints=[hint.as_dict() for hint in parsed.hints],
         query=query,
         mode=parsed.mode,
         sort=resolved,

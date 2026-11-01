@@ -137,12 +137,15 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  /* One column now. The index used to be a permanent 320 px column on the
+     right, which cost a third of the results width for a panel that is read
+     once and then ignored; it is a drawer that opens over the content. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr);
   grid-template-areas:
-    "head head"
-    "tools tools"
-    "main side";
+    "head"
+    "tools"
+    "main";
   height: 100vh;
   max-height: 100vh;
 }
@@ -199,28 +202,27 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 
 /* The desktop window has no title bar, so this is the only way out of it.
    Hidden in a browser: a tab already has its own close button, and hiding a
-   tab would do nothing. The hero sits on a photo that is near-white at the top,
-   so the button is drawn dark-on-light rather than the usual white-on-dark —
-   a 32px glyph at 12% opacity is not a control, it is a smudge. */
+   tab would do nothing. It sits in the same row as the panel and settings
+   buttons, so it wears the same glass — only the hover says "this closes
+   something", which is where the red belongs. */
 .win-controls { display: none; }
 
 body.in-app .win-controls { display: flex; align-items: center; }
 
 .win-controls button {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
-  padding: 0;
+  padding: 0 0 2px;
   font: inherit;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1;
-  color: rgba(16, 20, 24, 0.78);
-  border: 1px solid rgba(16, 20, 24, 0.18);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
-  backdrop-filter: blur(8px) saturate(120%);
+  color: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 10px;
+  background: rgba(9, 11, 13, 0.42);
+  backdrop-filter: blur(10px) saturate(120%);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
@@ -234,7 +236,7 @@ body.in-app .win-controls { display: flex; align-items: center; }
 .win-controls button:active { background: #9c2c20; }
 
 .win-controls button:focus-visible {
-  outline: 2px solid rgba(16, 20, 24, 0.6);
+  outline: 2px solid rgba(255, 255, 255, 0.62);
   outline-offset: 2px;
 }
 
@@ -272,7 +274,7 @@ body.in-app .win-controls { display: flex; align-items: center; }
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Pushed to the right edge next to the window control: with three children
+  /* Pushed to the right edge next to the header actions: with three children
      space-between would strand the search box in the middle of the header. */
   margin-left: auto;
   width: clamp(240px, 42vw, 460px);
@@ -282,6 +284,48 @@ body.in-app .win-controls { display: flex; align-items: center; }
   background: rgba(9, 11, 13, 0.42);
   backdrop-filter: blur(10px) saturate(120%);
   transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+/* The panel toggle and the gear. Same glass as the search field so the top
+   right reads as one row of controls rather than three different widgets. */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 10px;
+  background: rgba(9, 11, 13, 0.42);
+  backdrop-filter: blur(10px) saturate(120%);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.icon-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* Open state is inverted: the button has to say "this panel is showing". */
+.icon-btn[aria-expanded="true"] {
+  color: #15181b;
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.62);
+  outline-offset: 2px;
 }
 
 .find:focus-within {
@@ -766,18 +810,86 @@ main {
 
 .shot:hover { border-color: #3a4048; }
 
-/* ------------------------------------------------------------------ side */
+/* ------------------------------------------------------------------ drawer */
 
-aside {
-  grid-area: side;
+/* The index panel: everything that used to be a permanent right column, behind
+   one button. It slides over the results instead of pushing them aside, so
+   opening it never reflows the list you were reading. */
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 46;
+  width: min(360px, 92vw);
   display: flex;
   flex-direction: column;
-  border-left: 1px solid rgba(255, 255, 255, 0.07);
-  padding: 12px 16px 16px;
+  padding: 14px 16px 16px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(11, 12, 14, 0.88);
+  backdrop-filter: blur(22px) saturate(130%);
+  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.45);
   overflow-y: auto;
-  background: rgba(11, 12, 14, 0.56);
-  backdrop-filter: blur(16px) saturate(120%);
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform 0.26s cubic-bezier(0.32, 0.72, 0.28, 1), visibility 0.26s ease;
 }
+
+.drawer.open {
+  transform: none;
+  visibility: visible;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px 12px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.drawer-head h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.drawer-close {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0 0 2px;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.drawer-close:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: rgba(6, 7, 8, 0.5);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.26s ease, visibility 0.26s ease;
+}
+
+.scrim.show { opacity: 1; visibility: visible; }
 
 /* Four panels are shorter than a full-height column, so the empty tail of the
    sidebar looked like a rendering bug. The shortcut hint anchors the column to
@@ -1078,6 +1190,77 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   cursor: pointer;
 }
 
+/* ---------------------------------------------------------------- settings */
+
+.settings-card { width: min(520px, 100%); }
+
+/* The card takes focus when the dialog opens so that Tab starts inside it.
+   It is a container, not a control, so it must not draw a ring for that. */
+.settings-card:focus { outline: none; }
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.settings-section h4 {
+  margin: 0 0 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settings-note {
+  margin: 11px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--faint);
+}
+
+/* A segmented control, not a dropdown: with exactly two languages a menu that
+   hides one of them is a worse affordance than showing both. */
+.segmented {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(10, 11, 13, 0.7);
+}
+
+.segmented button {
+  padding: 6px 16px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.segmented button:hover { color: var(--text); }
+
+.segmented button[aria-checked="true"] {
+  background: var(--accent);
+  color: #15181b;
+  font-weight: 600;
+}
+
+.about-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.about-grid dt { color: var(--faint); }
+.about-grid dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #262a2f; border-radius: 99px; border: 3px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -1087,7 +1270,6 @@ body.in-app .side-foot .only-app { display: inline-flex; }
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas: "head" "tools" "main";
   }
-  aside { display: none; }
 }
 
 /* Short windows: the hero gives back height so the four sidebar panels still

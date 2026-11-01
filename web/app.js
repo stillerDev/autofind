@@ -3,11 +3,19 @@ const state = {
   query: "", kind: "", folder: "", since: "", sort: "best",
   timer: null, jobTimer: null,
   hits: [], total: 0, nextOffset: null, approx: false, selected: -1, chips: [],
+  stats: null, status: null,
 };
+
+// The three letters inside the file-type tile. Abbreviations of extensions, not
+// prose: they stay as they are in every language.
 const KIND_LABEL = {
-  pdf: "pdf", docx: "docx", code: "код", text: "txt", image: "img",
+  pdf: "pdf", docx: "docx", code: "code", text: "txt", image: "img",
   pptx: "pptx", xlsx: "xlsx", epub: "epub", odt: "odt", rtf: "rtf",
 };
+
+const WEEKDAYS = [
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+];
 
 function esc(text) {
   return String(text ?? "").replace(/[&<>"']/g, (ch) => (
@@ -15,21 +23,22 @@ function esc(text) {
   ));
 }
 
-// "5 версии" is the kind of detail that makes a UI feel translated. Russian
-// needs three forms, and the count is the whole message of the badge.
-function plural(count, one, few, many) {
-  const tail = count % 100;
-  if (tail >= 11 && tail <= 14) return many;
-  const last = count % 10;
-  if (last === 1) return one;
-  if (last >= 2 && last <= 4) return few;
-  return many;
+function locale() {
+  return currentLang() === "ru" ? "ru-RU" : "en-GB";
+}
+
+function dateLabel(seconds) {
+  return new Date(seconds * 1000).toLocaleDateString(locale());
+}
+
+function sizeLabel(bytes) {
+  return `${(bytes / 1024).toFixed(0)} ${t("unit.kb")}`;
 }
 
 function highlight(snippet, query) {
   let html = esc(snippet);
   const terms = (query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) || [])
-    .filter((t) => t.length >= 3)
+    .filter((item) => item.length >= 3)
     .slice(0, 12);
   for (const term of terms) {
     const safe = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -91,12 +100,13 @@ async function runSearch(options = {}) {
     state.chips = data.chips || [];
     renderResults(data, append);
     const shown = state.hits.length;
-    const sign = state.approx ? "≈" : "";
     $("meta").textContent = shown
-      ? `${shown} из ${sign}${state.total} · ${data.ms} мс`
-      : `${data.ms} мс`;
+      ? t("search.meta", {
+        shown, total: state.total, ms: data.ms, sign: state.approx ? "≈" : "",
+      })
+      : `${data.ms} ${t("unit.ms")}`;
   } catch (error) {
-    toast(`Поиск не удался: ${error.message}`);
+    toast(t("search.failed", { error: error.message }));
   }
 }
 
@@ -114,9 +124,8 @@ function renderIdle() {
     <div class="empty">
       <div class="empty-body">
         <div class="empty-card">
-          <h2>Ищите по смыслу, а не по имени файла</h2>
-          <p>Строка находит содержимое документов, текст на скриншотах и фрагменты кода.
-             Всё считается на этом компьютере, наружу ничего не уходит.</p>
+          <h2>${esc(t("idle.title"))}</h2>
+          <p>${esc(t("idle.body"))}</p>
         </div>
         <div class="recent" id="recent" hidden></div>
       </div>
@@ -126,24 +135,30 @@ function renderIdle() {
 
 /* The idle screen used to be one small plate on a very large photo, which read
    as a half-empty page. Six recent screenshots give the space a floor: the eye
-   lands on something real and the whole column stops looking unfinished. */
-let recentLoaded = false;
+   lands on something real and the whole column stops looking unfinished.
+
+   The list is cached, not the rendering: switching language redraws the idle
+   screen, and refetching six thumbnails to change one word would be silly. */
+let recentImages = null;
 
 async function loadRecent() {
-  if (recentLoaded) return;
-  recentLoaded = true;
   const host = $("recent");
   if (!host) return;
+  if (recentImages) { paintRecent(host); return; }
   try {
     const data = await api("/api/images?limit=6");
-    const images = (data.images || []).slice(0, 6);
-    if (!images.length || !$("recent")) return;
-    host.innerHTML = `<h3>недавние скриншоты</h3>
-      <div class="grid">${images.map(shot).join("")}</div>`;
-    host.hidden = false;
+    recentImages = (data.images || []).slice(0, 6);
+    if ($("recent")) paintRecent($("recent"));
   } catch (error) {
-    recentLoaded = false; // a decoration must never break the idle screen
+    recentImages = null; // a decoration must never break the idle screen
   }
+}
+
+function paintRecent(host) {
+  if (!recentImages || !recentImages.length) return;
+  host.innerHTML = `<h3>${esc(t("idle.recent"))}</h3>
+    <div class="grid">${recentImages.map(shot).join("")}</div>`;
+  host.hidden = false;
 }
 
 function card(hit, query, index) {
@@ -155,18 +170,15 @@ function card(hit, query, index) {
     .map((channel) => `<span class="badge b-${channel}">${channel}</span>`)
     .join("");
   const similar = hit.is_image
-    ? `<button class="act" data-similar="${hit.file_id}">похожие</button>` : "";
-  // A group is a fact about the result, not decoration: "3 версии" tells you the
-  // row you are looking at is the one the ranker picked out of three files.
-  const groupLabel = {
-    burst: () => plural(hit.group_size, "снимок", "снимка", "снимков"),
-    copy: () => plural(hit.group_size, "копия", "копии", "копий"),
-    version: () => plural(hit.group_size, "версия", "версии", "версий"),
-  };
+    ? `<button class="act" data-similar="${hit.file_id}">${esc(t("card.similar"))}</button>` : "";
+  // A group is a fact about the result, not decoration: "3 versions" tells you
+  // the row you are looking at is the one the ranker picked out of three files.
+  const reason = hit.group_reason === "burst" ? "snapshot"
+    : hit.group_reason === "copy" ? "copy" : "version";
   const group = hit.group_size > 1
     ? `<button class="badge b-group" data-group="${hit.file_id}"
-         title="показать все ${hit.group_size}">${
-         hit.group_size} ${(groupLabel[hit.group_reason] || groupLabel.version)()
+         title="${esc(t("card.showAll", { n: hit.group_size }))}">${
+         hit.group_size} ${esc(plural(hit.group_size, `group.${reason}`))
        }</button>`
     : "";
   return `
@@ -182,9 +194,9 @@ function card(hit, query, index) {
         <div class="path" title="${esc(hit.path)}">${esc(hit.path)}</div>
         <div class="snippet">${highlight(hit.snippet, query)}</div>
         <div class="actions">
-          <button class="act" data-open="${hit.file_id}">открыть</button>
-          <button class="act" data-reveal="${hit.file_id}">папка</button>
-          <button class="act" data-preview="${hit.file_id}">просмотр</button>
+          <button class="act" data-open="${hit.file_id}">${esc(t("card.open"))}</button>
+          <button class="act" data-reveal="${hit.file_id}">${esc(t("card.folder"))}</button>
+          <button class="act" data-preview="${hit.file_id}">${esc(t("card.preview"))}</button>
           ${similar}
         </div>
       </div>
@@ -220,11 +232,30 @@ async function toggleGroup(button) {
       <a data-open="${row.file_id}">${esc(row.name)}</a>
       <span class="group-meta">${
         showWhere && folders[index + 1] ? `${esc(folders[index + 1])} · ` : ""}${
-        (row.size / 1024).toFixed(0)} КБ · ${
-        new Date(row.mtime * 1000).toLocaleDateString("ru-RU")}</span>
+        sizeLabel(row.size)} · ${dateLabel(row.mtime)}</span>
     </div>`).join("");
   card.insertAdjacentHTML("beforeend",
-    `<div class="group-list">${items || '<div class="group-item">не удалось загрузить</div>'}</div>`);
+    `<div class="group-list">${items || `<div class="group-item">${esc(t("group.failed"))}</div>`}</div>`);
+}
+
+/* A chip arrives from the server as a kind plus a value, because the words
+   around it are a property of the interface and not of the search engine. */
+function chipLabel(chip) {
+  let value = chip.value ?? "";
+  if (chip.kind === "weekday") {
+    const name = WEEKDAYS[Number(value)];
+    if (name) value = t(`weekday.${name}`);
+  } else if (chip.kind === "sort") {
+    value = t(`sort.${value}`);
+  } else if (chip.kind === "type") {
+    const key = `typeVal.${value}`;
+    const named = t(key);
+    if (named !== key) value = named;
+  }
+  const key = `chip.${chip.kind}`;
+  const rendered = t(key, { value });
+  // An unknown kind must still say something true rather than print a key.
+  return rendered === key ? (chip.label || value) : rendered;
 }
 
 /* The chips row is the contract of the natural-language compiler: every filter
@@ -233,8 +264,9 @@ async function toggleGroup(button) {
 function chipRow(chips) {
   if (!chips.length) return "";
   const items = chips.map((chip) => `
-    <button class="ichip" data-chip="${esc(chip.source)}" title="убрать «${esc(chip.source)}»">
-      <span>${esc(chip.label)}</span><b>×</b>
+    <button class="ichip" data-chip="${esc(chip.source)}"
+            title="${esc(t("chip.remove", { source: chip.source }))}">
+      <span>${esc(chipLabel(chip))}</span><b>×</b>
     </button>`).join("");
   return `<div class="ichips">${items}</div>`;
 }
@@ -243,7 +275,11 @@ function renderResults(data, append) {
   const parts = [];
   if (!append) parts.push(chipRow(data.chips || []));
   if (data.hints && data.hints.length) {
-    parts.push(`<div class="hints">${data.hints.map((hint) => `<span>${esc(hint)}</span>`).join("")}</div>`);
+    parts.push(`<div class="hints">${data.hints.map((hint) => {
+      const key = `hint.${hint.kind}`;
+      const text = t(key, { value: hint.value ?? "" });
+      return `<span>${esc(text === key ? (hint.text || hint.kind) : text)}</span>`;
+    }).join("")}</div>`);
   }
 
   if (state.hits.length) {
@@ -253,17 +289,17 @@ function renderResults(data, append) {
   }
 
   if (data.next_offset !== null && data.next_offset !== undefined) {
-    parts.push(`<button class="more" id="more-btn">показать ещё</button>`);
+    parts.push(`<button class="more" id="more-btn">${esc(t("results.more"))}</button>`);
   }
 
   if (!append && data.images && data.images.length) {
-    parts.push(`<div class="section-title">похожие изображения</div>
+    parts.push(`<div class="section-title">${esc(t("results.similarImages"))}</div>
       <div class="grid">${data.images.map(shot).join("")}</div>`);
   }
   if (!parts.length) {
     parts.push(`<div class="empty"><div>
-        <h2>Ничего не найдено</h2>
-        <p>Попробуйте другие слова, снимите фильтр по типу или проиндексируйте папку справа.</p>
+        <h2>${esc(t("results.nothing"))}</h2>
+        <p>${esc(t("results.nothingHint"))}</p>
       </div></div>`);
   }
 
@@ -300,15 +336,15 @@ async function openPreview(fileId) {
   try {
     const data = await api(`/api/preview?id=${fileId}`);
     const meta = [
-      `${(data.size / 1024).toFixed(0)} КБ`,
-      new Date(data.mtime * 1000).toLocaleDateString("ru-RU"),
-      data.opens ? `открывали ${data.opens} раз` : "ни разу не открывали",
-      data.exists ? "" : "файла нет на диске",
+      sizeLabel(data.size),
+      dateLabel(data.mtime),
+      data.opens ? t("preview.opened", { n: data.opens }) : t("preview.never"),
+      data.exists ? "" : t("preview.missing"),
     ].filter(Boolean).join(" · ");
     const body = data.image
       ? `<img class="preview-img" src="${data.image.thumb}" alt="">
          ${data.image.ocr ? `<pre class="preview-text">${esc(data.image.ocr)}</pre>` : ""}`
-      : `<pre class="preview-text">${esc(data.text || "текст не извлекался")}</pre>`;
+      : `<pre class="preview-text">${esc(data.text || t("preview.noText"))}</pre>`;
     $("preview-body").innerHTML = `
       <div class="preview-head">
         <div>
@@ -319,12 +355,12 @@ async function openPreview(fileId) {
       </div>
       ${body}
       <div class="preview-foot">
-        <button class="act" data-open="${data.file_id}">открыть</button>
-        <button class="act" data-reveal="${data.file_id}">показать в папке</button>
+        <button class="act" data-open="${data.file_id}">${esc(t("card.open"))}</button>
+        <button class="act" data-reveal="${data.file_id}">${esc(t("card.folder"))}</button>
       </div>`;
     $("preview").classList.add("open");
   } catch (error) {
-    toast(`Не удалось открыть просмотр: ${error.message}`);
+    toast(t("preview.failed", { error: error.message }));
   }
 }
 
@@ -342,28 +378,36 @@ async function loadStats() {
     const [stats, status, privacy, watch] = await Promise.all([
       api("/api/stats"), api("/api/status"), api("/api/privacy"), api("/api/watch"),
     ]);
+    state.stats = stats;
+    state.status = status;
     $("s-files").textContent = stats.files ?? 0;
     $("s-chunks").textContent = stats.chunks ?? 0;
     $("s-images").textContent = stats.images ?? 0;
     $("s-ocr").textContent = stats.ocr_images ?? 0;
-    $("s-size").textContent = `${((stats.db_bytes || 0) / 1048576).toFixed(1)} МБ`;
-    $("status-text").textContent = stats.files ? `${stats.files} файлов в индексе` : "индекс пуст";
+    $("s-size").textContent = `${((stats.db_bytes || 0) / 1048576).toFixed(1)} ${t("unit.mb")}`;
+    $("status-text").textContent = stats.files
+      ? plural(stats.files, "status.files")
+      : t("status.empty");
     $("status-dot").style.background = stats.files ? "var(--teal)" : "var(--accent)";
 
-    $("p-enabled").textContent = privacy.enabled ? "включён" : "выключен";
+    $("p-enabled").textContent = privacy.enabled ? t("panel.on") : t("panel.off");
     $("p-count").textContent = privacy.count ?? 0;
     $("purge-btn").disabled = !privacy.count;
     renderWatch(watch);
 
     const engines = status.ocr?.available || [];
+    const clip = status.visual_supports_text
+      ? "" : ` <span class="hint" title="${esc(t("panel.noClipHint"))}">${esc(t("panel.noClip"))}</span>`;
     $("engines").innerHTML = `
-      <div>текст <span>${esc(status.text_embedder)}</span> · картинки <span>${esc(status.visual_embedder)}</span>${status.visual_supports_text ? "" : ' <span class="hint" title="без CLIP поиск по описанию недоступен">без CLIP</span>'}</div>
-      <div>OCR <span>${engines.length ? esc(engines.join(", ")) : "не найден"}</span></div>`;
+      <div>${esc(t("panel.text"))} <span>${esc(status.text_embedder)}</span> · ${
+        esc(t("panel.images"))} <span>${esc(status.visual_embedder)}</span>${clip}</div>
+      <div>OCR <span>${engines.length ? esc(engines.join(", ")) : esc(t("panel.notFound"))}</span></div>`;
     if (!$("roots").value.trim() && status.default_roots?.length) {
       $("roots").value = status.default_roots.join("\n");
     }
+    if ($("settings").classList.contains("open")) renderAbout();
   } catch (error) {
-    $("status-text").textContent = "сервер не отвечает";
+    $("status-text").textContent = t("status.down");
     $("status-dot").style.background = "var(--red, #e24b4a)";
   }
 }
@@ -372,8 +416,12 @@ function renderWatch(watch) {
   const on = Boolean(watch && watch.running);
   $("watch-btn").classList.toggle("primary", on);
   $("watch-label").textContent = on
-    ? `слежение: ${watch.added} обновлено · ${watch.removed} удалено · ${watch.last_batch} в последней пачке`
-    : (watch && watch.last_error ? `слежение остановлено: ${watch.last_error}` : "слежение выключено");
+    ? t("panel.watchOn", {
+      added: watch.added, removed: watch.removed, batch: watch.last_batch,
+    })
+    : (watch && watch.last_error
+      ? t("panel.watchError", { error: watch.last_error })
+      : t("panel.watchingOff"));
 }
 
 async function toggleWatch() {
@@ -386,25 +434,25 @@ async function toggleWatch() {
       body: JSON.stringify({ enabled: !on, roots }),
     });
     renderWatch(watch);
-    toast(watch.running ? "Слежу за папками" : "Слежение выключено");
+    toast(watch.running ? t("toast.watchOn") : t("toast.watchOff"));
   } catch (error) {
-    toast(`Не удалось: ${error.message}`);
+    toast(t("toast.failed", { error: error.message }));
   }
 }
 
 async function purgePrivate() {
   try {
     const result = await api("/api/privacy/purge", { method: "POST", body: "{}" });
-    toast(`Убрано из индекса: ${result.removed}`);
+    toast(t("toast.purged", { n: result.removed }));
     loadStats();
   } catch (error) {
-    toast(`Не удалось: ${error.message}`);
+    toast(t("toast.failed", { error: error.message }));
   }
 }
 
 function startJob() {
   const roots = $("roots").value.split("\n").map((line) => line.trim()).filter(Boolean);
-  if (!roots.length) { toast("Укажите хотя бы одну папку"); return; }
+  if (!roots.length) { toast(t("toast.needRoots")); return; }
   api("/api/index", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -422,7 +470,12 @@ function pollJob() {
     $("bar").style.width = `${job.running ? done : 100}%`;
     $("progress-label").textContent = job.running
       ? `${job.position}/${job.total} · ${shortPath(job.path)}`
-      : (job.result ? `готово за ${job.result.seconds} с · ${job.result.indexed} файлов` : (job.error || "готов к работе"));
+      : (job.result
+        ? t("toast.jobDone", {
+          seconds: job.result.seconds,
+          files: plural(job.result.indexed, "unit.files"),
+        })
+        : (job.error || t("panel.ready")));
     if (job.running) {
       state.jobTimer = setTimeout(pollJob, 400);
     } else {
@@ -460,11 +513,63 @@ async function openSimilar(fileId) {
     const data = await api(`/api/similar?id=${fileId}`);
     $("modal-grid").innerHTML = data.images.length
       ? data.images.map(shot).join("")
-      : `<div class="empty" style="min-height:120px"><p>Похожих скриншотов пока нет.</p></div>`;
+      : `<div class="empty" style="min-height:120px"><p>${esc(t("results.nothing"))}</p></div>`;
     $("modal").classList.add("open");
   } catch (error) {
     toast(error.message);
   }
+}
+
+/* --------------------------------------------------------- drawer + settings */
+
+/* The index panel is a drawer, not a column. Two consequences worth naming:
+   it slides over the results instead of reflowing them, and the scrim behind it
+   is the close button for people who do not aim at small targets. */
+function setPanel(open) {
+  const drawer = $("panel");
+  $("panel").classList.toggle("open", open);
+  $("scrim").classList.toggle("show", open);
+  drawer.setAttribute("aria-hidden", String(!open));
+  $("panel-btn").setAttribute("aria-expanded", String(open));
+}
+
+function setSettings(open) {
+  $("settings").classList.toggle("open", open);
+  if (open) {
+    renderAbout();
+    paintLang();
+    // Focus the card, not the close button: a ring on "close" is the first
+    // thing the eye lands on, and it is not what the dialog is about.
+    $("settings").querySelector(".settings-card").focus();
+  }
+}
+
+function paintLang() {
+  document.querySelectorAll("#lang-switch button").forEach((button) => {
+    button.setAttribute("aria-checked", String(button.dataset.lang === currentLang()));
+  });
+}
+
+function renderAbout() {
+  const host = $("about");
+  if (!host) return;
+  const stats = state.stats || {};
+  const status = state.status || {};
+  const ocr = status.ocr || {};
+  const rows = [
+    ["settings.aboutFiles",
+      `${plural(stats.files || 0, "unit.files")} · ${plural(stats.chunks || 0, "unit.chunks")}`],
+    ["settings.aboutSize",
+      `${((stats.db_bytes || 0) / 1048576).toFixed(1)} ${t("unit.mb")}`],
+    ["settings.aboutLanguages", String(ocr.supported_languages ?? "—")],
+    ["settings.aboutEmbedder", status.text_embedder || "—"],
+    ["settings.aboutImages", status.visual_embedder || "—"],
+    ["settings.aboutOcr", (ocr.available || []).join(", ") || t("panel.notFound")],
+    ["settings.aboutVersion", status.version || "—"],
+  ];
+  host.innerHTML = rows
+    .map(([key, value]) => `<dt>${esc(t(key))}</dt><dd>${esc(value)}</dd>`)
+    .join("");
 }
 
 /* ----------------------------------------------------------------- events */
@@ -496,13 +601,13 @@ document.addEventListener("click", async (event) => {
     await api(`/api/${route}?id=${id}`);
     $("preview").classList.remove("open");
   } catch (error) {
-    toast(`Не удалось: ${error.message}`);
+    toast(t("toast.failed", { error: error.message }));
   }
 });
 
-document.querySelectorAll(".chip").forEach((chip) => {
+document.querySelectorAll(".menu .chip").forEach((chip) => {
   chip.addEventListener("click", () => {
-    document.querySelectorAll(".chip").forEach((item) => item.classList.remove("active"));
+    document.querySelectorAll(".menu .chip").forEach((item) => item.classList.remove("active"));
     chip.classList.add("active");
     state.kind = chip.dataset.kind;
     if (state.query) runSearch();
@@ -538,6 +643,30 @@ $("preview").addEventListener("click", (event) => {
   if (event.target.id === "preview") $("preview").classList.remove("open");
 });
 
+$("panel-btn").addEventListener("click", () => {
+  setPanel(!$("panel").classList.contains("open"));
+});
+$("panel-close").addEventListener("click", () => setPanel(false));
+$("scrim").addEventListener("click", () => setPanel(false));
+
+$("settings-btn").addEventListener("click", () => setSettings(true));
+$("settings-close").addEventListener("click", () => setSettings(false));
+$("settings").addEventListener("click", (event) => {
+  if (event.target.id === "settings") setSettings(false);
+});
+
+/* Switching language redraws the screen from the same data: nothing is
+   refetched except the strings, and the choice is remembered across launches. */
+$("lang-switch").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-lang]");
+  if (!button) return;
+  if (!setLang(button.dataset.lang)) { paintLang(); return; }
+  paintLang();
+  renderAbout();
+  loadStats();
+  if (state.query) runSearch(); else renderIdle();
+});
+
 function selectedHit() {
   return state.selected >= 0 ? state.hits[state.selected] : null;
 }
@@ -553,7 +682,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape") {
     if ($("preview").classList.contains("open")) { $("preview").classList.remove("open"); return; }
+    if ($("settings").classList.contains("open")) { setSettings(false); return; }
     if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }
+    if ($("panel").classList.contains("open")) { setPanel(false); return; }
   }
   if (inField && document.activeElement === $("q")) return;
 
@@ -565,7 +696,7 @@ document.addEventListener("keydown", (event) => {
   else if (event.key === "Enter") {
     event.preventDefault();
     api(`/api/${event.shiftKey ? "reveal" : "open"}?id=${hit.file_id}`)
-      .catch((error) => toast(`Не удалось: ${error.message}`));
+      .catch((error) => toast(t("toast.failed", { error: error.message })));
   } else if (event.key === " " || (event.key === "Spacebar")) {
     // Space is a space while the search box has focus; everywhere else it is
     // Quick Look, the same reflex as in Finder.
@@ -667,17 +798,22 @@ async function boot() {
 
   for (let attempt = 0; attempt < BOOT_MAX_POLLS; attempt += 1) {
     try {
-      const state = await api("/api/ready");
-      if (state.ready) {
+      const ready = await api("/api/ready");
+      if (ready.ready) {
         bar.style.width = "100%";
-        stage.textContent = `готово · ${Math.round(state.uptime_ms)} мс`;
+        // `warm_ms` is how long the index took to be ready; `uptime_ms` is how
+        // long the server has been up. A second window opened an hour later
+        // must not claim the app took an hour to start.
+        stage.textContent = t("boot.ready", {
+          ms: Math.round(ready.warm_ms ?? ready.uptime_ms),
+        });
         break;
       }
-      const warm = state.stage === "vectors";
+      const warm = ready.stage === "vectors";
       bar.style.width = warm ? "74%" : "26%";
-      stage.textContent = warm ? "грею векторы" : "открываю индекс";
+      stage.textContent = warm ? t("boot.warm") : t("boot.index");
     } catch (error) {
-      stage.textContent = "жду сервер";
+      stage.textContent = t("boot.wait");
     }
     await sleep(BOOT_POLL_MS);
   }
@@ -706,6 +842,8 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("#boot")) skipBoot();
 }, true);
 
+applyStaticText();
+paintLang();
 renderIdle();
 wireWindowControls();
 loadStats();

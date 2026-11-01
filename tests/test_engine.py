@@ -164,8 +164,11 @@ class EngineTests(unittest.TestCase):
         store = self.store()
         try:
             page = search_page(store, self.embedder, "код за прошлую неделю", limit=5)
-            labels = [chip["label"] for chip in page.chips]
-            self.assertTrue(any("неделю" in label for label in labels))
+            # The chip carries a kind and a value; the label is a rendering of
+            # those two and belongs to whoever draws it.
+            kinds = [chip["kind"] for chip in page.chips]
+            self.assertIn("week", kinds)
+            self.assertTrue(all(chip["label"] for chip in page.chips))
         finally:
             store.close()
 
