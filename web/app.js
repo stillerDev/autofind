@@ -284,7 +284,12 @@ $("q").addEventListener("keydown", (event) => {
 });
 $("folder").addEventListener("change", () => { state.folder = $("folder").value.trim(); if (state.query) runSearch(); });
 $("since").addEventListener("change", () => { state.since = $("since").value; if (state.query) runSearch(); });
-$("go").addEventListener("click", () => { clearTimeout(state.timer); runSearch(); });
+$("clear").addEventListener("click", () => {
+  $("q").value = "";
+  clearTimeout(state.timer);
+  runSearch();
+  $("q").focus();
+});
 $("index-btn").addEventListener("click", startJob);
 $("watch-btn").addEventListener("click", toggleWatch);
 $("purge-btn").addEventListener("click", purgePrivate);

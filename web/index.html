@@ -3,43 +3,45 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SemFind — локальный поиск по файлам и скриншотам</title>
+  <title>AutoFind — локальный поиск по файлам и скриншотам</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <div class="app">
-  <header>
-    <div class="brand-row">
-      <div class="brand">
-        <span class="mark"></span>
-        <span class="name">SemFind</span>
-        <span class="tag">локальный поиск</span>
+  <header class="hero">
+    <div class="hero-inner">
+      <div class="hero-top">
+        <a class="wordmark" href="/" title="AutoFind">
+          <span class="mark"></span>
+          <span>AutoFind</span>
+        </a>
+        <div class="find">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="M20 20l-3.5-3.5"></path>
+          </svg>
+          <input id="q" autocomplete="off" spellcheck="false" placeholder="find"
+                 aria-label="Поиск по файлам и скриншотам">
+          <button class="clear" id="clear" type="button" aria-label="Очистить">×</button>
+        </div>
       </div>
-      <div class="spacer"></div>
-      <span class="pill" id="status-pill" title="Состояние индекса">
-        <span class="dot" id="status-dot"></span>
-        <span id="status-text">проверяю индекс…</span>
-      </span>
-    </div>
-    <div class="search-row">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="11" cy="11" r="7"></circle>
-        <path d="M20 20l-3.5-3.5"></path>
-      </svg>
-      <input id="q" autocomplete="off" spellcheck="false"
-             placeholder="Фраза со скриншота, таблица бюджета, функция слияния…">
-      <span class="kbd">/</span>
-      <button class="go" id="go">Найти</button>
+
+      <nav class="menu" aria-label="Тип файлов">
+        <button class="chip active" data-kind="">Всё</button>
+        <button class="chip" data-kind="docs">Документы</button>
+        <button class="chip" data-kind="code">Код</button>
+        <button class="chip" data-kind="pdf">PDF</button>
+        <button class="chip" data-kind="docx">DOCX</button>
+        <button class="chip" data-kind="image">Скриншоты</button>
+      </nav>
     </div>
   </header>
 
   <div class="tools">
-    <button class="chip active" data-kind="">Всё</button>
-    <button class="chip" data-kind="docs">Документы</button>
-    <button class="chip" data-kind="code">Код</button>
-    <button class="chip" data-kind="pdf">PDF</button>
-    <button class="chip" data-kind="docx">DOCX</button>
-    <button class="chip" data-kind="image">Скриншоты</button>
+    <span class="pill" id="status-pill" title="Состояние индекса">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">проверяю индекс…</span>
+    </span>
     <label class="field">
       <span>папка</span>
       <input id="folder" placeholder="любая" autocomplete="off">

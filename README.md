@@ -1,9 +1,19 @@
-# SemFind
+# SemFind / AutoFind
 
 Local search over your files and screenshots. One SQLite file, no account, no
 network calls at runtime.
 
-![SemFind UI](docs/ui-watch.png)
+![AutoFind UI](docs/ui-hero.png)
+
+The window is branded **AutoFind** — the folder the project lives in. The Python
+package, the CLI and the index directory are still `semfind`; renaming those
+would break every path in the docs for no functional gain.
+
+The header follows the sketched layout: the forest photo (`web/fon.jpg`) as the
+background, the wordmark top-left, the search field with a clear button
+top-right, and the type filter as a row of pills directly under the title. A
+vertical gradient over the image is what keeps white text legible on the bright
+fog — the photo itself is untouched.
 
 ## Status
 
