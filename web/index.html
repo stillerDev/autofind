@@ -34,6 +34,17 @@
           </svg>
           <input id="q" autocomplete="off" spellcheck="false"
                  data-i18n-placeholder="search.placeholder" data-i18n-aria="search.aria">
+          <!-- Saving a query is the one thing a search box cannot do by itself,
+               and it is the reason a saved search is worth having: the query is
+               already typed, all that is missing is somewhere to put it. -->
+          <button class="save-btn" id="save-btn" type="button"
+                  data-i18n-title="saved.save" data-i18n-aria="saved.save">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+                 stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                 stroke-linejoin="round" aria-hidden="true">
+              <path d="M7 4.5h10a1.5 1.5 0 0 1 1.5 1.5v14l-6.5-4-6.5 4V6A1.5 1.5 0 0 1 7 4.5z"></path>
+            </svg>
+          </button>
           <button class="clear" id="clear" type="button" data-i18n-aria="search.clear">×</button>
         </div>
 
@@ -165,6 +176,7 @@
       <div class="stat"><span data-i18n="panel.screenshots">screenshots</span><b id="s-images">—</b></div>
       <div class="stat"><span data-i18n="panel.withOcr">with OCR</span><b id="s-ocr">—</b></div>
       <div class="stat"><span data-i18n="panel.size">size</span><b id="s-size">—</b></div>
+      <div class="stat"><span data-i18n="panel.definitions">definitions</span><b id="s-symbols">—</b></div>
     </div>
   </div>
 
@@ -247,6 +259,17 @@
           <button type="button" data-lang="ru" role="radio">Русский</button>
         </div>
         <p class="settings-note" data-i18n="settings.languageNote"></p>
+      </section>
+      <section class="settings-section">
+        <h4 data-i18n="alias.title">Dictionary</h4>
+        <p class="settings-note" data-i18n="alias.note"></p>
+        <div class="alias-list" id="alias-list"></div>
+        <div class="alias-add">
+          <input id="alias-word" data-i18n-placeholder="alias.word" autocomplete="off" spellcheck="false">
+          <span class="alias-arrow">→</span>
+          <input id="alias-means" data-i18n-placeholder="alias.means" autocomplete="off" spellcheck="false">
+          <button class="btn mini" id="alias-add" type="button" data-i18n="alias.add">Add</button>
+        </div>
       </section>
       <section class="settings-section">
         <h4 data-i18n="settings.about">About</h4>

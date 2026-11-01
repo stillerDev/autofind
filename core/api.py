@@ -32,6 +32,7 @@ from .embed import get_embedder, get_visual_embedder
 from .indexer import IndexStats, run_index
 from .mcp import McpServer
 from .ocr import engine_report
+from .personal import expand_aliases
 from .privacy import describe as describe_privacy
 from .privacy import indexed_sensitive, purge_indexed
 from .query import Range, understand
@@ -252,6 +253,16 @@ class Handler(BaseHTTPRequestHandler):
             self._json(WATCHER.state.as_dict() if WATCHER else {"running": False})
         elif route == "/api/privacy":
             self._privacy()
+        elif route == "/api/personal":
+            self._personal()
+        elif route == "/api/pins":
+            self._json({"pins": self._pins()})
+        elif route == "/api/saved":
+            self._json({"saved": self._saved()})
+        elif route == "/api/aliases":
+            self._json({"aliases": self._aliases()})
+        elif route == "/api/symbols":
+            self._symbols(query)
         elif route in ("/api/open", "/api/reveal"):
             self._open_file(query, reveal=route.endswith("reveal"))
         else:
@@ -288,9 +299,20 @@ class Handler(BaseHTTPRequestHandler):
         store = self._store()
         started = time.perf_counter()
         try:
+            # The dictionary is expanded before parsing, so `cv` reaches the
+            # parser as `резюме` and every filter the UI added stays intact.
+            expanded, applied = expand_aliases(store, text)
+            if applied:
+                parsed = understand(expanded)
+                if kinds:
+                    parsed.kinds |= set(kinds)
+                if folder:
+                    parsed.in_paths.append(folder)
+                if since_ts is not None:
+                    parsed.modified = Range(since_ts, None)
             page = search_page(
-                store, embedder, text, limit=limit, offset=offset, sort=sort,
-                parsed=parsed, usage=store.usage_map(),
+                store, embedder, expanded, limit=limit, offset=offset, sort=sort,
+                parsed=parsed, usage=store.usage_map(), applied=applied,
             )
             # Visual text search only makes sense when the query still has free
             # text; a pure filter query would send nonsense to the image model.
@@ -336,6 +358,8 @@ class Handler(BaseHTTPRequestHandler):
                         "group_size": hit.group_size,
                         "group_reason": hit.group_reason,
                         "group_members": list(hit.group_members),
+                        "pinned": hit.pinned,
+                        "symbol": hit.symbol,
                         "thumb": f"/api/thumb?id={hit.file_id}" if hit.is_image else None,
                     }
                     for hit in page.hits
@@ -377,6 +401,175 @@ class Handler(BaseHTTPRequestHandler):
                 "version": "0.1.0",
             }
         )
+
+    # ------------------------------------------------------------- personal
+
+    def _personal(self) -> None:
+        """Everything the empty screen needs, in one round trip.
+
+        The idle screen shows pinned files, saved searches and the dictionary at
+        once. Three requests would open the store three times and pay the
+        embedder's lazy load three times, which is the difference between a
+        screen that appears and one that fades in.
+        """
+        self._json(
+            {
+                "pins": self._pins(),
+                "saved": self._saved(),
+                "aliases": self._aliases(),
+                "symbols": self._symbol_count(),
+            }
+        )
+
+    def _pins(self) -> list[dict]:
+        store = self._store()
+        try:
+            rows = store.pinned_rows()
+        finally:
+            store.close()
+        return [
+            {
+                "file_id": int(row["id"]),
+                "path": row["path"],
+                "name": row["name"],
+                "kind": row["kind"],
+                "size": int(row["size"] or 0),
+                "mtime": float(row["mtime"] or 0.0),
+                "added_at": float(row["added_at"] or 0.0),
+                "is_image": row["kind"] == "image",
+                "thumb": f"/api/thumb?id={row['id']}" if row["kind"] == "image" else None,
+            }
+            for row in rows
+        ]
+
+    def _saved(self) -> list[dict]:
+        store = self._store()
+        try:
+            rows = store.saved_searches()
+        finally:
+            store.close()
+        return [
+            {
+                "id": int(row["id"]),
+                "query": row["query"],
+                "label": row["label"] or row["query"],
+                "created": float(row["created"] or 0.0),
+                "used": int(row["used"] or 0),
+                "last_used": float(row["last_used"] or 0.0),
+            }
+            for row in rows
+        ]
+
+    def _aliases(self) -> list[dict]:
+        store = self._store()
+        try:
+            table = store.aliases()
+        finally:
+            store.close()
+        return [{"alias": alias, "expand": expand} for alias, expand in sorted(table.items())]
+
+    def _symbol_count(self) -> int:
+        store = self._store()
+        try:
+            return store.symbol_count()
+        finally:
+            store.close()
+
+    def _symbols(self, query: dict) -> None:
+        needle = (query.get("q") or [""])[0].strip()
+        limit = min(int((query.get("limit") or ["40"])[0]), 200)
+        store = self._store()
+        try:
+            rows = store.find_symbols(needle, limit) if needle else []
+        finally:
+            store.close()
+        self._json(
+            {
+                "query": needle,
+                "symbols": [
+                    {
+                        "name": row["name"],
+                        "kind": row["kind"],
+                        "line": int(row["line"]),
+                        "text": row["text"],
+                        "file_id": int(row["file_id"]),
+                        "path": row["path"],
+                    }
+                    for row in rows
+                ],
+            }
+        )
+
+    def _write(self, action):
+        """Run one write against the index and commit it.
+
+        Pins, saved searches and dictionary entries are the user's own data, so
+        they are committed immediately: a crash two seconds after the star was
+        clicked must not lose the star.
+        """
+        store = self._store(readonly=False)
+        try:
+            result = action(store)
+            store.commit()
+            return result
+        finally:
+            store.close()
+
+    def _pin(self, payload: dict) -> None:
+        from .personal import pin
+
+        file_id = int(payload.get("id") or 0)
+        if not file_id:
+            self._error("id required")
+            return
+        # No `pinned` key means toggle, which is what the star does.
+        wanted = payload.get("pinned")
+        if wanted is None:
+            store = self._store()
+            try:
+                wanted = file_id not in store.pinned_ids()
+            finally:
+                store.close()
+        state = self._write(lambda store: pin(store, file_id, bool(wanted)))
+        self._json({"id": file_id, "pinned": state})
+
+    def _save_search(self, payload: dict) -> None:
+        from .personal import save
+
+        query = str(payload.get("query") or "").strip()
+        if not query:
+            self._error("query required")
+            return
+        label = str(payload.get("label") or "").strip()
+        self._json(self._write(lambda store: save(store, query, label)))
+
+    def _drop_search(self, payload: dict) -> None:
+        from .personal import drop
+
+        saved_id = int(payload.get("id") or 0)
+        if not saved_id:
+            self._error("id required")
+            return
+        self._json({"dropped": self._write(lambda store: drop(store, saved_id))})
+
+    def _set_alias(self, payload: dict) -> None:
+        from .personal import teach
+
+        alias = str(payload.get("alias") or "")
+        expand = str(payload.get("expand") or "")
+        try:
+            self._json(self._write(lambda store: teach(store, alias, expand)))
+        except ValueError as exc:
+            self._error(str(exc))
+
+    def _drop_alias(self, payload: dict) -> None:
+        from .personal import forget
+
+        alias = str(payload.get("alias") or "")
+        if not alias:
+            self._error("alias required")
+            return
+        self._json({"dropped": self._write(lambda store: forget(store, alias))})
 
     def _thumb(self, query: dict) -> None:
         file_id = int((query.get("id") or ["0"])[0])
@@ -583,6 +776,16 @@ class Handler(BaseHTTPRequestHandler):
             self._watch(payload)
         elif parsed.path == "/api/privacy/purge":
             self._purge()
+        elif parsed.path == "/api/pin":
+            self._pin(payload)
+        elif parsed.path == "/api/saved":
+            self._save_search(payload)
+        elif parsed.path == "/api/saved/drop":
+            self._drop_search(payload)
+        elif parsed.path == "/api/alias":
+            self._set_alias(payload)
+        elif parsed.path == "/api/alias/drop":
+            self._drop_alias(payload)
         elif parsed.path == "/api/focus":
             # A second launch asks the running app to come forward instead of
             # starting a rival instance with its own port and its own index.

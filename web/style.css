@@ -368,6 +368,28 @@ body.in-app .win-controls { display: flex; align-items: center; }
 
 .clear:hover { color: #fff; background: rgba(255, 255, 255, 0.16); }
 
+/* The bookmark lives inside the search field and only exists once there is a
+   query: an empty query has nothing to save, and a button that does nothing is
+   worse than a button that is not there. */
+.save-btn {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: none;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: rgba(255, 255, 255, 0.66);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.save-btn.show { display: grid; }
+.save-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
+.save-btn:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.55); outline-offset: 1px; }
+
 .menu {
   display: flex;
   flex-wrap: wrap;
@@ -845,6 +867,42 @@ main {
 
 .badge.b-bm25 { color: #8fb8e8; border-color: #2b3a4d; }
 .badge.b-vector { color: #9fd6a8; border-color: #2a3d2e; }
+/* A `sym:` hit says which definition it matched. It is the answer, so it is
+   coloured like one rather than like a channel name. The class is `b-def`, not
+   `b-symbol`: the channel badge already owns `b-symbol` (the channel is called
+   "symbol"), and two different things under one class name is how a definition
+   ends up rendered as the word "symbol". */
+.badge.b-def {
+  color: #c8b6e2;
+  border-color: #3d3350;
+  background: rgba(200, 182, 226, 0.08);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+
+/* A star that is always visible but only coloured when it means something:
+   a row of outlined stars would make every result look pinned. */
+.pin-star {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: rgba(255, 255, 255, 0.22);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+
+.pin-star:hover { color: #d8c9a8; background: rgba(216, 201, 168, 0.12); }
+.pin-star.on { color: #d8c9a8; }
+.pin-star:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.55); outline-offset: 1px; }
 
 /* A group badge is a control, not a label: it expands the row. */
 .badge.b-group {
@@ -1282,6 +1340,152 @@ body.in-app .side-foot .only-app { display: inline-flex; }
 
 .recent { width: 100%; }
 
+/* Pins and saved searches on the empty screen. They are the reason the screen
+   is not empty: a search app with nothing in it looks like a search app you
+   have not started using yet. */
+.personal {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.personal-block { text-align: left; }
+
+.personal-block h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(14, 16, 19, 0.6);
+  backdrop-filter: blur(16px) saturate(120%);
+}
+
+.pin-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 9px;
+  transition: background 0.14s ease;
+}
+
+.pin-row:hover { background: rgba(255, 255, 255, 0.05); }
+.pin-row .pin-star { margin-left: 0; }
+
+.pin-thumb {
+  flex: none;
+  width: 26px;
+  height: 20px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.pin-kind {
+  flex: none;
+  width: 26px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  font-size: 8.5px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pin-name {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 500;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pin-name:hover { color: #fff; text-decoration: underline; }
+
+.pin-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--faint);
+  direction: rtl;
+  text-align: left;
+}
+
+.saved-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.saved-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(14, 16, 19, 0.6);
+  overflow: hidden;
+}
+
+.saved-run {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 6px 4px 6px 12px;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.saved-run:hover { color: #fff; }
+
+.saved-x {
+  padding: 4px 9px 5px 6px;
+  border: none;
+  background: none;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.saved-x:hover { color: #e08a86; }
+
+.empty-tip {
+  margin-top: 8px !important;
+  font-size: 11.5px !important;
+  color: var(--faint) !important;
+}
+
 .recent h3 {
   margin: 0 0 8px;
   text-align: left;
@@ -1429,6 +1633,66 @@ body.in-app .side-foot .only-app { display: inline-flex; }
 
 .about-grid dt { color: var(--faint); }
 .about-grid dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+
+/* The dictionary: rows of `word → meaning`, plus a two-field form. The arrow is
+   the same glyph the chip row uses, so the settings row and the search chip
+   read as the same fact stated twice. */
+.alias-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 10px;
+}
+
+.alias-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.alias-row b { font-weight: 600; color: var(--text); }
+.alias-means { color: var(--muted); overflow-wrap: anywhere; }
+.alias-arrow { color: var(--faint); font-size: 11px; }
+
+.alias-x {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.alias-x:hover { color: #e08a86; background: rgba(224, 138, 134, 0.12); }
+
+.alias-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.alias-add input {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(9, 11, 13, 0.6);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.alias-add input:focus { border-color: #3f4650; }
+.alias-add .btn { flex: none; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #262a2f; border-radius: 99px; border: 3px solid var(--bg); }

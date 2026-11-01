@@ -29,6 +29,7 @@ from typing import Sequence
 from . import nameindex
 from .group import group_hits
 from .nameindex import subsequence_score
+from .personal import expand_aliases
 from .query import ParsedQuery, understand
 from .store import Store, basename
 
@@ -51,6 +52,10 @@ RECENCY_WEIGHT = 0.10
 RECENCY_TAU_DAYS = 7.0
 FRECENCY_WEIGHT = 0.08
 FRECENCY_TAU_DAYS = 14.0
+# A pinned file is a decision the user made once and should not have to make
+# again. Bigger than recency, smaller than a name match: a pin says "I care about
+# this", not "this is what I typed".
+PIN_BONUS = 0.12
 DEPTH_PENALTY = 0.10
 DEPTH_SATURATION = 20
 
@@ -80,6 +85,10 @@ class Hit:
     group_size: int = 1
     group_reason: str = ""
     group_members: tuple[int, ...] = ()
+    # The personal layer: a pinned file wears a star in the UI, and a `sym:`
+    # hit carries the definition it matched so the row can say which one.
+    pinned: bool = False
+    symbol: str = ""
 
     @property
     def is_image(self) -> bool:
@@ -171,6 +180,7 @@ def finalize_score(
     now: float,
     usage: tuple[int, float] = (0, 0.0),
     text: str = "",
+    pinned: bool = False,
 ) -> float:
     """RRF base in [0, 1] plus the bonuses that make a launcher feel right."""
     score = base
@@ -184,6 +194,9 @@ def finalize_score(
 
     age_days = max(now - mtime, 0.0) / 86400.0
     score += RECENCY_WEIGHT * math.exp(-age_days / RECENCY_TAU_DAYS)
+
+    if pinned:
+        score += PIN_BONUS
 
     opens, last_open = usage
     if opens > 0:
@@ -261,6 +274,12 @@ def _listing(
             values = meta.get(hit.file_id)
             if values is not None:
                 hit.width, hit.height, hit.phash = values
+    # A pin has to survive a filter-only listing too, or a starred file would
+    # lose its star the moment the user typed `type:pdf`.
+    pins = store.pinned_ids()
+    if pins:
+        for hit in hits:
+            hit.pinned = hit.file_id in pins
     hits.sort(key=_order_key(sort))
     return hits, _facets(kinds)
 
@@ -323,14 +342,37 @@ def _rank(
     order = _resolve_sort(sort, parsed, listing=False)
 
     # No free text at all: the query is a pure filter, so list files directly.
-    if parsed.mode == "exhaustive" or (not parsed.text and not parsed.regexes
-                                       and not parsed.content_text):
+    # `sym:` is a filter too, but a listing would answer it with every file in
+    # the index, so it is excluded here and served by its own channel below.
+    if parsed.mode == "exhaustive" or (
+        not parsed.text and not parsed.regexes
+        and not parsed.content_text and not parsed.symbols
+    ):
         return _listing(store, parsed, _resolve_sort(sort, parsed, listing=True), since)
 
     pool = candidates * 4 if parsed.has_filters else candidates
     bm25_text = " ".join(part for part in (parsed.text, parsed.content_text) if part)
     fuzzy_text = parsed.text or parsed.name_text
 
+    # Definitions, in rank order: exact name, then prefix, then substring. The
+    # best symbol per file is kept for the snippet, because "this file defines
+    # `parse_query` at line 214" is the answer, not the file name.
+    symbol_rows = []
+    for needle in parsed.symbols:
+        symbol_rows.extend(store.find_symbols(needle, pool))
+    symbol_files: list[int] = []
+    symbol_best: dict[int, dict] = {}
+    for row in symbol_rows:
+        file_id = int(row["file_id"])
+        if file_id in symbol_best:
+            continue
+        symbol_best[file_id] = {
+            "name": row["name"], "kind": row["kind"],
+            "line": int(row["line"]), "text": row["text"],
+        }
+        symbol_files.append(file_id)
+
+    pinned = store.pinned_ids()
     match = build_match_query(bm25_text) if "bm25" in channels else None
     lexical = store.bm25(match, pool) if match else []
     semantic = (
@@ -351,6 +393,7 @@ def _rank(
         and not lexical
         and not fuzzy
         and not regex_rows
+        and not symbol_files
         and not getattr(embedder, "semantic", False)
     ):
         return [], {}
@@ -368,7 +411,10 @@ def _rank(
     file_rows = {int(row["file_id"]): row for row in chunk_rows.values()}
     missing = {
         file_id
-        for file_id in (*lexical_files, *semantic_files, *fuzzy_files_ids(fuzzy), *regex_files)
+        for file_id in (
+            *lexical_files, *semantic_files, *fuzzy_files_ids(fuzzy),
+            *regex_files, *symbol_files,
+        )
         if file_id not in file_rows
     }
     for row in store.file_rows_by_ids(missing):
@@ -390,6 +436,7 @@ def _rank(
         "vector": semantic_files,
         "fuzzy": fuzzy_files_ids(fuzzy),
         "regex": regex_files,
+        "symbol": symbol_files,
     }
     fused: dict[int, float] = {}
     matched_channels: dict[int, list[str]] = {}
@@ -424,14 +471,22 @@ def _rank(
                 score=round(finalize_score(
                     base, name, row["path"], float(row["mtime"]), now,
                     usage.get(file_id, (0, 0.0)), parsed.text or parsed.name_text,
+                    pinned=file_id in pinned,
                 ), 6),
-                snippet=make_snippet(chunk_rows[file_id]["text"], bm25_text or parsed.text)
-                if file_id in chunk_rows else "",
+                snippet=symbol_snippet(symbol_best.get(file_id))
+                if file_id in symbol_best
+                else (make_snippet(chunk_rows[file_id]["text"], bm25_text or parsed.text)
+                      if file_id in chunk_rows else ""),
                 name=name,
                 ord=int(chunk_rows[file_id]["ord"]) if file_id in chunk_rows else 0,
                 mtime=float(row["mtime"]),
                 size=int(row["size"]),
                 channels=tuple(matched_channels.get(file_id, [])),
+                pinned=file_id in pinned,
+                symbol=(
+                    f"{symbol_best[file_id]['kind']} {symbol_best[file_id]['name']}"
+                    if file_id in symbol_best else ""
+                ),
             )
         )
 
@@ -445,6 +500,13 @@ def _rank(
 
     hits.sort(key=_order_key(order))
     return hits, {}
+
+
+def symbol_snippet(symbol: dict | None) -> str:
+    """One line: what was defined, where, and the definition itself."""
+    if not symbol:
+        return ""
+    return f"{symbol['kind']} {symbol['name']} · line {symbol['line']} · {symbol['text']}"
 
 
 def fuzzy_files_ids(results: Sequence[tuple[int, float]]) -> list[int]:
@@ -486,8 +548,21 @@ def search_page(
     parsed: ParsedQuery | None = None,
     usage: dict[int, tuple[int, float]] | None = None,
     group: bool = True,
+    applied: list | None = None,
 ) -> SearchPage:
-    """One query, with the counts and chips the UI needs to explain itself."""
+    """One query, with the counts and chips the UI needs to explain itself.
+
+    `applied` is the list of dictionary entries the caller already expanded, for
+    the clients that build their own `ParsedQuery` (the UI merges filter chips
+    into it, the CLI pre-parses). Without it a caller that pre-parses would
+    silently lose the expansion, and an alias that works in one client and not
+    another is worse than no aliases at all.
+    """
+    if parsed is None:
+        # The dictionary is expanded here rather than in the API because the CLI
+        # and the MCP server search through this function too.
+        query, applied = expand_aliases(store, query)
+    applied = applied or []
     parsed = parsed or understand(query)
     listing = parsed.mode == "exhaustive" or (
         not parsed.text and not parsed.regexes and not parsed.content_text
@@ -515,7 +590,7 @@ def search_page(
         hits=hits[offset:offset + limit],
         total=total,
         facets=facets,
-        chips=[chip.as_dict() for chip in parsed.chips],
+        chips=[item.as_dict() for item in applied] + [chip.as_dict() for chip in parsed.chips],
         hints=[hint.as_dict() for hint in parsed.hints],
         query=query,
         mode=parsed.mode,

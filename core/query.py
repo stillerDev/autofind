@@ -148,6 +148,7 @@ CHIP_TEMPLATES: dict[str, str] = {
     "ext": "extension: .{value}",
     "lang": "language: {value}",
     "sort": "sort: {value}",
+    "symbol": "symbol: {value}",
     "place": "in folder: {value}",
     "filter": "regex {value}",
     "exclude": "without “{value}”",
@@ -218,6 +219,8 @@ class ParsedQuery:
     names: list[str] = field(default_factory=list)
     contents: list[str] = field(default_factory=list)
     regexes: list[str] = field(default_factory=list)
+    # `sym:name` — a definition, not a mention. Served by the symbols table.
+    symbols: list[str] = field(default_factory=list)
     modified: Range | None = None
     size: Range | None = None
     mode: str = "ranked"
@@ -243,7 +246,7 @@ class ParsedQuery:
     def has_filters(self) -> bool:
         return bool(
             self.kinds or self.exts or self.in_paths or self.not_paths or self.names
-            or self.contents or self.regexes or self.modified or self.size
+            or self.contents or self.regexes or self.symbols or self.modified or self.size
         )
 
     @property
@@ -479,6 +482,14 @@ def _apply_key(query: ParsedQuery, token: Token, now: float | None) -> None:
         # typing `type:md` means anyway.
         query.exts.add("." + word)
         query.chips.append(Chip("ext", word, literal, literal))
+        return
+
+    if key in ("sym", "symbol", "def", "fn"):
+        # A definition lookup, not a text search: `sym:parse_query` finds the
+        # file that *defines* it, which is the question you actually have when
+        # you remember a name and not where it lives.
+        query.symbols.append(value)
+        query.chips.append(Chip("symbol", value, literal, literal))
         return
 
     if key == "in":
@@ -733,6 +744,7 @@ def cheat_sheet() -> list[tuple[str, str]]:
         ("lang:python", "семейство языка"),
         ("name:config", "только имя файла"),
         ("content:timeout", "только содержимое"),
+        ("sym:parse_query", "определение в коде"),
         ('re:"TODO|FIXME"', "регулярное выражение"),
         ("-node_modules", "исключить"),
         ('"exact phrase"', "фраза целиком"),

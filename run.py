@@ -31,6 +31,8 @@ COMMANDS = {
     "index", "search", "watch", "eval", "doctor", "privacy", "mcp",
     "cheat", "stats", "connect", "serve", "app", "autostart",
     "shortcut", "install", "ocr",
+    # The personal layer and the migration: `run.py pin`, `run.py import kensaku`.
+    "pin", "pins", "saved", "alias", "sym", "import",
 }
 
 

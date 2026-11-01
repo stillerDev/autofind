@@ -20,6 +20,7 @@ from .images import load_image, thumbnail_bytes, visual_features
 from .ocr import OcrUnavailable, ocr_image, reset_fallbacks
 from .scanner import iter_entries, sha256_file
 from .store import Store
+from .symbols import extract_for
 
 Progress = Callable[[int, int, str, str], None]
 
@@ -32,6 +33,7 @@ class IndexStats:
     failed: int = 0
     chunks: int = 0
     images: int = 0
+    symbols: int = 0
     duplicates: int = 0
     ocr_empty: int = 0
     rehashed: int = 0
@@ -53,6 +55,7 @@ class IndexStats:
             "failed": self.failed,
             "chunks": self.chunks,
             "images": self.images,
+            "symbols": self.symbols,
             "duplicates": self.duplicates,
             "ocr_empty": self.ocr_empty,
             "rehashed": self.rehashed,
@@ -124,6 +127,11 @@ def run_index(
     # exactly the screenshots that were there first. Cheap: decode only, no OCR.
     stats.rehashed = backfill_phash(store)
     store.commit()
+    # Same problem, same shape: a code file indexed before the symbols table
+    # existed is never re-indexed, so `sym:` would find nothing in exactly the
+    # files that were there first. One pass, guarded by a meta flag.
+    stats.symbols += backfill_symbols(store)
+    store.commit()
     # Build the memory-mapped vector pack now, not on the first query. The
     # indexer already has everything on disk; the alternative is a 2.6 s stall
     # the first time someone searches after an index run.
@@ -154,6 +162,30 @@ def backfill_phash(store: Store, limit: int = 100_000) -> int:
     return done
 
 
+def backfill_symbols(store: Store, limit: int = 100_000) -> int:
+    """Extract definitions from code files indexed before `symbols` existed.
+
+    Reads the files again rather than reusing chunks: a definition split across
+    a chunk boundary is still a definition, and the whole pass is one regex per
+    line over a corpus that is mostly text. Runs once — the flag in `meta` is
+    what stops an empty result from being recomputed on every index run.
+    """
+    if store.get_meta("symbols_backfilled"):
+        return 0
+    done = 0
+    for row in store.files_without_symbols(limit):
+        path = str(row["path"])
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        found = extract_for(path, text)
+        if found:
+            done += store.replace_symbols(int(row["id"]), [s.as_tuple() for s in found])
+    store.set_meta("symbols_backfilled", "1")
+    return done
+
+
 def _index_one(entry, config: IndexConfig, store: Store, embedder, visual, stats: IndexStats) -> str:
     if entry.kind == "image":
         return _index_image(entry, config, store, embedder, visual, stats)
@@ -174,6 +206,10 @@ def _index_one(entry, config: IndexConfig, store: Store, embedder, visual, stats
     vectors = embedder.encode_passages(chunks)
     file_id = store.upsert_file(entry.path, entry.size, entry.mtime, digest, entry.kind)
     stats.chunks += store.replace_chunks(file_id, chunks, vectors)
+    if entry.kind == "code":
+        # Definitions come from the text that was just extracted, so this costs
+        # one regex pass over a file that has already been read and chunked.
+        stats.symbols += store.replace_symbols(file_id, [s.as_tuple() for s in extract_for(entry.path, text)])
     stats.indexed += 1
     return "index"
 

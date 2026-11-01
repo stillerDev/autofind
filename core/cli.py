@@ -15,6 +15,7 @@ from .embed import get_embedder, get_visual_embedder
 from .evaluate import compare_channels, evaluate, format_report, load_labels
 from .indexer import run_index
 from .ocr import engine_report
+from .personal import expand_aliases
 from .privacy import indexed_sensitive, purge_indexed
 from .query import understand
 from .search import search_page
@@ -119,6 +120,39 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("cheat", help="print the query grammar")
     sub.add_parser("stats", help="show index size and settings")
 
+    pin_cmd = sub.add_parser("pin", help="pin a file so it sits on the empty screen")
+    pin_cmd.add_argument("target", help="file id, or a path inside the index")
+    pin_cmd.add_argument("--off", action="store_true", help="unpin instead of pin")
+    pin_cmd.add_argument("--json", action="store_true")
+
+    pins_cmd = sub.add_parser("pins", help="list pinned files")
+    pins_cmd.add_argument("--json", action="store_true")
+
+    saved_cmd = sub.add_parser("saved", help="list, add or drop saved searches")
+    saved_cmd.add_argument("query", nargs="*", help="query to save; omit to list")
+    saved_cmd.add_argument("--label", default="", help="name to show instead of the query")
+    saved_cmd.add_argument("--drop", type=int, default=0, metavar="ID", help="forget this saved search")
+    saved_cmd.add_argument("--json", action="store_true")
+
+    alias_cmd = sub.add_parser("alias", help="list or edit the personal dictionary")
+    alias_cmd.add_argument("alias", nargs="?", default=None)
+    alias_cmd.add_argument("expand", nargs="?", default=None)
+    alias_cmd.add_argument("--drop", default=None, metavar="ALIAS", help="forget this alias")
+    alias_cmd.add_argument("--json", action="store_true")
+
+    sym_cmd = sub.add_parser("sym", help="find definitions in code (functions, classes, types)")
+    sym_cmd.add_argument("name", help="symbol name, or a prefix of it")
+    sym_cmd.add_argument("-n", "--limit", type=int, default=20)
+    sym_cmd.add_argument("--json", action="store_true")
+
+    import_cmd = sub.add_parser(
+        "import", help="bring pins, saved searches and the dictionary over from another app"
+    )
+    import_cmd.add_argument("source", nargs="?", default="kensaku", choices=["kensaku"])
+    import_cmd.add_argument("path", nargs="?", default=None, help="a specific config file or folder")
+    import_cmd.add_argument("--write", action="store_true", help="actually copy them in")
+    import_cmd.add_argument("--json", action="store_true")
+
     connect_cmd = sub.add_parser("connect", help="register the MCP server with Claude Desktop / Cursor")
     connect_cmd.add_argument(
         "target", nargs="?", default="all", choices=["all", "claude-desktop", "cursor", "vscode", "print"],
@@ -172,6 +206,18 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_shortcut(args)
     if args.command == "install":
         return _cmd_install(args)
+    if args.command == "pin":
+        return _cmd_pin(args, config, db_path)
+    if args.command == "pins":
+        return _cmd_pins(args, config, db_path)
+    if args.command == "saved":
+        return _cmd_saved(args, config, db_path)
+    if args.command == "alias":
+        return _cmd_alias(args, config, db_path)
+    if args.command == "sym":
+        return _cmd_sym(args, config, db_path)
+    if args.command == "import":
+        return _cmd_import(args, config, db_path)
     return _cmd_stats(config, db_path)
 
 
@@ -340,9 +386,12 @@ def _cmd_search(args, config: IndexConfig, db_path: Path) -> int:
     try:
         query = " ".join(args.query)
         started = time.perf_counter()
+        # Expand the dictionary before parsing, so `cv` behaves the same here as
+        # it does in the window.
+        query, applied = expand_aliases(store, query)
         page = search_page(
             store, embedder, query, limit=args.limit, offset=args.offset, sort=args.sort,
-            parsed=understand(query), usage=store.usage_map(),
+            parsed=understand(query), usage=store.usage_map(), applied=applied,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000
     finally:
@@ -662,6 +711,8 @@ def _cmd_stats(config: IndexConfig, db_path: Path) -> int:
     store = Store(db_path, embedder.name, embedder.dim, readonly=True, vector_backend=config.vector_backend)
     try:
         stats = store.stats()
+        symbols = store.symbol_count()
+        pins = len(store.pinned_ids())
     finally:
         store.close()
     print(f"db             {db_path}")
@@ -672,7 +723,223 @@ def _cmd_stats(config: IndexConfig, db_path: Path) -> int:
     print(f"chunks         {stats['chunks']}")
     print(f"images         {stats['images']}  (с OCR-текстом: {stats['ocr_images']})")
     print(f"vectors        {stats['vectors']}")
+    print(f"definitions    {symbols}")
+    print(f"pinned         {pins}")
     print(f"size           {stats['db_bytes'] / 1024 / 1024:.1f} MB")
+    return 0
+
+
+def _open_store(config: IndexConfig, db_path: Path, readonly: bool = True) -> Store:
+    embedder = get_embedder("auto", config.model_dir)
+    return Store(
+        db_path, embedder.name, embedder.dim,
+        readonly=readonly, vector_backend=config.vector_backend,
+    )
+
+
+def _cmd_pin(args, config: IndexConfig, db_path: Path) -> int:
+    from .personal import pin
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path, readonly=False)
+    try:
+        target = args.target.strip()
+        file_id = 0
+        if target.isdigit():
+            row = store.file_by_id(int(target))
+            file_id = int(row["id"]) if row else 0
+        if not file_id:
+            # A path is matched the same forgiving way the import matches one:
+            # separators and case are not something a user should have to get right.
+            resolved = store.resolve_paths([target])
+            file_id = int(resolved.get(target, 0))
+        if not file_id:
+            print(f"not in the index: {target}", file=sys.stderr)
+            return 1
+        state = pin(store, file_id, not args.off)
+        store.commit()
+        row = store.file_by_id(file_id)
+    finally:
+        store.close()
+    if args.json:
+        print(json.dumps({"id": file_id, "pinned": state, "path": row["path"]}, ensure_ascii=False))
+    else:
+        print(f"{'pinned' if state else 'unpinned'} {row['path']}")
+    return 0
+
+
+def _cmd_pins(args, config: IndexConfig, db_path: Path) -> int:
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path)
+    try:
+        rows = store.pinned_rows(limit=200)
+    finally:
+        store.close()
+    if args.json:
+        print(json.dumps(
+            [{"id": int(row["id"]), "path": row["path"], "kind": row["kind"]} for row in rows],
+            ensure_ascii=False, indent=2,
+        ))
+        return 0
+    if not rows:
+        print("nothing pinned yet: semfind pin <path>")
+        return 0
+    for row in rows:
+        print(f"  {int(row['id']):<7} {row['path']}")
+    return 0
+
+
+def _cmd_saved(args, config: IndexConfig, db_path: Path) -> int:
+    from .personal import drop, save
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path, readonly=False)
+    try:
+        if args.drop:
+            gone = drop(store, args.drop)
+            store.close()
+            if args.json:
+                print(json.dumps({"dropped": gone}))
+            else:
+                print("forgotten" if gone else "no such saved search")
+            return 0 if gone else 1
+        if args.query:
+            item = save(store, " ".join(args.query), args.label)
+            store.close()
+            if args.json:
+                print(json.dumps(item, ensure_ascii=False))
+            else:
+                print(f"saved #{item['id']}: {item['query']}")
+            return 0
+        rows = store.saved_searches()
+        store.close()
+    except ValueError as exc:
+        store.close()
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(
+            [{"id": int(row["id"]), "query": row["query"], "label": row["label"],
+              "used": int(row["used"] or 0)} for row in rows],
+            ensure_ascii=False, indent=2,
+        ))
+        return 0
+    if not rows:
+        print("no saved searches yet: semfind saved \"type:pdf про индексы\"")
+        return 0
+    for row in rows:
+        used = f"  ×{int(row['used'] or 0)}" if row["used"] else ""
+        print(f"  {int(row['id']):<4} {row['query']}{used}")
+    return 0
+
+
+def _cmd_alias(args, config: IndexConfig, db_path: Path) -> int:
+    from .personal import forget, teach
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path, readonly=False)
+    try:
+        if args.drop:
+            gone = forget(store, args.drop)
+            store.close()
+            if args.json:
+                print(json.dumps({"dropped": gone}))
+            else:
+                print(f"forgot {args.drop}" if gone else "no such alias")
+            return 0 if gone else 1
+        if args.alias and args.expand:
+            item = teach(store, args.alias, args.expand)
+            store.close()
+            if args.json:
+                print(json.dumps(item, ensure_ascii=False))
+            else:
+                print(f"{item['alias']} → {item['expand']}")
+            return 0
+        table = store.aliases()
+        store.close()
+    except ValueError as exc:
+        store.close()
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(table, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    if not table:
+        print('dictionary is empty: semfind alias cv "резюме"')
+        return 0
+    for alias, expand in sorted(table.items()):
+        print(f"  {alias:<16} → {expand}")
+    return 0
+
+
+def _cmd_sym(args, config: IndexConfig, db_path: Path) -> int:
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path)
+    try:
+        rows = store.find_symbols(args.name, args.limit)
+    finally:
+        store.close()
+    if args.json:
+        print(json.dumps(
+            [{"name": row["name"], "kind": row["kind"], "line": int(row["line"]),
+              "path": row["path"], "text": row["text"]} for row in rows],
+            ensure_ascii=False, indent=2,
+        ))
+        return 0
+    if not rows:
+        print(f"no definition matches {args.name!r}")
+        return 1
+    for row in rows:
+        print(f"  {row['kind']:<9} {row['name']:<28} {row['path']}:{int(row['line'])}")
+    return 0
+
+
+def _cmd_import(args, config: IndexConfig, db_path: Path) -> int:
+    from .migrate import apply, find_sources
+
+    if not db_path.exists():
+        print(f"no index at {db_path}; run: semfind index <folder>", file=sys.stderr)
+        return 2
+    extra = [args.path] if args.path else []
+    sources = find_sources(extra)
+    if not sources:
+        print("no kensaku config found.")
+        print("point at it directly:  semfind import kensaku \"C:\\Users\\you\\AppData\\Roaming\\kensaku\"")
+        return 1
+    store = _open_store(config, db_path, readonly=False)
+    try:
+        report = apply(store, sources, write=args.write)
+    finally:
+        store.close()
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    verb = "copied" if args.write else "would copy"
+    for item in report["sources"]:
+        print(f"  {item['path']}")
+        print(f"    {item['pins']} pins · {item['saved']} saved · {item['aliases']} aliases")
+    print()
+    print(f"{verb} {report['pins']} pins, {report['saved']} saved searches, {report['aliases']} aliases")
+    if report["missing"]:
+        print(f"{len(report['missing'])} pinned file(s) are not in the index yet:")
+        for path in report["missing"][:5]:
+            print(f"  · {path}")
+        if len(report["missing"]) > 5:
+            print(f"  … and {len(report['missing']) - 5} more")
+        print("index those folders and run the import again")
+    if not args.write:
+        print("\nnothing written; add --write to keep it")
     return 0
 
 

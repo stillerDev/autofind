@@ -162,6 +162,8 @@ async function runSearch(options = {}) {
   const append = Boolean(options.append);
   const query = $("q").value.trim();
   state.query = query;
+  // The bookmark only exists while there is something to save.
+  $("save-btn").classList.toggle("show", Boolean(query));
   if (!query) {
     state.hits = [];
     state.total = 0;
@@ -212,11 +214,190 @@ function renderIdle() {
         <div class="empty-card">
           <h2>${esc(t("idle.title"))}</h2>
           <p>${esc(t("idle.body"))}</p>
+          <p class="empty-tip">${esc(t("idle.tip"))}</p>
         </div>
+        <div class="personal" id="personal" hidden></div>
         <div class="recent" id="recent" hidden></div>
       </div>
     </div>`;
+  loadPersonal().then(paintPersonal);
   loadRecent();
+}
+
+/* ---------------------------------------------------------------- personal */
+
+/* Pins, saved searches and the dictionary are the three things a person brings
+   with them from another search app, so they get the prime screen: the empty
+   screen is where you decide whether an app is worth keeping. They live in the
+   same database as the index, which is what makes `semfind import kensaku` a
+   copy rather than a retyping.
+
+   The list is fetched once and cached. Every mutation refetches it, because a
+   star that stays lit while the idle screen still shows the old list is the
+   kind of half-truth that makes people distrust the whole app. */
+let personal = null;
+
+async function loadPersonal(force = false) {
+  if (personal && !force) return personal;
+  try {
+    personal = await api("/api/personal");
+  } catch (error) {
+    personal = null; // the personal layer must never break the screen
+  }
+  return personal;
+}
+
+function paintPersonal() {
+  const host = $("personal");
+  if (!host || !personal) return;
+  const pins = personal.pins || [];
+  const saved = personal.saved || [];
+  const blocks = [];
+  if (pins.length) {
+    blocks.push(`<div class="personal-block">
+        <h3>${esc(t("idle.pinned"))}</h3>
+        <div class="pin-list">${pins.map(pinRow).join("")}</div>
+      </div>`);
+  }
+  if (saved.length) {
+    blocks.push(`<div class="personal-block">
+        <h3>${esc(t("idle.saved"))}</h3>
+        <div class="saved-list">${saved.map(savedChip).join("")}</div>
+      </div>`);
+  }
+  host.innerHTML = blocks.join("");
+  host.hidden = !blocks.length;
+}
+
+function pinRow(item) {
+  const icon = item.is_image && item.thumb
+    ? `<img class="pin-thumb" src="${item.thumb}" alt="" loading="lazy">`
+    : `<span class="pin-kind k-${item.kind}">${esc(KIND_LABEL[item.kind] || item.kind)}</span>`;
+  // Titles on markup that is built after `applyStaticText` ran are written from
+  // `t()` directly: a `data-i18n-title` here would never be read, and the button
+  // would end up with no tooltip at all.
+  return `<div class="pin-row">
+      <button class="pin-star on" type="button" data-pin="${item.file_id}"
+              aria-pressed="true" title="${esc(t("card.unpin"))}">★</button>
+      ${icon}
+      <button class="pin-name" type="button" data-open="${item.file_id}">${esc(item.name)}</button>
+      <span class="pin-path" title="${esc(item.path)}">${esc(item.path)}</span>
+    </div>`;
+}
+
+function savedChip(item) {
+  return `<span class="saved-chip">
+      <button class="saved-run" type="button" data-run="${esc(item.query)}">${esc(item.label)}</button>
+      <button class="saved-x" type="button" data-forget="${item.id}"
+              title="${esc(t("saved.forget"))}" aria-label="${esc(t("saved.forget"))}">×</button>
+    </span>`;
+}
+
+/* One star, three places it can appear: a result card, a pinned row on the
+   empty screen, and a second window. They all go through here so they cannot
+   disagree. */
+async function togglePin(fileId, wanted) {
+  const id = Number(fileId);
+  try {
+    const data = await api("/api/pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(wanted === undefined ? { id } : { id, pinned: wanted }),
+    });
+    const hit = state.hits.find((item) => item.file_id === id);
+    if (hit) hit.pinned = data.pinned;
+    document.querySelectorAll(`[data-pin="${id}"]`).forEach((star) => {
+      star.classList.toggle("on", data.pinned);
+      star.setAttribute("aria-pressed", String(data.pinned));
+    });
+    await loadPersonal(true);
+    paintPersonal();
+    toast(t(data.pinned ? "pin.added" : "pin.removed"));
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
+}
+
+async function saveSearch() {
+  const query = $("q").value.trim();
+  if (!query) return;
+  try {
+    await api("/api/saved", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    await loadPersonal(true);
+    paintPersonal();
+    toast(t("saved.done", { query }));
+  } catch (error) {
+    toast(t("saved.failed", { error: error.message }));
+  }
+}
+
+async function forgetSearch(savedId) {
+  try {
+    await api("/api/saved/drop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: Number(savedId) }),
+    });
+    await loadPersonal(true);
+    paintPersonal();
+    toast(t("saved.forgotten"));
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
+}
+
+function renderAliases() {
+  const host = $("alias-list");
+  if (!host) return;
+  const rows = (personal && personal.aliases) || [];
+  host.innerHTML = rows.length
+    ? rows.map((item) => `<div class="alias-row">
+        <b>${esc(item.alias)}</b>
+        <span class="alias-arrow">→</span>
+        <span class="alias-means">${esc(item.expand)}</span>
+        <button class="alias-x" type="button" data-unalias="${esc(item.alias)}"
+                title="${esc(t("saved.forget"))}" aria-label="${esc(t("saved.forget"))}">×</button>
+      </div>`).join("")
+    : `<p class="settings-note" id="alias-empty">${esc(t("alias.empty"))}</p>`;
+}
+
+async function addAlias() {
+  const alias = $("alias-word").value.trim();
+  const expand = $("alias-means").value.trim();
+  if (!alias || !expand) { toast(t("alias.need")); return; }
+  try {
+    await api("/api/alias", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alias, expand }),
+    });
+    $("alias-word").value = "";
+    $("alias-means").value = "";
+    await loadPersonal(true);
+    renderAliases();
+    toast(t("alias.added", { alias, expand }));
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
+}
+
+async function removeAlias(alias) {
+  try {
+    await api("/api/alias/drop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alias }),
+    });
+    await loadPersonal(true);
+    renderAliases();
+    toast(t("alias.removed", { alias }));
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
 }
 
 /* The idle screen used to be one small plate on a very large photo, which read
@@ -276,6 +457,13 @@ function card(hit, query, index) {
           <span class="badge">${esc(hit.kind)}</span>
           ${badges}
           ${group}
+          ${hit.symbol ? `<span class="badge b-def" title="${esc(t("card.symbol"))}">${esc(hit.symbol)}</span>` : ""}
+          <!-- A pin is the cheapest promise an app can make: "this will still be
+               here tomorrow". It sits with the name, not in the action row, so
+               it reads as a property of the file rather than a command. -->
+          <button class="pin-star${hit.pinned ? " on" : ""}" type="button"
+                  data-pin="${hit.file_id}" aria-pressed="${hit.pinned ? "true" : "false"}"
+                  title="${esc(t(hit.pinned ? "card.unpin" : "card.pin"))}">★</button>
         </div>
         <div class="path" title="${esc(hit.path)}">${esc(hit.path)}</div>
         <div class="snippet">${highlight(hit.snippet, query)}</div>
@@ -471,6 +659,11 @@ async function loadStats() {
     $("s-images").textContent = stats.images ?? 0;
     $("s-ocr").textContent = stats.ocr_images ?? 0;
     $("s-size").textContent = `${((stats.db_bytes || 0) / 1048576).toFixed(1)} ${t("unit.mb")}`;
+    // The definition count is the only place the app says out loud that it
+    // indexes symbols, so it is worth a stat of its own.
+    loadPersonal().then((data) => {
+      if (data && $("s-symbols")) $("s-symbols").textContent = data.symbols ?? 0;
+    });
     $("status-text").textContent = stats.files
       ? plural(stats.files, "status.files")
       : t("status.empty");
@@ -624,6 +817,7 @@ function setSettings(open) {
   if (open) {
     renderAbout();
     paintLang();
+    loadPersonal().then(renderAliases);
     // Focus the card, not the close button: a ring on "close" is the first
     // thing the eye lands on, and it is not what the dialog is about.
     $("settings").querySelector(".settings-card").focus();
@@ -665,6 +859,31 @@ document.addEventListener("click", async (event) => {
   if (chip) { clearChip(chip.dataset.chip); return; }
 
   if (event.target.closest("#more-btn")) { runSearch({ append: true }); return; }
+
+  const star = event.target.closest("[data-pin]");
+  if (star) {
+    event.preventDefault();
+    event.stopPropagation();
+    // A star knows its own state, so the click says what it wants instead of
+    // asking the server to guess: two windows must not flip each other twice.
+    togglePin(star.dataset.pin, !star.classList.contains("on"));
+    return;
+  }
+
+  const run = event.target.closest("[data-run]");
+  if (run) {
+    $("q").value = run.dataset.run;
+    clearTimeout(state.timer);
+    runSearch();
+    $("q").focus();
+    return;
+  }
+
+  const forget = event.target.closest("[data-forget]");
+  if (forget) { forgetSearch(forget.dataset.forget); return; }
+
+  const unalias = event.target.closest("[data-unalias]");
+  if (unalias) { removeAlias(unalias.dataset.unalias); return; }
 
   const group = event.target.closest("[data-group]");
   if (group) { toggleGroup(group); return; }
@@ -745,6 +964,15 @@ $("clear").addEventListener("click", () => {
   runSearch();
   $("q").focus();
 });
+$("save-btn").addEventListener("click", saveSearch);
+$("alias-add").addEventListener("click", addAlias);
+// Enter in either dictionary field adds the entry: a two-field form with no
+// keyboard path is a form people fill in with the mouse or not at all.
+["alias-word", "alias-means"].forEach((id) => {
+  $(id).addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); addAlias(); }
+  });
+});
 $("index-btn").addEventListener("click", startJob);
 $("watch-btn").addEventListener("click", toggleWatch);
 $("purge-btn").addEventListener("click", purgePrivate);
@@ -775,6 +1003,7 @@ $("lang-switch").addEventListener("click", (event) => {
   if (!setLang(button.dataset.lang)) { paintLang(); return; }
   paintLang();
   renderAbout();
+  renderAliases();
   paintSince();
   if (CAL.open) renderCalendar();
   loadStats();

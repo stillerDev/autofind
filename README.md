@@ -41,6 +41,8 @@ with no model downloads:
 | Privacy filter | works | path blocklist + `.gitignore` parity, `privacy purge` |
 | App | works | native window (WebView2), tray, `Ctrl+Alt+Space`, autostart |
 | Interface | works | English by default, Russian in one click, index in a drawer |
+| Personal layer | works | pins, saved searches, dictionary — and `import kensaku` |
+| Code definitions | works | `sym:` over nine language families, no tree-sitter |
 
 Two upgrades are drop-in and change nothing else: `multilingual-e5-small` for
 semantic text vectors, and `CLIP ViT-B/32` for text-to-image search. Until they
@@ -116,6 +118,7 @@ already contains a `key:value`, the intent compiler leaves it alone.
 | `size:>2mb` | `>`, `<` or `1mb..10mb` |
 | `lang:python` | language family of the extension |
 | `name:config` / `content:timeout` | match the filename / the contents only |
+| `sym:parse_query` | a definition in code — function, class, struct, type, method |
 | `re:"TODO\|FIXME"` | regular expression over content |
 | `-node_modules` | exclude a term or folder |
 | `"exact phrase"` | phrase |
@@ -145,8 +148,11 @@ python -m core.cli connect    # write the client config for you
 ```
 
 Tools: `search` (with cursor pagination), `read_snippet` (bounded),
-`index_state`, `regex_search`, `similar_images`. Read-only by construction —
-there is no tool that can open, move or modify anything.
+`index_state`, `regex_search`, `find_symbol`, `similar_images`. Read-only by
+construction — there is no tool that can open, move or modify anything.
+`find_symbol` is the one an agent uses most: it answers with the file, the line
+and the definition itself, so a "where is this function" question costs one call
+instead of reading files until one looks right.
 
 Two transports, because the right one depends on the client:
 
@@ -307,6 +313,75 @@ The gear opens the same dialog in both languages: the segmented switch, and an
 About list that reports what this install actually is — files and chunks, the
 database size, how many languages the OCR can read here, which embedders are
 loaded, and the version.
+
+## What you bring with you
+
+Nobody switches search app because of the search. They stay where they are
+because of the twenty files they pinned, the four queries they run every week,
+and the ten words they taught it. Those are the expensive things, and leaving
+them behind is the reason a better search engine loses to a worse one.
+
+So they are part of the product, not an afterthought:
+
+![Pinned files and saved searches on the empty screen](docs/ui-personal.png)
+
+**Pins.** One star on any result, and the file sits on the empty screen from
+then on. A pin is a bonus in the ranking, not a filter: it lifts a file by 0.12
+— more than recency (0.10), less than a name match (0.15) — so pinning a
+screenshot does not hide the document you were actually looking for.
+
+**Saved searches.** The bookmark inside the search box stores the query as
+typed, including its filters. Saving the same query twice renames it instead of
+duplicating it, and the list is ordered by how often you actually run it.
+
+**The dictionary.** `cv → резюме` in Settings, and from then on typing `cv`
+searches for `резюме` as well. Expansion is whole-word and case-insensitive and
+never fires inside a `key:value` pair — `type:cv` still means `.cv` files — and
+it is capped at eight replacements so a bad entry cannot grow a query without
+bound. What fired is shown as a chip above the results, next to the ones the
+intent compiler produced, and removing the chip re-runs the query without it.
+The words live in Settings, above About, with an `×` per row:
+
+![The dictionary in Settings](docs/ui-dictionary.png)
+
+**Definitions.** `sym:parse_query` answers with the definition rather than the
+file: exact name first, then prefix, then substring, and the row says `function
+parse_query · line 214` with the source line under it. Nine language families
+are recognised by pattern — Python, JS/TS, Rust, Go, Java/Kotlin, Ruby, PHP,
+shell, SQL — because a dependency-free extractor that is right about 95% of
+definitions beats a tree-sitter build that costs 40 MB and a compile step on
+Windows. Comments are skipped, so `# def not_real():` is not a hit.
+
+![A definition, found by name rather than by file](docs/ui-symbols.png)
+
+All three live in the same SQLite file as the index, in `pins`, `saved` and
+`aliases`. That means they travel with a backup, any SQLite client can read
+them, and they never leave the machine — which is also what makes the migration
+a copy rather than a retyping:
+
+```bash
+semfind import kensaku              # find the config, show what would move
+semfind import kensaku --write      # copy pins, saved searches, dictionary
+semfind import kensaku "C:\Users\you\AppData\Roaming\kensaku"
+```
+
+The reader does not assume a schema. kensaku is a Tauri app, so its store is one
+of a handful of known places and one of two shapes, JSON or SQLite; the reader
+walks whatever it finds and recognises pins, queries and aliases by name. A pin
+whose file is not in the index is reported by path rather than silently dropped,
+because "index that folder and run this again" is a better answer than a
+favourite that quietly did not arrive.
+
+The same things are on the command line, for scripts and for a machine where
+the window is not open:
+
+```bash
+semfind pin "C:\Docs\contract.pdf"   # --off to unpin
+semfind pins
+semfind saved "type:pdf invoices" --label "Invoices"
+semfind alias cv "резюме"
+semfind sym parse_query -n 5
+```
 
 ## Measured on this machine
 
@@ -591,7 +666,7 @@ SQLite file. An app-level blocklist, a pause switch and SQLCipher are open items
 python -m unittest discover -s tests -t .
 ```
 
-191 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
+231 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
 image preprocessing, visual features, thumbnails, real OCR including Japanese
 (skipped when no engine), the language table and the boot screen's greeting
 pool, `/api/ready`, FTS query sanitising, the full index→search cycle, kind filters,
@@ -599,9 +674,12 @@ incremental skips, screenshot dedup, similar-image search, the privacy
 blocklist, `.gitignore` parity, watcher diffing and startup cleanup, the eval
 metrics, the bundle estimate, the query grammar and intent compiler, fuzzy name
 scoring, the ranking bonuses, pagination, the MCP surface, the name index, the
-vector pack, grouping, the desktop-app plumbing (lock, geometry, autostart) and
-the two dictionaries against each other, against the markup and against the
-kinds the query compiler can emit.
+vector pack, grouping, the desktop-app plumbing (lock, geometry, autostart),
+symbol extraction per language and the `sym:` channel, pins as a bonus rather
+than a filter, saved-search upsert, the dictionary's whole-word and
+`key:value` guards, the kensaku import from both a JSON and a SQLite config,
+and the two dictionaries against each other, against the markup and against
+the kinds the query compiler can emit.
 
 `tests/queries/queries.json` holds the fixed 20-query acceptance set from the
 plan. Expected answers are still placeholders — attaching a real corpus is what

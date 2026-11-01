@@ -78,6 +78,42 @@ CREATE TABLE IF NOT EXISTS usage (
 );
 CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
 CREATE INDEX IF NOT EXISTS idx_files_size ON files(size);
+-- The personal layer: what makes this install *yours*. kensaku keeps pinned
+-- files, saved searches and a personal dictionary; these are the same three
+-- things, in the same file as the index, so they survive a reinstall of the
+-- application and never leave the machine.
+CREATE TABLE IF NOT EXISTS pins (
+    file_id  INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    added_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS saved (
+    id        INTEGER PRIMARY KEY,
+    query     TEXT NOT NULL,
+    label     TEXT NOT NULL DEFAULT '',
+    created   REAL NOT NULL,
+    used      INTEGER NOT NULL DEFAULT 0,
+    last_used REAL NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_query ON saved(query);
+CREATE TABLE IF NOT EXISTS aliases (
+    alias  TEXT PRIMARY KEY,
+    expand TEXT NOT NULL
+);
+-- Code definitions, extracted at index time. kensaku parses with tree-sitter
+-- and finds functions, classes and structs; this is the same feature without a
+-- parser dependency: a per-language pattern table that only fires on lines that
+-- look like a definition.
+CREATE TABLE IF NOT EXISTS symbols (
+    id      INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    name    TEXT NOT NULL,
+    lowered TEXT NOT NULL,
+    kind    TEXT NOT NULL,
+    line    INTEGER NOT NULL,
+    text    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(lowered);
+CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
 """
 
 # Columns added after the first release. `files.name` and `files.char_mask` are
@@ -137,6 +173,30 @@ def char_mask(text: str) -> int:
 
 def basename(path: str) -> str:
     return path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+
+
+def normalize_path(path: str) -> str:
+    """One spelling for a path: forward slashes, no trailing slash, casefolded.
+
+    Windows is case-insensitive and accepts both separators, so `C:\\Docs\\a.PDF`
+    and `c:/docs/a.pdf` are the same file and must compare equal. Repeated
+    separators are collapsed too, because a path that travelled through a JSON
+    round-trip or a shell is not always spelled the way the filesystem spells it.
+    """
+    return re.sub(r"/{2,}", "/", path.replace("\\", "/")).rstrip("/").casefold()
+
+
+def _reraises_unless_missing(exc: sqlite3.OperationalError) -> None:
+    """Only "no such table" means "this index predates the feature".
+
+    Every personal-layer read is wrapped in a try because an old index has no
+    `pins` table and must still open. But a locked database raises the same
+    exception class, and swallowing it turned a busy index into "you have
+    nothing pinned" — a wrong answer that looks like a real one. So the guard
+    covers the missing table and nothing else.
+    """
+    if "no such table" not in str(exc).lower():
+        raise exc
 
 
 def _regexp(pattern: str, value: str | None) -> bool:
@@ -679,6 +739,23 @@ class Store:
             "SELECT id, path, name, kind, size, mtime FROM files"
         ).fetchall()
 
+    def resolve_paths(self, paths: Sequence[str]) -> dict[str, int]:
+        """Map as-written paths to file ids, ignoring slash direction and case.
+
+        Used by the kensaku import: their config stores absolute Windows paths
+        with backslashes, and a path that differs only in case is the same file.
+        One full scan of the files table is fine here — an import runs once, and
+        100k short strings is a fraction of a second.
+        """
+        wanted = {path: normalize_path(path) for path in paths}
+        if not wanted:
+            return {}
+        index = {
+            normalize_path(row["path"]): int(row["id"])
+            for row in self.conn.execute("SELECT id, path FROM files").fetchall()
+        }
+        return {path: index[key] for path, key in wanted.items() if key in index}
+
     def file_rows_by_ids(self, ids: Iterable[int]) -> list[sqlite3.Row]:
         ids = list(ids)
         if not ids:
@@ -721,6 +798,152 @@ class Store:
         except sqlite3.OperationalError:
             return {}
         return {int(row["file_id"]): (int(row["opens"]), float(row["last_open"])) for row in rows}
+
+    # ------------------------------------------------------------- personal
+
+    def pinned_ids(self) -> set[int]:
+        try:
+            rows = self.conn.execute("SELECT file_id FROM pins").fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return set()
+        return {int(row["file_id"]) for row in rows}
+
+    def pinned_rows(self, limit: int = 24) -> list[sqlite3.Row]:
+        """Pinned files, most recently pinned first, with the file row attached."""
+        try:
+            return self.conn.execute(
+                "SELECT f.id, f.path, f.name, f.kind, f.size, f.mtime, p.added_at "
+                "FROM pins p JOIN files f ON f.id = p.file_id "
+                "ORDER BY p.added_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return []
+
+    def set_pin(self, file_id: int, pinned: bool) -> bool:
+        if pinned:
+            self.conn.execute(
+                "INSERT INTO pins(file_id, added_at) VALUES(?, ?) "
+                "ON CONFLICT(file_id) DO NOTHING",
+                (file_id, time.time()),
+            )
+        else:
+            self.conn.execute("DELETE FROM pins WHERE file_id = ?", (file_id,))
+        return pinned
+
+    def saved_searches(self, limit: int = 40) -> list[sqlite3.Row]:
+        try:
+            return self.conn.execute(
+                "SELECT id, query, label, created, used, last_used FROM saved "
+                "ORDER BY used DESC, last_used DESC, created DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return []
+
+    def save_search(self, query: str, label: str = "") -> int:
+        """Store a query once. Saving the same query twice updates the label."""
+        now = time.time()
+        self.conn.execute(
+            "INSERT INTO saved(query, label, created) VALUES(?, ?, ?) "
+            "ON CONFLICT(query) DO UPDATE SET label = excluded.label",
+            (query, label, now),
+        )
+        row = self.conn.execute("SELECT id FROM saved WHERE query = ?", (query,)).fetchone()
+        return int(row["id"]) if row else 0
+
+    def drop_search(self, saved_id: int) -> bool:
+        cursor = self.conn.execute("DELETE FROM saved WHERE id = ?", (saved_id,))
+        return cursor.rowcount > 0
+
+    def touch_search(self, query: str) -> None:
+        self.conn.execute(
+            "UPDATE saved SET used = used + 1, last_used = ? WHERE query = ?",
+            (time.time(), query),
+        )
+
+    def aliases(self) -> dict[str, str]:
+        try:
+            rows = self.conn.execute("SELECT alias, expand FROM aliases").fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return {}
+        return {str(row["alias"]): str(row["expand"]) for row in rows}
+
+    def set_alias(self, alias: str, expand: str) -> None:
+        self.conn.execute(
+            "INSERT INTO aliases(alias, expand) VALUES(?, ?) "
+            "ON CONFLICT(alias) DO UPDATE SET expand = excluded.expand",
+            (alias, expand),
+        )
+
+    def drop_alias(self, alias: str) -> bool:
+        cursor = self.conn.execute("DELETE FROM aliases WHERE alias = ?", (alias,))
+        return cursor.rowcount > 0
+
+    # -------------------------------------------------------------- symbols
+
+    def replace_symbols(self, file_id: int, symbols: Sequence[tuple[str, str, int, str]]) -> int:
+        """Swap a file's definitions for a fresh set. Rows are (name, kind, line, text)."""
+        self.conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
+        if not symbols:
+            return 0
+        self.conn.executemany(
+            "INSERT INTO symbols(file_id, name, lowered, kind, line, text) VALUES(?, ?, ?, ?, ?, ?)",
+            [(file_id, name, name.lower(), kind, line, text) for name, kind, line, text in symbols],
+        )
+        return len(symbols)
+
+    def find_symbols(self, name: str, limit: int = 40) -> list[sqlite3.Row]:
+        """Exact name first, then prefix, then substring — one query, one order.
+
+        A symbol search is almost always a name you half-remember, so the
+        ordering has to put `parse_query` above `_parse_query_legacy` above
+        everything that merely contains the letters.
+        """
+        needle = name.strip().lower()
+        if not needle:
+            return []
+        like = f"%{needle}%"
+        try:
+            return self.conn.execute(
+                "SELECT s.id, s.name, s.kind, s.line, s.text, "
+                "       f.id AS file_id, f.path, f.name AS file_name, f.kind AS file_kind "
+                "FROM symbols s JOIN files f ON f.id = s.file_id "
+                "WHERE s.lowered LIKE ? "
+                "ORDER BY CASE "
+                "  WHEN s.lowered = ? THEN 0 "
+                "  WHEN s.lowered LIKE ? THEN 1 "
+                "  ELSE 2 END, length(s.name), f.path, s.line "
+                "LIMIT ?",
+                (like, needle, f"{needle}%", limit),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return []
+
+    def symbol_count(self) -> int:
+        try:
+            return int(self.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0])
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return 0
+
+    def files_without_symbols(self, limit: int = 100_000) -> list[sqlite3.Row]:
+        """Code files indexed before the symbols table existed."""
+        try:
+            return self.conn.execute(
+                "SELECT id, path, kind FROM files "
+                "WHERE kind = 'code' AND id NOT IN (SELECT file_id FROM symbols) "
+                "LIMIT ?",
+                (limit,),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return []
 
     def stats(self) -> dict[str, int]:
         def scalar(sql: str) -> int:

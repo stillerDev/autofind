@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .config import IndexConfig
 from .embed import get_embedder
+from .personal import expand_aliases
 from .query import understand
 from .search import search_page
 from .store import Store
@@ -55,8 +56,8 @@ TOOLS = [
         "description": (
             "Search the local file index (names, paths and document text). Read-only. "
             "Understands the semfind query grammar: type:, ext:, in:, path:, name:, "
-            "content:, modified:<7d, size:>2mb, re:\"...\", -exclude, mode:exhaustive, "
-            "sort:newest. Plain Russian or English phrasing also works "
+            "content:, modified:<7d, size:>2mb, re:\"...\", sym:parse_query, -exclude, "
+            "mode:exhaustive, sort:newest. Plain Russian or English phrasing also works "
             "(\"скриншоты за прошлую неделю\"). Returns ranked hits with a snippet and "
             "a cursor for the next page."
         ),
@@ -122,6 +123,24 @@ TOOLS = [
                 "cursor": {"type": "string"},
             },
             "required": ["pattern"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "find_symbol",
+        "description": (
+            "Find where a function, class, struct, type or method is defined in indexed "
+            "code, rather than where the name appears. Exact name first, then prefix, "
+            "then substring. Answers with file, line and the definition line itself — "
+            "the cheapest way for an agent to jump to a definition without reading files."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Symbol name, or a prefix of it."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            },
+            "required": ["name"],
             "additionalProperties": False,
         },
     },
@@ -206,6 +225,7 @@ class McpServer:
             "index_state": self._index_state,
             "regex_search": self._regex_search,
             "similar_images": self._similar_images,
+            "find_symbol": self._find_symbol,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -225,14 +245,19 @@ class McpServer:
 
         store = self._open()
         embedder = get_embedder("auto", self.config.model_dir)
+        # The dictionary is expanded before parsing, so an alias means the same
+        # thing here as it does in the window.
+        query, applied = expand_aliases(store, query)
         page = search_page(
             store, embedder, query, limit=size, offset=offset, sort=sort,
-            parsed=understand(query), usage=store.usage_map(),
+            parsed=understand(query), usage=store.usage_map(), applied=applied,
         )
         next_offset = page.next_offset
         return _text({
             "query": query,
-            "interpreted_as": [chip["raw"] for chip in page.chips],
+            # The label, not the raw token: for a dictionary hit the raw token is
+            # the word the agent typed, and the agent needs to see what it became.
+            "interpreted_as": [chip.get("label") or chip["raw"] for chip in page.chips],
             "total": page.total,
             "total_is_approximate": page.approx,
             "next_cursor": _encode_cursor(next_offset) if next_offset is not None else None,
@@ -299,6 +324,28 @@ class McpServer:
             "index_age_seconds": (
                 int(time.time() - float(newest["m"])) if newest and newest["m"] else None
             ),
+        })
+
+    def _find_symbol(self, arguments: dict) -> dict:
+        name = str(arguments.get("name") or "").strip()
+        if not name:
+            return _error("name is required")
+        limit = min(int(arguments.get("limit") or 20), 100)
+        store = self._open()
+        rows = store.find_symbols(name, limit)
+        return _text({
+            "name": name,
+            "total": len(rows),
+            "definitions": [
+                {
+                    "symbol": row["name"],
+                    "kind": row["kind"],
+                    "line": int(row["line"]),
+                    "path": row["path"],
+                    "source": row["text"],
+                }
+                for row in rows
+            ],
         })
 
     def _regex_search(self, arguments: dict) -> dict:
