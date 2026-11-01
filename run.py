@@ -28,10 +28,16 @@ COMMANDS = {
     "index", "search", "watch", "eval", "doctor", "privacy", "mcp",
     "cheat", "stats", "connect",
 }
-LAUNCHER_FLAGS = {"--port", "--no-browser"}
+LAUNCHER_FLAGS = {"--port", "--no-browser", "--db"}
 
 
 def _is_cli(argv: list[str]) -> bool:
+    # A bare `python run.py` is the launcher: double-click, F5, a shortcut.
+    # Without this the empty list falls through to "no launcher flag, so the
+    # CLI", and argparse dies with "the following arguments are required:
+    # command" — a launcher must never fail that way.
+    if not argv:
+        return False
     if any(argument in COMMANDS for argument in argv):
         return True
     # `run.py --db x --help` is the launcher's own help.

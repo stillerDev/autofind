@@ -711,9 +711,16 @@ def serve(
     MCP_TOKEN = mcp_token(config)
 
     url = f"http://{host}:{port}/"
-    print(f"SemFind UI  ->  {url}")
-    print(f"index       ->  {db_path}")
-    print(f"mcp (http)  ->  http://{host}:{port}/mcp  (bearer token in {config.home / 'mcp_token'})")
+    # flush: when stdout is a log file or a pipe, block buffering would hide
+    # the address until the process exits — which is exactly when nobody needs
+    # to know it any more.
+    print(f"SemFind UI  ->  {url}", flush=True)
+    print(f"index       ->  {db_path}", flush=True)
+    print(
+        f"mcp (http)  ->  http://{host}:{port}/mcp  "
+        f"(bearer token in {config.home / 'mcp_token'})",
+        flush=True,
+    )
     threading.Thread(target=_prewarm, args=(db_path, config), name="semfind-prewarm", daemon=True).start()
     if open_browser:
         threading.Timer(0.6, lambda: _open_browser(url)).start()
