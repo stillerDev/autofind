@@ -88,6 +88,33 @@ def estimate_bundle(config: IndexConfig, include_onnx: bool = True) -> dict:
     }
 
 
+def _app_report() -> dict:
+    """Is the desktop window actually possible here?
+
+    Without pywebview the app silently falls back to a browser tab, which is a
+    different product. Better to say so than to let someone wonder why it looks
+    like a website.
+    """
+    from .app import available
+
+    window = available()
+    out = {"window": window, "tray": False, "hotkey": False, "version": None}
+    try:
+        import importlib.metadata as metadata
+
+        out["version"] = metadata.version("pywebview")
+    except Exception:
+        pass
+    if window:
+        for module, key in (("pystray", "tray"), ("pynput", "hotkey")):
+            try:
+                __import__(module)
+                out[key] = True
+            except Exception:
+                out[key] = False
+    return out
+
+
 def collect(config: IndexConfig, db_path: Path | None = None) -> dict:
     db_path = db_path or config.db_path
     text_embedder = get_embedder("auto", config.model_dir)
@@ -122,6 +149,7 @@ def collect(config: IndexConfig, db_path: Path | None = None) -> dict:
         "visual_embedder": visual.name,
         "visual_supports_text": bool(getattr(visual, "supports_text", False)),
         "ocr": engine_report(config.ocr_languages),
+        "app": _app_report(),
         "privacy": {"enabled": config.privacy, **describe_privacy()},
         "models_dir": str(config.model_dir),
         "models": {path: size for path, size in _model_files(config.model_dir).items()},
@@ -153,6 +181,11 @@ def format_report(data: dict) -> str:
         + (f"   available: {', '.join(ocr['available'])}" if ocr["available"] else ""),
         f"ocr cjk      {', '.join(ocr.get('cjk', {}).get('scripts') or []) or 'none'}"
         + (f"   via {', '.join(ocr['cjk']['engines'])}" if ocr.get("cjk", {}).get("engines") else ""),
+        "",
+        f"app window   {'yes' if data['app']['window'] else 'no (browser fallback)'}"
+        + (f"   pywebview {data['app']['version']}" if data["app"].get("version") else "")
+        + ("   tray" if data["app"]["tray"] else "")
+        + ("   hotkey" if data["app"]["hotkey"] else ""),
         "",
         f"privacy      {'on' if privacy['enabled'] else 'OFF'}"
         f"   {len(privacy['sensitive_dirs'])} dirs, {len(privacy['sensitive_files'])} file patterns",

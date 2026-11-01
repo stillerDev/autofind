@@ -10,3 +10,9 @@ winrt-Windows.Storage; sys_platform == "win32"
 winrt-Windows.Storage.Streams; sys_platform == "win32"
 winrt-Windows.Graphics.Imaging; sys_platform == "win32"
 winrt-Windows.Media.Ocr; sys_platform == "win32"
+
+# Desktop app: native window (WebView2), tray icon, global hotkey.
+# Optional — without them the same UI opens in a browser instead.
+pywebview>=5.0; sys_platform == "win32"
+pystray>=0.19; sys_platform == "win32"
+pynput>=1.7; sys_platform == "win32"

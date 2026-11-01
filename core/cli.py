@@ -80,9 +80,30 @@ def main(argv: list[str] | None = None) -> int:
     search_cmd.add_argument("--json", action="store_true", help="machine readable output")
     search_cmd.add_argument("--embedder", default="auto", choices=["auto", "e5", "hashing"])
 
-    serve_cmd = sub.add_parser("serve", help="start the local web UI")
+    serve_cmd = sub.add_parser("serve", help="start the local web UI in a browser")
     serve_cmd.add_argument("--port", type=int, default=8765)
     serve_cmd.add_argument("--no-browser", action="store_true")
+
+    app_cmd = sub.add_parser("app", help="open the desktop window (tray + global hotkey)")
+    app_cmd.add_argument("--port", type=int, default=8765)
+    app_cmd.add_argument("--hotkey", default="ctrl+alt+space", help="show/hide key, e.g. ctrl+alt+space")
+    app_cmd.add_argument("--no-hotkey", action="store_true")
+    app_cmd.add_argument("--no-tray", action="store_true")
+    app_cmd.add_argument("--hidden", action="store_true", help="start in the tray")
+    app_cmd.add_argument("--browser", action="store_true", help="use the browser even if a window is possible")
+    app_cmd.add_argument("--debug", action="store_true")
+
+    autostart_cmd = sub.add_parser("autostart", help="start the app with Windows (tray, no console)")
+    autostart_cmd.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
+    autostart_cmd.add_argument("--json", action="store_true")
+
+    shortcut_cmd = sub.add_parser("shortcut", help="create desktop / Start Menu shortcuts")
+    shortcut_cmd.add_argument("action", nargs="?", default="create", choices=["create", "remove"])
+    shortcut_cmd.add_argument("where", nargs="?", default="all", choices=["all", "desktop", "startmenu"])
+
+    install_cmd = sub.add_parser("install", help="autostart + shortcuts, so the app is always there")
+    install_cmd.add_argument("--no-autostart", action="store_true")
+    install_cmd.add_argument("--no-shortcuts", action="store_true")
 
     sub.add_parser("mcp", help="MCP server over stdio for AI agents (read-only)")
     sub.add_parser("cheat", help="print the query grammar")
@@ -131,7 +152,121 @@ def main(argv: list[str] | None = None) -> int:
 
         serve(db_path, config, port=args.port, open_browser=not args.no_browser)
         return 0
+    if args.command == "app":
+        return _cmd_app(args, config, db_path)
+    if args.command == "autostart":
+        return _cmd_autostart(args)
+    if args.command == "shortcut":
+        return _cmd_shortcut(args)
+    if args.command == "install":
+        return _cmd_install(args)
     return _cmd_stats(config, db_path)
+
+
+def _cmd_shortcut(args) -> int:
+    from . import shortcut
+
+    if not shortcut.supported():
+        print("shortcuts are Windows-only for now", file=sys.stderr)
+        return 1
+    try:
+        if args.action == "remove":
+            removed = shortcut.remove(args.where)
+            for path in removed:
+                print(f"removed {path}")
+            if not removed:
+                print("nothing to remove")
+            return 0
+        written = shortcut.create(args.where)
+    except Exception as exc:
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    for path in written:
+        print(f"created {path}")
+    return 0
+
+
+def _cmd_install(args) -> int:
+    from . import autostart, shortcut
+
+    code = 0
+    if not args.no_autostart:
+        try:
+            command = autostart.enable()
+            print(f"autostart on: {command}")
+        except Exception as exc:
+            print(f"autostart failed: {exc}", file=sys.stderr)
+            code = 1
+    if not args.no_shortcuts:
+        try:
+            for path in shortcut.create("all"):
+                print(f"shortcut: {path}")
+        except Exception as exc:
+            print(f"shortcuts failed: {exc}", file=sys.stderr)
+            code = 1
+    print()
+    print("start it now:   run.py app")
+    print("turn it off:    semfind autostart off && semfind shortcut remove")
+    return code
+
+
+def _cmd_autostart(args) -> int:
+    from . import autostart
+
+    if args.action == "on":
+        try:
+            command = autostart.enable()
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(f"{autostart.VALUE_NAME} will start with Windows:")
+        print(f"  {command}")
+        print("turn it off with: semfind autostart off")
+        return 0
+
+    if args.action == "off":
+        removed = autostart.disable()
+        print("removed" if removed else "was not enabled")
+        return 0
+
+    state = autostart.status()
+    if args.json:
+        print(json.dumps(state, ensure_ascii=False))
+        return 0
+    if not state["supported"]:
+        print("autostart is Windows-only for now")
+        return 0
+    print(f"{state['name']}: {'on' if state['enabled'] else 'off'}")
+    print(f"command: {state.get('registered') or state['command']}")
+    return 0
+
+
+def _cmd_app(args, config: IndexConfig, db_path: Path) -> int:
+    from .app import open_app
+
+    config.ensure_home()
+    if args.browser:
+        from .api import serve
+
+        serve(db_path, config, port=args.port, open_browser=True)
+        return 0
+    code = open_app(
+        db_path=db_path,
+        config=config,
+        port=args.port,
+        hotkey=None if args.no_hotkey else args.hotkey,
+        tray=not args.no_tray,
+        start_hidden=args.hidden,
+        debug=args.debug,
+    )
+    if code != 0:
+        # No window available: the UI still has to open somehow.
+        from .api import serve
+
+        print("falling back to the browser", file=sys.stderr)
+        serve(db_path, config, port=args.port, open_browser=True)
+        return 0
+    return code
 
 
 def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:

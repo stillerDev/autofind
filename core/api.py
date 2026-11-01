@@ -150,6 +150,9 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "SemFind/0.1"
     config: IndexConfig
     db_path: Path
+    # Set by the desktop app so a second launch can raise the existing window
+    # instead of starting a rival instance. None in plain browser mode.
+    focus_hook = None
 
     # ------------------------------------------------------------- plumbing
 
@@ -560,6 +563,14 @@ class Handler(BaseHTTPRequestHandler):
             self._watch(payload)
         elif parsed.path == "/api/privacy/purge":
             self._purge()
+        elif parsed.path == "/api/focus":
+            # A second launch asks the running app to come forward instead of
+            # starting a rival instance with its own port and its own index.
+            if Handler.focus_hook is None:
+                self._error("not running as an app", 404)
+            else:
+                Handler.focus_hook()
+                self._json({"focused": True})
         else:
             self._error("unknown route", 404)
 
@@ -685,13 +696,19 @@ def _default_roots() -> list[str]:
     return [str(path) for path in candidates if path.is_dir()]
 
 
-def serve(
+def start_server(
     db_path: Path,
     config: IndexConfig,
     host: str = "127.0.0.1",
     port: int = 8765,
-    open_browser: bool = False,
-) -> None:
+) -> tuple[ThreadingHTTPServer, str]:
+    """Bind the UI server without serving yet, and return it with its URL.
+
+    Split out from `serve()` so the desktop window can run the same server on a
+    background thread and shut it down when the window closes. Two processes
+    would mean two ports, two caches and two copies of the index open — the
+    window must own the server, not sit next to it.
+    """
     global MCP, MCP_TOKEN
     Handler.config = config
     Handler.db_path = db_path
@@ -709,19 +726,35 @@ def serve(
 
     MCP = McpServer(db_path, config)
     MCP_TOKEN = mcp_token(config)
+    return server, f"http://{host}:{port}/"
 
-    url = f"http://{host}:{port}/"
+
+def prewarm(db_path: Path, config: IndexConfig) -> None:
+    """Touch the index in the background so the first search is not the slow one."""
+    threading.Thread(
+        target=_prewarm, args=(db_path, config), name="semfind-prewarm", daemon=True
+    ).start()
+
+
+def serve(
+    db_path: Path,
+    config: IndexConfig,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    open_browser: bool = False,
+) -> None:
+    server, url = start_server(db_path, config, host=host, port=port)
     # flush: when stdout is a log file or a pipe, block buffering would hide
     # the address until the process exits — which is exactly when nobody needs
     # to know it any more.
     print(f"SemFind UI  ->  {url}", flush=True)
     print(f"index       ->  {db_path}", flush=True)
     print(
-        f"mcp (http)  ->  http://{host}:{port}/mcp  "
+        f"mcp (http)  ->  {url}mcp  "
         f"(bearer token in {config.home / 'mcp_token'})",
         flush=True,
     )
-    threading.Thread(target=_prewarm, args=(db_path, config), name="semfind-prewarm", daemon=True).start()
+    prewarm(db_path, config)
     if open_browser:
         threading.Timer(0.6, lambda: _open_browser(url)).start()
     try:

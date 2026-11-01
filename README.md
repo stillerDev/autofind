@@ -39,7 +39,7 @@ with no model downloads:
 | Live updates | works | polling watcher, ~2 s debounce |
 | Quality measurement | works | `eval` with Recall@10, MRR, ablation |
 | Privacy filter | works | path blocklist + `.gitignore` parity, `privacy purge` |
-| UI | works | local web app on 127.0.0.1 |
+| App | works | native window (WebView2), tray, `Ctrl+Alt+Space`, autostart |
 
 Two upgrades are drop-in and change nothing else: `multilingual-e5-small` for
 semantic text vectors, and `CLIP ViT-B/32` for text-to-image search. Until they
@@ -55,8 +55,27 @@ SemFind.bat
 or
 
 ```bash
-python run.py                 # opens http://127.0.0.1:8765
+python run.py                 # opens the app window
+python run.py --browser       # the same UI in a browser tab, if you prefer
 ```
+
+`run.py` opens a real window: its own icon, its own title bar, and it stays in
+the tray when you close it. `Ctrl+Alt+Space` brings it back from anywhere, and
+launching it a second time raises the window that is already running instead of
+starting a rival copy.
+
+To make it permanent — start with Windows, in the tray, no console window:
+
+```bash
+semfind install               # autostart entry + desktop and Start Menu shortcuts
+semfind autostart status      # what the login entry points at
+semfind autostart off         # undo it
+```
+
+The login entry is one value under `HKCU\...\Run`, so it also appears in Task
+Manager → Startup where it can be switched off like any other program. It runs
+`pythonw.exe`, not `python.exe`: the console window is the difference between an
+app and a script.
 
 The sidebar lists the folders worth indexing (Documents, Downloads, Desktop,
 Screenshots) — one click indexes them, progress is live, and results appear as
@@ -195,6 +214,36 @@ file is read only after it has been quiet for a second, so a document being
 saved is indexed once at the end. On start the watcher also drops index entries
 whose files no longer exist — otherwise a file deleted while the app was closed
 would stay searchable forever.
+
+## The app
+
+![The AutoFind window](docs/shot-app.png)
+
+`core/app.py`. pywebview hosts the same HTML in a WebView2 window — the system's
+own Chromium, so nothing is bundled and the CSS renders exactly as it does in a
+browser. The server runs in the same process on loopback: one process, one
+index, one vector cache. A second process would mean a second port and a second
+copy of the pack open at once.
+
+- **Close means hide.** The window goes to the tray; the index and the server
+  stay warm, which is the point of a launcher. Quitting is explicit, in the tray
+  menu. If the tray and the hotkey both failed to start, closing really closes —
+  hiding with no way back would strand the process.
+- **`Ctrl+Alt+Space`** shows and hides it from anywhere. `--hotkey` changes it,
+  `--no-hotkey` removes it.
+- **A second launch raises the first.** The running app writes its port to
+  `~/.semfind/app.port` and answers `POST /api/focus`; the new process asks and
+  exits. An instance lock (`msvcrt.locking`, released by the OS on crash) is what
+  stops two windows with two ports in the first place.
+- **The window remembers.** Size, position and maximised state live in
+  `~/.semfind/window.json`, clamped to the current screen so a window from a
+  bigger monitor cannot open half under the taskbar.
+- **Dark title bar and the app icon** via `DwmSetWindowAttribute` and
+  `WM_SETICON`. The WinForms host defaults to a light title bar above a
+  near-black UI, which looks like a screenshot pasted into a form.
+
+`tools/make_icon.py` draws `web/icon.png` and `web/icon.ico` (16–256 px), so the
+icon is reproducible instead of a binary nobody can regenerate.
 
 ## Measured on this machine
 
@@ -419,13 +468,14 @@ SQLite file. An app-level blocklist, a pause switch and SQLCipher are open items
 python -m unittest discover -s tests -t .
 ```
 
-83 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
+161 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
 image preprocessing, visual features, thumbnails, real OCR (skipped when no
 engine), FTS query sanitising, the full index→search cycle, kind filters,
 incremental skips, screenshot dedup, similar-image search, the privacy
 blocklist, `.gitignore` parity, watcher diffing and startup cleanup, the eval
 metrics, the bundle estimate, the query grammar and intent compiler, fuzzy name
-scoring, the ranking bonuses, pagination, and the MCP surface.
+scoring, the ranking bonuses, pagination, the MCP surface, the name index, the
+vector pack, grouping and the desktop-app plumbing (lock, geometry, autostart).
 
 `tests/queries/queries.json` holds the fixed 20-query acceptance set from the
 plan. Expected answers are still placeholders — attaching a real corpus is what
@@ -436,8 +486,9 @@ turns Recall@10 from a claim into a number.
 - `CLIP` and `e5` weights are not bundled; the installer budget is 378 MB
   against the plan's 150 MB, and that decision is still open.
 - Index encryption, an app blocklist and a global OCR pause switch.
-- Tauri shell, global hotkey, MSI/DMG/AppImage packaging.
-- No tray icon, no global summon key: it is a browser tab, not a launcher yet.
+- A signed installer: the app window, tray, hotkey and shortcuts exist, but
+  there is no MSI and no code signing yet, so "install" is a command rather than
+  a wizard.
 - Facet counts are computed for filter-only queries, not for ranked ones — the
   candidate pool is bounded, so the number would be a lie.
 - Japanese and Korean OCR need a recognition model that RapidOCR does not bundle;
@@ -447,8 +498,9 @@ turns Recall@10 from a claim into a number.
 
 Closed since the kensaku comparison: the name index (1.7 ms at 100k instead of a
 35 ms scan at 8k), the vector matrix (a memory-mapped pack: ~40 ms warm, ~0 ms
-cold, no 333 MB allocation), version grouping and screenshot bursts, MCP over
-HTTP with `semfind connect`, and CJK OCR.
+cold, no 333 MB allocation), version grouping, identical copies and screenshot
+bursts, MCP over HTTP with `semfind connect`, CJK OCR, and the launcher — a real
+window with a tray icon, a global summon key and a login entry.
 
 ## License
 
