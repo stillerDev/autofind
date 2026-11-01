@@ -308,16 +308,14 @@ else.
 
 ![The date filter, drawn by the app rather than by the OS](docs/ui-calendar.png)
 
-![Settings, with the language switch and the build's own numbers](docs/ui-settings.png)
+![Settings: the walls, the language switch, and the build's own numbers](docs/ui-appearance.png)
 
-The gear opens the same dialog in both languages: the segmented switch, and an
-About list that reports what this install actually is — files and chunks, the
-database size, how many languages the OCR can read here, which embedders are
-loaded, and the version.
+The gear opens the same dialog in both languages: the wall picker at the top,
+the segmented switch, and an About list that reports what this install actually
+is — files and chunks, the database size, how many languages the OCR can read
+here, which embedders are loaded, and the version.
 
 ### The background is the theme
-
-![The appearance section: five walls, and a tile to pick your own](docs/ui-appearance.png)
 
 A dark interface next to a photograph is usually a black rectangle with a photo
 behind it. Here the picture *is* the palette: every surface is
