@@ -574,7 +574,31 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+/* The window has no title bar, so the header carries the only close button
+   there is. pywebview injects its bridge after load; until then, and in a
+   plain browser, the button stays hidden — there is nothing to hide. */
+function wireWindowControls() {
+  const markApp = () => document.body.classList.add("in-app");
+  // pywebview dispatches this on window, after its bridge is injected.
+  window.addEventListener("pywebviewready", markApp);
+  document.addEventListener("pywebviewready", markApp);
+  if (window.pywebview && window.pywebview.api) markApp();
+
+  const box = $("win-controls");
+  if (!box) return;
+  box.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-win]");
+    if (!button) return;
+    const api = window.pywebview && window.pywebview.api;
+    if (!api) return;
+    event.preventDefault();
+    if (button.dataset.win === "quit") api.quit();
+    else api.hide();
+  });
+}
+
 renderIdle();
+wireWindowControls();
 loadStats();
 api("/api/progress").then((job) => {
   if (job.running) { $("index-btn").disabled = true; pollJob(); }

@@ -25,6 +25,12 @@
                  aria-label="Поиск по файлам и скриншотам">
           <button class="clear" id="clear" type="button" aria-label="Очистить">×</button>
         </div>
+        <!-- The window has no title bar, so this is the only way out of it.
+             Sits last, in the corner where Windows puts its own close button. -->
+        <div class="win-controls" id="win-controls" aria-label="Окно">
+          <button type="button" data-win="hide"
+                  title="Скрыть в трей (Ctrl+Alt+Space). Выход — в меню трея.">✕</button>
+        </div>
       </div>
 
       <nav class="menu" aria-label="Тип файлов">
@@ -117,6 +123,7 @@
       <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span>
       <span><kbd>space</kbd> просмотр</span>
       <span><kbd>enter</kbd> открыть</span>
+      <span class="only-app"><kbd>ctrl</kbd><kbd>alt</kbd><kbd>space</kbd> окно</span>
     </div>
   </aside>
 </div>

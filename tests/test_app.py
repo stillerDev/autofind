@@ -176,5 +176,42 @@ class ShortcutTargetTests(unittest.TestCase):
         self.assertTrue(icon.exists())
 
 
+class WorkAreaTests(unittest.TestCase):
+    """The borderless window is sized by the work area, so that is what is tested.
+
+    A fullscreen window covers the taskbar; the taskbar is where the tray icon
+    this app hides behind lives, so "as big as possible" and "still usable" are
+    different rectangles.
+    """
+
+    def test_work_area_stops_at_the_taskbar(self):
+        area = app.work_area()
+        if area is None:
+            self.skipTest("not win32")
+        import ctypes
+
+        left, top, width, height = area
+        screen_w = ctypes.windll.user32.GetSystemMetrics(0)
+        screen_h = ctypes.windll.user32.GetSystemMetrics(1)
+        self.assertGreater(width, 0)
+        self.assertGreater(height, 0)
+        # Never larger than the screen, never so small that the layout clips.
+        self.assertLessEqual(left + width, screen_w)
+        self.assertLessEqual(top + height, screen_h)
+        self.assertGreaterEqual(height, 600)
+
+    def test_missing_window_is_not_an_exception(self):
+        # Called on `loaded`; a window that has not appeared yet must not kill
+        # the polish thread before the icon is set.
+        self.assertIsNone(app.fit_work_area("AutoFind — no such window"))
+
+    def test_borderless_is_the_default(self):
+        self.assertTrue(app._App("http://x/", Path("."), tray=False, hotkey=None).borderless)
+
+    def test_windowed_mode_asks_for_a_frame(self):
+        instance = app._App("http://x/", Path("."), tray=False, hotkey=None, borderless=False)
+        self.assertFalse(instance.borderless)
+
+
 if __name__ == "__main__":
     unittest.main()

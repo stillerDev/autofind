@@ -225,6 +225,12 @@ browser. The server runs in the same process on loopback: one process, one
 index, one vector cache. A second process would mean a second port and a second
 copy of the pack open at once.
 
+- **No title bar.** The window is frameless and sized to the desktop *work area*,
+  so it stops above the taskbar instead of covering it — the clock and the tray
+  icon this app hides in are down there. The Windows title bar is four buttons
+  the UI already replaces: a ✕ in the header corner, wired to the pywebview
+  bridge (`js_api`) rather than to `window.close()`. `--windowed` brings the
+  frame, the saved geometry and a resizable edge back.
 - **Close means hide.** The window goes to the tray; the index and the server
   stay warm, which is the point of a launcher. Quitting is explicit, in the tray
   menu. If the tray and the hotkey both failed to start, closing really closes —
@@ -237,10 +243,12 @@ copy of the pack open at once.
   stops two windows with two ports in the first place.
 - **The window remembers.** Size, position and maximised state live in
   `~/.semfind/window.json`, clamped to the current screen so a window from a
-  bigger monitor cannot open half under the taskbar.
+  bigger monitor cannot open half under the taskbar. Borderless mode ignores the
+  file: its size is the work area, not a preference.
 - **Dark title bar and the app icon** via `DwmSetWindowAttribute` and
-  `WM_SETICON`. The WinForms host defaults to a light title bar above a
-  near-black UI, which looks like a screenshot pasted into a form.
+  `WM_SETICON`, for the `--windowed` case. The WinForms host defaults to a light
+  title bar above a near-black UI, which looks like a screenshot pasted into a
+  form.
 
 `tools/make_icon.py` draws `web/icon.png` and `web/icon.ico` (16–256 px), so the
 icon is reproducible instead of a binary nobody can regenerate.

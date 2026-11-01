@@ -47,6 +47,8 @@ def launcher_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-hotkey", action="store_true")
     parser.add_argument("--no-tray", action="store_true")
     parser.add_argument("--hidden", action="store_true", help="start in the tray (used at login)")
+    parser.add_argument("--windowed", action="store_true",
+                        help="framed, resizable window instead of borderless")
     parser.add_argument("--debug", action="store_true")
     return parser
 
@@ -116,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         hotkey=None if args.no_hotkey else args.hotkey,
         tray=not args.no_tray,
         start_hidden=args.hidden,
+        borderless=not args.windowed,
         debug=args.debug,
     )
 

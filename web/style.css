@@ -119,6 +119,47 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   width: 100%;
 }
 
+/* The desktop window has no title bar, so this is the only way out of it.
+   Hidden in a browser: a tab already has its own close button, and hiding a
+   tab would do nothing. The hero sits on a photo that is near-white at the top,
+   so the button is drawn dark-on-light rather than the usual white-on-dark —
+   a 32px glyph at 12% opacity is not a control, it is a smudge. */
+.win-controls { display: none; }
+
+body.in-app .win-controls { display: flex; align-items: center; }
+
+.win-controls button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: rgba(16, 20, 24, 0.78);
+  border: 1px solid rgba(16, 20, 24, 0.18);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(8px) saturate(120%);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.win-controls button:hover {
+  color: #fff;
+  border-color: #c0392b;
+  background: #c0392b;
+}
+
+.win-controls button:active { background: #9c2c20; }
+
+.win-controls button:focus-visible {
+  outline: 2px solid rgba(16, 20, 24, 0.6);
+  outline-offset: 2px;
+}
+
 .wordmark {
   display: inline-flex;
   align-items: center;
@@ -153,6 +194,9 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   display: flex;
   align-items: center;
   gap: 8px;
+  /* Pushed to the right edge next to the window control: with three children
+     space-between would strand the search box in the middle of the header. */
+  margin-left: auto;
   width: clamp(240px, 42vw, 460px);
   padding: 6px 7px 6px 16px;
   border: 1px solid rgba(255, 255, 255, 0.22);
@@ -671,6 +715,12 @@ aside {
 }
 
 .side-foot span { display: inline-flex; align-items: center; gap: 5px; }
+
+/* Hints that only mean something inside the window: a browser tab has no
+   global hotkey and nothing to hide. */
+.side-foot .only-app { display: none; }
+
+body.in-app .side-foot .only-app { display: inline-flex; }
 
 .side-foot kbd {
   font: inherit;

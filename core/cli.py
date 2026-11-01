@@ -90,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     app_cmd.add_argument("--no-hotkey", action="store_true")
     app_cmd.add_argument("--no-tray", action="store_true")
     app_cmd.add_argument("--hidden", action="store_true", help="start in the tray")
+    app_cmd.add_argument("--windowed", action="store_true", help="framed window instead of borderless")
     app_cmd.add_argument("--browser", action="store_true", help="use the browser even if a window is possible")
     app_cmd.add_argument("--debug", action="store_true")
 
@@ -257,6 +258,7 @@ def _cmd_app(args, config: IndexConfig, db_path: Path) -> int:
         hotkey=None if args.no_hotkey else args.hotkey,
         tray=not args.no_tray,
         start_hidden=args.hidden,
+        borderless=not args.windowed,
         debug=args.debug,
     )
     if code != 0:
