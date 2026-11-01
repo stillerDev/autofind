@@ -11,9 +11,12 @@ would break every path in the docs for no functional gain.
 
 The header follows the sketched layout: the forest photo (`web/fon.jpg`) as the
 background, the wordmark top-left, the search field with a clear button
-top-right, and the type filter as a row of pills directly under the title. A
-vertical gradient over the image is what keeps white text legible on the bright
-fog — the photo itself is untouched.
+top-right, and the type filter as a row of pills directly under the title. The
+photo is not confined to the header — it is the page background (fixed, `cover`),
+with a single vertical veil over the whole window and translucent glass panels
+on top, so results sit *on* the image and it shows through the gaps instead of
+being cut off by a black list. The accent is white-grey: an orange button read as
+a warning against fog.
 
 ## Status
 
