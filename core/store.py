@@ -1,10 +1,10 @@
 """SQLite storage: metadata, FTS5 full text, image records and vector blobs.
 
-Everything lives in one file in WAL mode. Vectors are raw float32 blobs
-searched by brute force in numpy: at the 50k-chunk target that is a 77 MB
-matrix and a few milliseconds per query, so an ANN index would be premature.
-sqlite-vec can be swapped in behind `knn()` / `knn_images()` later without
-touching the callers.
+Everything lives in one file in WAL mode. Chunk vectors live in a sqlite-vec
+`vec0` virtual table when the extension is present, so the KNN scan happens
+inside SQLite and nothing is materialised in the process; without it they fall
+back to raw float32 blobs searched by brute force in numpy (see `core.vectors`
+for why that distinction is recorded in `meta`).
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import numpy as np
+
+from . import vectors as vecstore
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS images (
     thumb      BLOB,
     ocr_text   TEXT,
     ocr_engine TEXT,
+    phash      INTEGER,
     indexed_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_images_sha ON images(sha256);
@@ -94,6 +97,9 @@ IMAGE_COLUMNS = {
     "mtime": "REAL",
     "ocr_text": "TEXT",
     "ocr_engine": "TEXT",
+    # 64-bit dHash, written at index time: screenshot bursts are collapsed by
+    # comparing it against neighbours in the same folder.
+    "phash": "INTEGER",
 }
 
 
@@ -142,7 +148,50 @@ def _regexp(pattern: str, value: str | None) -> bool:
         return False
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
+
+
+def _meta(conn: sqlite3.Connection, key: str) -> str | None:
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
+def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES(?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+def prepare_vectors(conn: sqlite3.Connection, dim: int, writable: bool = True) -> str:
+    """Attach sqlite-vec and make its tables match the schema. Returns the backend.
+
+    Only used when the caller asked for the `sqlite-vec` backend; the default
+    `pack` backend needs no extension at all.
+    """
+    attached = vecstore.load(conn)
+    stored = _meta(conn, vecstore.BACKEND_META)
+
+    if not attached:
+        if stored == "sqlite-vec" and writable:
+            raise RuntimeError(
+                "this index stores vectors in sqlite-vec but the extension is not "
+                "installed. Run: pip install sqlite-vec"
+            )
+        return "blob"
+
+    if not writable:
+        return "sqlite-vec" if stored == "sqlite-vec" else "blob"
+
+    vecstore.create(conn, dim)
+    if stored != "sqlite-vec" or vecstore.count(conn) == 0:
+        vecstore.migrate_from_blobs(conn, dim)
+    _set_meta(conn, vecstore.BACKEND_META, "sqlite-vec")
+    return "sqlite-vec"
 
 
 def _add_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> bool:
@@ -180,10 +229,12 @@ class Store:
         dim: int = 384,
         readonly: bool = False,
         cache: "VectorCache | None" = None,
+        vector_backend: str = "pack",
     ) -> None:
         self.path = Path(path)
         self.readonly = readonly
         self.cache = cache
+        self._requested_backend = vector_backend
         if readonly:
             uri = f"file:{self.path.as_posix()}?mode=ro"
             self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
@@ -196,6 +247,11 @@ class Store:
         self._vec_matrix: np.ndarray | None = None
         self._vec_key: tuple[int, int] | None = None
         self._file_key: tuple[int, int] | None = None
+        self._pack = None
+        self._pack_key: tuple[int, int] | None = None
+        self._pack_lock = threading.Lock()
+        self.dim = dim
+        self._vec_backend = "blob"
         if not readonly:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -203,12 +259,29 @@ class Store:
             self.conn.executescript(SCHEMA)
             self._migrate()
             self._check_embedder(embedder, dim)
-        elif self._schema_version() < SCHEMA_VERSION:
-            # A reader that opens an index built by an older version still has
-            # to migrate it, otherwise every `usage` or `char_mask` query fails.
-            # It costs one short writable connection, once, after an upgrade.
-            self._migrate_externally()
+            self._vec_backend = self._setup_vectors(dim, writable=True)
+        else:
+            if self._schema_version() < SCHEMA_VERSION:
+                # A reader that opens an index built by an older version still has
+                # to migrate it, otherwise every `usage` or `char_mask` query fails.
+                # It costs one short writable connection, once, after an upgrade.
+                self._migrate_externally()
+            self._vec_backend = self._setup_vectors(dim, writable=False)
         self.conn.commit()
+
+    def _setup_vectors(self, dim: int, writable: bool) -> str:
+        requested = self._requested_backend
+        if requested == "blob":
+            return "blob"
+        if requested == "sqlite-vec":
+            try:
+                return prepare_vectors(self.conn, dim, writable=writable)
+            except RuntimeError:
+                if writable:
+                    raise
+                return "blob"
+        # Default: the memory-mapped pack. No extension, no startup copy.
+        return "pack"
 
     # ---------------------------------------------------------------- schema
 
@@ -226,6 +299,10 @@ class Store:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
             _migrate_connection(conn)
+            # Vector migration is deliberately NOT here: it depends on the
+            # backend the caller asked for, and running it eagerly copied 217k
+            # vectors into vec0 on every upgrade (7.6 s, +333 MB) for users who
+            # never selected that backend.
             conn.commit()
         except sqlite3.Error:
             pass  # genuinely read-only file: the tolerant queries below cope
@@ -282,6 +359,7 @@ class Store:
 
     def replace_chunks(self, file_id: int, chunks: Sequence[str], vectors: np.ndarray | None) -> int:
         self._drop_chunks_of(file_id)
+        pending: list[tuple[int, np.ndarray]] = []
         for order, text in enumerate(chunks):
             cursor = self.conn.execute(
                 "INSERT INTO chunks(file_id, ord, text) VALUES(?,?,?)", (file_id, order, text)
@@ -289,10 +367,17 @@ class Store:
             chunk_id = int(cursor.lastrowid)
             self.conn.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?,?)", (chunk_id, text))
             if vectors is not None and len(vectors) > order:
-                self.conn.execute(
-                    "INSERT INTO vectors(owner_type, owner_id, dim, vec) VALUES('chunk',?,?,?)",
-                    (chunk_id, int(vectors.shape[1]), vectors[order].astype(np.float32).tobytes()),
-                )
+                pending.append((chunk_id, vectors[order].astype(np.float32)))
+        if pending:
+            # `vectors` is always written: it is the source of truth that the
+            # pack and the vec0 table are both derived from. Writing only to the
+            # active backend would make switching backends lose data.
+            self.conn.executemany(
+                "INSERT INTO vectors(owner_type, owner_id, dim, vec) VALUES('chunk',?,?,?)",
+                [(chunk_id, int(vector.shape[0]), vector.tobytes()) for chunk_id, vector in pending],
+            )
+            if self._vec_backend == "sqlite-vec":
+                vecstore.insert_chunks(self.conn, pending)
         self._invalidate_vectors()
         return len(chunks)
 
@@ -302,10 +387,12 @@ class Store:
         )]
         if not old_ids:
             return
-        placeholders = ",".join("?" * len(old_ids))
         self.conn.executemany("DELETE FROM chunks_fts WHERE rowid = ?", [(i,) for i in old_ids])
+        if self._vec_backend == "sqlite-vec":
+            vecstore.delete_chunks(self.conn, old_ids)
         self.conn.execute(
-            f"DELETE FROM vectors WHERE owner_type='chunk' AND owner_id IN ({placeholders})", old_ids
+            "DELETE FROM vectors WHERE owner_type='chunk' AND owner_id IN "
+            f"({','.join('?' * len(old_ids))})", old_ids
         )
         self.conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
 
@@ -339,6 +426,29 @@ class Store:
     def image_by_file_id(self, file_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM images WHERE file_id = ?", (file_id,)).fetchone()
 
+    def image_meta(self, file_ids: Iterable[int]) -> dict[int, tuple[int, int, int]]:
+        """(width, height, phash) per file, in one query.
+
+        The listing path builds its rows from the name index and has no image
+        data; fetching it one file at a time would be a query per screenshot.
+        """
+        ids = [int(file_id) for file_id in file_ids]
+        if not ids:
+            return {}
+        out: dict[int, tuple[int, int, int]] = {}
+        for start in range(0, len(ids), 500):
+            block = ids[start:start + 500]
+            rows = self.conn.execute(
+                "SELECT file_id, width, height, phash FROM images WHERE file_id IN "
+                f"({','.join('?' * len(block))})",
+                block,
+            ).fetchall()
+            for row in rows:
+                out[int(row["file_id"])] = (
+                    int(row["width"] or 0), int(row["height"] or 0), int(row["phash"] or 0)
+                )
+        return out
+
     def upsert_image(
         self,
         path: str,
@@ -352,15 +462,17 @@ class Store:
         ocr_text: str | None,
         ocr_engine: str | None,
         vector: np.ndarray | None,
+        phash: int = 0,
     ) -> int:
         self.conn.execute(
-            "INSERT INTO images(path, file_id, sha256, width, height, size, mtime, thumb, ocr_text, ocr_engine, indexed_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO images(path, file_id, sha256, width, height, size, mtime, thumb, ocr_text, "
+            "ocr_engine, phash, indexed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(path) DO UPDATE SET file_id=excluded.file_id, sha256=excluded.sha256, "
             "width=excluded.width, height=excluded.height, size=excluded.size, mtime=excluded.mtime, "
             "thumb=excluded.thumb, ocr_text=excluded.ocr_text, ocr_engine=excluded.ocr_engine, "
-            "indexed_at=excluded.indexed_at",
-            (path, file_id, sha256, width, height, size, mtime, thumb, ocr_text, ocr_engine, time.time()),
+            "phash=excluded.phash, indexed_at=excluded.indexed_at",
+            (path, file_id, sha256, width, height, size, mtime, thumb, ocr_text, ocr_engine,
+             int(phash), time.time()),
         )
         row = self.conn.execute("SELECT id FROM images WHERE path = ?", (path,)).fetchone()
         image_id = int(row["id"])
@@ -372,6 +484,40 @@ class Store:
             )
         self._invalidate_vectors()
         return image_id
+
+    def sha256_for(self, file_ids: Iterable[int]) -> dict[int, str]:
+        """Content hash per file, in blocks — grouping collapses copies by it."""
+        ids = [int(file_id) for file_id in file_ids]
+        if not ids:
+            return {}
+        out: dict[int, str] = {}
+        for start in range(0, len(ids), 500):
+            block = ids[start:start + 500]
+            rows = self.conn.execute(
+                "SELECT id, sha256 FROM files WHERE id IN "
+                f"({','.join('?' * len(block))})",
+                block,
+            ).fetchall()
+            for row in rows:
+                if row["sha256"]:
+                    out[int(row["id"])] = str(row["sha256"])
+        return out
+
+    def missing_phash(self, limit: int = 100_000) -> list[sqlite3.Row]:
+        """Images indexed before `phash` existed, newest first.
+
+        `phash` arrived in schema v4, so an index built by an older version has
+        the column and nothing in it. Re-indexing would redo OCR for every
+        screenshot; a hash backfill only reopens the file and reads the pixels.
+        """
+        return self.conn.execute(
+            "SELECT i.id, i.path FROM images i LEFT JOIN files f ON f.id = i.file_id "
+            "WHERE i.phash IS NULL ORDER BY f.mtime DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+
+    def set_phash(self, image_id: int, phash: int) -> None:
+        self.conn.execute("UPDATE images SET phash = ? WHERE id = ?", (int(phash), int(image_id)))
 
     def thumb(self, file_id: int) -> bytes | None:
         row = self.conn.execute("SELECT thumb FROM images WHERE file_id = ?", (file_id,)).fetchone()
@@ -402,6 +548,10 @@ class Store:
             return self.cache.get(self)
         return self._load_vectors()
 
+    @property
+    def vector_backend(self) -> str:
+        return self._vec_backend
+
     def _load_vectors(self) -> tuple[np.ndarray, np.ndarray]:
         key_row = self.conn.execute(
             "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m FROM vectors WHERE owner_type='chunk'"
@@ -425,7 +575,58 @@ class Store:
         return self._vec_ids, self._vec_matrix
 
     def knn(self, query_vector: np.ndarray, limit: int) -> list[tuple[int, float]]:
+        if self._vec_backend == "sqlite-vec":
+            # Nothing is loaded into the process: SQLite walks the vec0 shadow
+            # rows and returns the k nearest, which is what makes a cold start
+            # cost the same as a warm query.
+            return vecstore.knn(self.conn, query_vector, limit)
+        if self._vec_backend == "pack":
+            pack = self.pack()
+            if pack is not None:
+                return pack.search(query_vector, limit)
         return _top_k(*self.vector_index(), query_vector, limit)
+
+    def pack(self):
+        """The memory-mapped matrix, rebuilt when the `vectors` table moved on.
+
+        Opening a pack is a stat header read plus an mmap: no copy, so the first
+        query after a restart costs the same as the second. A rebuild happens
+        only when the (rows, max id) key disagrees, which after an index run is
+        once — not once per process.
+        """
+        key = vecstore.pack_key(self.conn)
+        if not key[0]:
+            return None
+        with self._pack_lock:
+            if self._pack is not None and self._pack_key == key:
+                return self._pack
+            pack = vecstore.Pack.open(vecstore.pack_path(self.path), self.dim)
+            if pack is None or (pack.count, int(pack.ids[pack.count - 1])) != key:
+                # Windows cannot replace a file that is still mapped, so both the
+                # cached pack and the one just opened have to go before the new
+                # one is written.
+                if pack is not None:
+                    pack.close()
+                self._close_pack()
+                pack = vecstore.build_pack(self.conn, self.path, self.dim)
+            else:
+                self._close_pack()
+            self._pack, self._pack_key = pack, key
+            return pack
+
+    def _close_pack(self) -> None:
+        if self._pack is not None:
+            self._pack.close()
+            self._pack = None
+
+    def rebuild_pack(self):
+        """Force a rebuild. Called at the end of an index run so the first
+        search does not pay for it."""
+        with self._pack_lock:
+            self._close_pack()
+            self._pack = vecstore.build_pack(self.conn, self.path, self.dim)
+            self._pack_key = vecstore.pack_key(self.conn)
+            return self._pack
 
     def image_index(self, dim: int | None = None) -> tuple[np.ndarray, np.ndarray]:
         sql = "SELECT owner_id AS id, vec FROM vectors WHERE owner_type='image'"
@@ -528,7 +729,10 @@ class Store:
         return {
             "files": scalar("SELECT COUNT(*) FROM files"),
             "chunks": scalar("SELECT COUNT(*) FROM chunks"),
-            "vectors": scalar("SELECT COUNT(*) FROM vectors WHERE owner_type='chunk'"),
+            "vectors": (
+                vecstore.count(self.conn) if self._vec_backend == "sqlite-vec"
+                else scalar("SELECT COUNT(*) FROM vectors WHERE owner_type='chunk'")
+            ),
             "images": scalar("SELECT COUNT(*) FROM images"),
             "ocr_images": scalar("SELECT COUNT(*) FROM images WHERE ocr_text IS NOT NULL AND ocr_text != ''"),
             "db_bytes": self.path.stat().st_size if self.path.exists() else 0,
@@ -538,6 +742,8 @@ class Store:
         self._vec_key = None
         self._vec_ids = None
         self._vec_matrix = None
+        self._pack_key = None
+        self._pack = None
 
     def touch_check(self) -> None:
         """Drop the vector cache when another connection wrote to the file.
@@ -558,7 +764,12 @@ class Store:
             self._invalidate_vectors()
 
     def close(self) -> None:
-        self.conn.close()
+        try:
+            if self._pack is not None:
+                self._pack.close()
+                self._pack = None
+        finally:
+            self.conn.close()
 
     def __enter__(self) -> "Store":
         return self

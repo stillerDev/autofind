@@ -26,8 +26,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Sequence
 
+from . import nameindex
+from .group import group_hits
+from .nameindex import subsequence_score
 from .query import ParsedQuery, understand
-from .store import Store, basename, char_mask
+from .store import Store, basename
 
 RRF_K = 60
 # Channel weights for the fusion. Equal weights are the textbook default, but
@@ -71,6 +74,12 @@ class Hit:
     width: int = 0
     height: int = 0
     chunks: int = 1
+    # 64-bit dHash, used to collapse screenshot bursts.
+    phash: int = 0
+    # Set by the grouping pass: how many rows this one stands for, and which.
+    group_size: int = 1
+    group_reason: str = ""
+    group_members: tuple[int, ...] = ()
 
     @property
     def is_image(self) -> bool:
@@ -107,6 +116,8 @@ class SearchPage:
     offset: int
     limit: int
     approx: bool = False
+    groups: int = 0
+    collapsed: int = 0
 
     @property
     def next_offset(self) -> int | None:
@@ -139,57 +150,15 @@ def build_match_query(text: str, max_terms: int = 16) -> str | None:
 
 # --------------------------------------------------------------------- fuzzy
 
-def subsequence_score(query: str, name: str) -> float | None:
-    """fzf-style score: None when `query` is not a subsequence of `name`.
-
-    Contiguous runs and word starts are what the eye reads as "the same word",
-    so they score far above scattered characters. A literal substring is the
-    strongest signal and gets its own branch.
-    """
-    needle = query.strip().lower()
-    hay = name.lower()
-    if not needle:
-        return None
-    if needle in hay:
-        score = 120.0
-        position = hay.index(needle)
-        if position == 0:
-            score += 40.0
-        elif hay[position - 1] in " ._-(":
-            score += 20.0
-        # Shorter names mean the match is a bigger share of the name.
-        score += 30.0 * (len(needle) / max(len(hay), 1))
-        return score
-
-    score = 0.0
-    index = 0
-    run = 0
-    for position, ch in enumerate(hay):
-        if index < len(needle) and ch == needle[index]:
-            index += 1
-            run += 1
-            score += 6.0 + 2.0 * run
-            if position == 0 or hay[position - 1] in " ._-(":
-                score += 8.0
-        else:
-            run = 0
-    if index < len(needle):
-        return None
-    # Every skipped character is a small penalty, so "app" prefers App.tsx.
-    return max(score - 0.4 * (len(hay) - len(needle)), 1.0)
-
-
 def fuzzy_files(store: Store, text: str, limit: int) -> list[tuple[int, float]]:
-    """Rank files by name similarity, newest first inside equal scores."""
-    mask = char_mask(text)
-    rows = store.fuzzy_candidates(mask, limit * 8)
-    scored: list[tuple[int, float]] = []
-    for row in rows:
-        score = subsequence_score(text, row["name"] or basename(row["path"]))
-        if score is not None:
-            scored.append((int(row["id"]), score))
-    scored.sort(key=lambda item: -item[1])
-    return scored[:limit]
+    """Rank files by name similarity, newest first inside equal scores.
+
+    Delegates to the process-wide in-memory name index: the bloom prefilter is
+    one vectorised AND over the whole corpus, so this no longer issues a query
+    per keystroke and no longer scales with the number of rows in SQLite.
+    """
+    index = nameindex.load(store)
+    return index.search(text, limit)
 
 
 # ------------------------------------------------------------------- ranking
@@ -253,37 +222,52 @@ def _listing(
     sort: str,
     since: float | None = None,
 ) -> tuple[list[Hit], dict[str, int]]:
-    """Filter-only queries: `type:image`, `modified:<7d`, `mode:exhaustive`."""
-    rows = store.all_files()
-    matched = [
-        row
-        for row in rows
-        if (since is None or float(row["mtime"]) >= since)
-        and parsed.matches(row["path"], row["kind"], int(row["size"]), float(row["mtime"]))
-    ]
-    hits = [
-        Hit(
-            file_id=int(row["id"]),
-            path=row["path"],
-            kind=row["kind"],
-            score=0.0,
-            snippet="",
-            name=row["name"] or basename(row["path"]),
-            ord=0,
-            mtime=float(row["mtime"]),
-            size=int(row["size"]),
-            channels=("filter",),
+    """Filter-only queries: `type:image`, `modified:<7d`, `mode:exhaustive`.
+
+    Runs against the in-memory name index rather than a fresh `SELECT`, so a
+    filter-only query does not re-materialise the whole files table.
+    """
+    index = nameindex.load(store)
+    hits: list[Hit] = []
+    kinds: list[str] = []
+    for position in range(len(index)):
+        path = index.paths[position]
+        kind = index.kinds[position]
+        size = int(index.sizes[position])
+        mtime = float(index.mtimes[position])
+        if since is not None and mtime < since:
+            continue
+        if not parsed.matches(path, kind, size, mtime):
+            continue
+        kinds.append(kind)
+        hits.append(
+            Hit(
+                file_id=int(index.ids[position]),
+                path=path,
+                kind=kind,
+                score=0.0,
+                snippet="",
+                name=index.names[position],
+                ord=0,
+                mtime=mtime,
+                size=size,
+                channels=("filter",),
+            )
         )
-        for row in matched
-    ]
+    image_hits = [hit for hit in hits if hit.is_image]
+    if image_hits:
+        meta = store.image_meta([hit.file_id for hit in image_hits])
+        for hit in image_hits:
+            values = meta.get(hit.file_id)
+            if values is not None:
+                hit.width, hit.height, hit.phash = values
     hits.sort(key=_order_key(sort))
-    return hits, _facets(matched)
+    return hits, _facets(kinds)
 
 
-def _facets(rows) -> dict[str, int]:
+def _facets(kinds: Sequence[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for row in rows:
-        kind = row["kind"]
+    for kind in kinds:
         counts[kind] = counts.get(kind, 0) + 1
     return counts
 
@@ -457,6 +441,7 @@ def _rank(
             if image is not None:
                 hit.width = int(image["width"] or 0)
                 hit.height = int(image["height"] or 0)
+                hit.phash = int(image["phash"] or 0)
 
     hits.sort(key=_order_key(order))
     return hits, {}
@@ -500,6 +485,7 @@ def search_page(
     sort: str | None = None,
     parsed: ParsedQuery | None = None,
     usage: dict[int, tuple[int, float]] | None = None,
+    group: bool = True,
 ) -> SearchPage:
     """One query, with the counts and chips the UI needs to explain itself."""
     parsed = parsed or understand(query)
@@ -509,6 +495,21 @@ def search_page(
     resolved = _resolve_sort(sort, parsed, listing=listing)
     hits, facets = _rank(store, embedder, parsed, sort=resolved, parsed=parsed, usage=usage)
     total = len(hits)
+
+    collapsed = 0
+    if group:
+        # One batched hash lookup for the page: without it two byte-identical
+        # copies of the same file occupy two rows in every result list.
+        grouped = group_hits(hits, hashes=store.sha256_for(hit.file_id for hit in hits))
+        collapsed = sum(item.size - 1 for item in grouped)
+        hits = []
+        for item in grouped:
+            lead = item.representative
+            lead.group_size = item.size
+            lead.group_reason = item.reason if item.size > 1 else ""
+            lead.group_members = tuple(member.file_id for member in item.members)
+            hits.append(lead)
+        total = len(hits)
 
     return SearchPage(
         hits=hits[offset:offset + limit],
@@ -522,6 +523,8 @@ def search_page(
         offset=offset,
         limit=limit,
         approx=not listing,
+        groups=len(hits),
+        collapsed=collapsed,
     )
 
 

@@ -60,11 +60,20 @@ class IndexConfig:
     ocr_languages: str = "rus+eng"
     ocr_engine: str | None = None
     ocr_enabled: bool = True
+    # Second OCR pass with a CJK-capable engine when the first one clearly could
+    # not read the image. Costs a second pass only on screenshots that failed.
+    ocr_cjk: bool = True
+    ocr_cjk_model: str | None = None      # e.g. a japan/korean PP-OCR rec model
+    ocr_cjk_keys: str | None = None       # its dictionary
     excluded_dirs: frozenset[str] = EXCLUDED_DIRS
     privacy: bool = True
     allow_sensitive: bool = False
     watch_interval: float = 2.0
     watch_settle: float = 1.0
+    # "pack" (memory-mapped side file, default), "sqlite-vec" (vec0 tables,
+    # needs the extension, ~7x slower per query here) or "blob" (the old
+    # in-process numpy matrix, 2.6 s cold start).
+    vector_backend: str = "pack"
 
     @property
     def db_path(self) -> Path:

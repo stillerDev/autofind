@@ -15,6 +15,7 @@ from typing import Callable, Sequence
 from .chunker import chunk_text
 from .config import IndexConfig
 from .extract import extract_text
+from .group import dhash
 from .images import load_image, thumbnail_bytes, visual_features
 from .ocr import OcrUnavailable, ocr_image
 from .scanner import iter_entries, sha256_file
@@ -33,6 +34,7 @@ class IndexStats:
     images: int = 0
     duplicates: int = 0
     ocr_empty: int = 0
+    rehashed: int = 0
     pruned: int = 0
     sensitive: int = 0
     sensitive_examples: list[tuple[str, str]] = field(default_factory=list)
@@ -53,6 +55,7 @@ class IndexStats:
             "images": self.images,
             "duplicates": self.duplicates,
             "ocr_empty": self.ocr_empty,
+            "rehashed": self.rehashed,
             "pruned": self.pruned,
             "sensitive": self.sensitive,
             "seconds": round(self.seconds, 2),
@@ -112,8 +115,39 @@ def run_index(
     if prune:
         stats.pruned = store.prune(seen)
     store.commit()
+    # Old indexes predate `images.phash`, and an unchanged file is never
+    # re-indexed, so without this the burst detector silently sees no hashes on
+    # exactly the screenshots that were there first. Cheap: decode only, no OCR.
+    stats.rehashed = backfill_phash(store)
+    store.commit()
+    # Build the memory-mapped vector pack now, not on the first query. The
+    # indexer already has everything on disk; the alternative is a 2.6 s stall
+    # the first time someone searches after an index run.
+    if store.vector_backend == "pack":
+        store.rebuild_pack()
     stats.seconds = time.perf_counter() - started
     return stats
+
+
+def backfill_phash(store: Store, limit: int = 100_000) -> int:
+    """Give a perceptual hash to images indexed before schema v4.
+
+    Only decodes pixels — no OCR, no embeddings, no thumbnail — so it costs a
+    few milliseconds per screenshot instead of a full re-index. Files that have
+    since disappeared are left alone rather than marked with a bogus hash.
+    """
+    done = 0
+    for row in store.missing_phash(limit):
+        path = str(row["path"])
+        try:
+            image = load_image(path)
+        except Exception:
+            continue
+        if image is None:
+            continue
+        store.set_phash(int(row["id"]), dhash(image))
+        done += 1
+    return done
 
 
 def _index_one(entry, config: IndexConfig, store: Store, embedder, visual, stats: IndexStats) -> str:
@@ -160,7 +194,12 @@ def _index_image(entry, config: IndexConfig, store: Store, embedder, visual, sta
     engine_name = None
     if config.ocr_enabled:
         try:
-            result = ocr_image(entry.path, config.ocr_languages, config.ocr_engine)
+            result = ocr_image(
+                entry.path, config.ocr_languages, config.ocr_engine,
+                cjk=config.ocr_cjk,
+                cjk_model=config.ocr_cjk_model,
+                cjk_keys=config.ocr_cjk_keys,
+            )
             ocr_text = result.text
             engine_name = result.engine
         except OcrUnavailable:
@@ -176,7 +215,7 @@ def _index_image(entry, config: IndexConfig, store: Store, embedder, visual, sta
     vector = visual.encode_image(image) if visual is not None else visual_features(image)
     store.upsert_image(
         entry.path, file_id, digest, width, height, entry.size, entry.mtime,
-        thumb, ocr_text or None, engine_name, vector,
+        thumb, ocr_text or None, engine_name, vector, phash=dhash(image),
     )
     stats.images += 1
     stats.indexed += 1

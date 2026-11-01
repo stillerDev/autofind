@@ -515,6 +515,40 @@ main {
 .badge.b-bm25 { color: #8fb8e8; border-color: #2b3a4d; }
 .badge.b-vector { color: #9fd6a8; border-color: #2a3d2e; }
 
+/* A group badge is a control, not a label: it expands the row. */
+.badge.b-group {
+  cursor: pointer;
+  color: #d8c9a8;
+  border-color: #4a4230;
+  background: rgba(216, 201, 168, 0.08);
+  font-family: inherit;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+.badge.b-group:hover { background: rgba(216, 201, 168, 0.16); }
+.badge.b-group.open { background: rgba(216, 201, 168, 0.22); }
+
+.group-list {
+  grid-column: 1 / -1;
+  margin: 8px 0 2px 44px;
+  border-left: 1px solid var(--border);
+  padding-left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.group-item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--muted);
+}
+.group-item a { color: var(--text); cursor: pointer; }
+.group-item a:hover { text-decoration: underline; }
+.group-meta { font-size: 11px; color: var(--faint); }
+
 .path {
   font-size: 11.5px;
   color: var(--faint);

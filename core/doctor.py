@@ -93,16 +93,22 @@ def collect(config: IndexConfig, db_path: Path | None = None) -> dict:
     text_embedder = get_embedder("auto", config.model_dir)
     visual = get_visual_embedder(config.model_dir)
 
-    index = {"path": str(db_path), "exists": db_path.exists(), "bytes": 0, "files": 0, "chunks": 0, "images": 0}
+    index = {"path": str(db_path), "exists": db_path.exists(), "bytes": 0, "files": 0,
+             "chunks": 0, "images": 0, "vectors": 0, "backend": None, "pack_bytes": 0}
     if db_path.exists():
         index["bytes"] = db_path.stat().st_size
         try:
-            store = Store(db_path, text_embedder.name, text_embedder.dim, readonly=True)
+            store = Store(db_path, text_embedder.name, text_embedder.dim, readonly=True,
+                          vector_backend=config.vector_backend)
             try:
                 stats = store.stats()
+                index["backend"] = store.vector_backend
             finally:
                 store.close()
-            index.update({key: stats[key] for key in ("files", "chunks", "images", "ocr_images")})
+            index.update({key: stats[key] for key in ("files", "chunks", "images", "ocr_images", "vectors")})
+            pack = Path(str(db_path) + ".vec")
+            if pack.exists():
+                index["pack_bytes"] = pack.stat().st_size
         except Exception as exc:  # a broken db must not crash doctor
             index["error"] = f"{type(exc).__name__}: {exc}"
 
@@ -137,12 +143,16 @@ def format_report(data: dict) -> str:
         f"             {index['bytes'] / 1048576:.1f} MB · "
         f"{index.get('files', 0)} files · {index.get('chunks', 0)} chunks · "
         f"{index.get('images', 0)} images",
+        f"vectors      {index.get('vectors', 0)} · backend {index.get('backend') or '—'}"
+        + (f" · pack {index['pack_bytes'] / 1048576:.0f} MB" if index.get("pack_bytes") else ""),
         "",
         f"text         {data['text_embedder']}",
         f"visual       {data['visual_embedder']}"
         + ("" if data["visual_supports_text"] else "   (no text-to-image: needs CLIP)"),
         f"ocr          {ocr['active'] or 'none'}"
         + (f"   available: {', '.join(ocr['available'])}" if ocr["available"] else ""),
+        f"ocr cjk      {', '.join(ocr.get('cjk', {}).get('scripts') or []) or 'none'}"
+        + (f"   via {', '.join(ocr['cjk']['engines'])}" if ocr.get("cjk", {}).get("engines") else ""),
         "",
         f"privacy      {'on' if privacy['enabled'] else 'OFF'}"
         f"   {len(privacy['sensitive_dirs'])} dirs, {len(privacy['sensitive_files'])} file patterns",

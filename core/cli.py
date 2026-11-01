@@ -30,6 +30,12 @@ def main(argv: list[str] | None = None) -> int:
         prog="semfind", description="Local search over files and screenshots. Nothing leaves the machine."
     )
     parser.add_argument("--db", type=Path, help="path to index.db (default: <SEMFIND_HOME>/index.db)")
+    parser.add_argument(
+        "--vector-backend",
+        default="pack",
+        choices=["pack", "sqlite-vec", "blob"],
+        help="how chunk vectors are stored and searched (default: pack)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     index_cmd = sub.add_parser("index", help="scan folders and build the index")
@@ -82,8 +88,22 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("cheat", help="print the query grammar")
     sub.add_parser("stats", help="show index size and settings")
 
+    connect_cmd = sub.add_parser("connect", help="register the MCP server with Claude Desktop / Cursor")
+    connect_cmd.add_argument(
+        "target", nargs="?", default="all", choices=["all", "claude-desktop", "cursor", "vscode", "print"],
+        help="which client config to edit (default: all that exist)",
+    )
+    connect_cmd.add_argument(
+        "--transport", default="stdio", choices=["stdio", "http"],
+        help="stdio launches the process per client; http uses the running app",
+    )
+    connect_cmd.add_argument("--port", type=int, default=8765, help="port for the http transport")
+    connect_cmd.add_argument("--write", action="store_true", help="actually edit the files")
+    connect_cmd.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
     config = IndexConfig()
+    config.vector_backend = args.vector_backend
     db_path = args.db or config.db_path
 
     if args.command == "index":
@@ -104,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
         return serve_mcp(db_path, config)
     if args.command == "cheat":
         return _cmd_cheat()
+    if args.command == "connect":
+        return _cmd_connect(args, config, db_path)
     if args.command == "serve":
         from .api import serve
 
@@ -120,7 +142,7 @@ def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
         config.allow_sensitive = True
     embedder = get_embedder(args.embedder, config.model_dir)
     visual = get_visual_embedder(config.model_dir)
-    store = Store(db_path, embedder.name, embedder.dim)
+    store = Store(db_path, embedder.name, embedder.dim, vector_backend=config.vector_backend)
     try:
         started = time.perf_counter()
         stats = run_index(
@@ -149,6 +171,8 @@ def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
     print(f"chunks         {stats.chunks}")
     if stats.pruned:
         print(f"pruned         {stats.pruned}")
+    if stats.rehashed:
+        print(f"rehashed       {stats.rehashed}  (phash backfill for burst grouping)")
     if stats.sensitive:
         print(f"skipped private {stats.sensitive}")
         for path, reason in stats.sensitive_examples[:3]:
@@ -164,7 +188,7 @@ def _cmd_search(args, config: IndexConfig, db_path: Path) -> int:
         print(f"no index at {db_path}; run: semfind index <folder>", file=sys.stderr)
         return 2
     embedder = get_embedder(args.embedder, config.model_dir)
-    store = Store(db_path, embedder.name, embedder.dim, readonly=True)
+    store = Store(db_path, embedder.name, embedder.dim, readonly=True, vector_backend=config.vector_backend)
     try:
         query = " ".join(args.query)
         started = time.perf_counter()
@@ -222,6 +246,58 @@ def _cmd_search(args, config: IndexConfig, db_path: Path) -> int:
         if hit.snippet:
             print(f"    {hit.snippet}")
         print()
+    return 0
+
+
+def _cmd_connect(args, config: IndexConfig, db_path: Path) -> int:
+    from . import connect
+
+    transport = args.transport
+    value = connect.entry(transport, config, args.port, db_path)
+
+    if args.target == "print":
+        print(connect.snippet(transport, config, args.port, db_path))
+        return 0
+
+    chosen = connect.targets() if args.target == "all" else [connect.find(args.target)]
+    chosen = [target for target in chosen if target is not None]
+    if not chosen:
+        print(f"unknown target: {args.target}", file=sys.stderr)
+        return 2
+
+    results = []
+    for target in chosen:
+        exists = target.path.exists()
+        # "all" only touches configs that already exist: creating a Cursor config
+        # on a machine without Cursor is noise, not a feature.
+        if args.target == "all" and not exists:
+            results.append({"target": target.name, "path": str(target.path), "skipped": "not installed"})
+            continue
+        changed, message = connect.write(target, value, dry_run=not args.write)
+        results.append({
+            "target": target.name,
+            "path": str(target.path),
+            "written": bool(args.write) and changed,
+            "message": message,
+        })
+
+    if args.json:
+        print(json.dumps({"transport": transport, "results": results}, ensure_ascii=False, indent=2))
+        return 0
+
+    for item in results:
+        if item.get("skipped"):
+            print(f"  {item['target']:<16} пропущено ({item['skipped']})")
+            continue
+        verb = "записано" if item["written"] else "будет записано (--write, чтобы применить)"
+        print(f"  {item['target']:<16} {verb}: {item['path']}")
+        if not args.write:
+            print()
+            print(item["message"])
+    if transport == "http":
+        print(f"\nтокен лежит в {config.home / connect.TOKEN_FILE}; приложение должно быть запущено")
+    else:
+        print("\nклиент запустит `semfind mcp` сам, приложение может быть закрыто")
     return 0
 
 
@@ -283,7 +359,7 @@ def _cmd_eval(args, config: IndexConfig, db_path: Path) -> int:
         return 2
 
     embedder = get_embedder("auto", config.model_dir)
-    store = Store(db_path, embedder.name, embedder.dim, readonly=True)
+    store = Store(db_path, embedder.name, embedder.dim, readonly=True, vector_backend=config.vector_backend)
     try:
         report = evaluate(store, embedder, labels, limit=args.limit, candidates=args.candidates)
         ablation = (
@@ -327,7 +403,7 @@ def _cmd_privacy(args, config: IndexConfig, db_path: Path) -> int:
         return 2
     embedder = get_embedder("auto", config.model_dir)
     if args.action == "purge":
-        store = Store(db_path, embedder.name, embedder.dim)
+        store = Store(db_path, embedder.name, embedder.dim, vector_backend=config.vector_backend)
         try:
             result = purge_indexed(store)
         finally:
@@ -340,7 +416,7 @@ def _cmd_privacy(args, config: IndexConfig, db_path: Path) -> int:
                 print(f"  · {path}")
         return 0
 
-    store = Store(db_path, embedder.name, embedder.dim, readonly=True)
+    store = Store(db_path, embedder.name, embedder.dim, readonly=True, vector_backend=config.vector_backend)
     try:
         found = indexed_sensitive(store)
     finally:
@@ -364,7 +440,7 @@ def _cmd_stats(config: IndexConfig, db_path: Path) -> int:
         return 2
     embedder = get_embedder("auto", config.model_dir)
     visual = get_visual_embedder(config.model_dir)
-    store = Store(db_path, embedder.name, embedder.dim, readonly=True)
+    store = Store(db_path, embedder.name, embedder.dim, readonly=True, vector_backend=config.vector_backend)
     try:
         stats = store.stats()
     finally:

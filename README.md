@@ -29,9 +29,13 @@ with no model downloads:
 | Screenshots: OCR | works | Windows OCR via WinRT (`ru` + `en` on this machine) |
 | Screenshots: visual similarity | works | 228-dim layout/colour descriptor |
 | Search | works | fuzzy names + BM25 + vectors, fused with RRF |
+| Name search | works | in-memory name index, 1.7 ms at 100k names |
+| Vectors | works | memory-mapped pack, ~40 ms warm, no 333 MB matrix |
+| Result grouping | works | versions, identical copies and screenshot bursts, expandable |
 | Query language | works | `type:`, `ext:`, `in:`, `modified:`, `size:`, `re:`, … |
 | Natural language | works | deterministic RU/EN intent compiler with removable chips |
-| Agent access | works | MCP server over stdio (`semfind mcp`), read-only |
+| Agent access | works | MCP over stdio **and** HTTP (`semfind connect`) |
+| CJK screenshots | works | second OCR pass via RapidOCR (Chinese verified) |
 | Live updates | works | polling watcher, ~2 s debounce |
 | Quality measurement | works | `eval` with Recall@10, MRR, ablation |
 | Privacy filter | works | path blocklist + `.gitignore` parity, `privacy purge` |
@@ -117,12 +121,33 @@ rewritten silently, and an unrecognised phrase is searched literally.
 
 ```bash
 python -m core.cli mcp        # JSON-RPC 2.0 over stdio, read-only
+python -m core.cli connect    # write the client config for you
 ```
 
 Tools: `search` (with cursor pagination), `read_snippet` (bounded),
 `index_state`, `regex_search`, `similar_images`. Read-only by construction —
-there is no tool that can open, move or modify anything. Point Claude Desktop or
-Cursor at that command and the agent searches the same local index you do.
+there is no tool that can open, move or modify anything.
+
+Two transports, because the right one depends on the client:
+
+| Transport | Endpoint | When |
+|---|---|---|
+| stdio | `semfind mcp` | Claude Desktop, Cursor — the client owns the process |
+| HTTP | `POST http://127.0.0.1:8765/mcp` | sandboxed agents, remote tools, no process to spawn |
+
+`semfind connect` writes the entry into `claude_desktop_config.json` or
+`~/.cursor/mcp.json`, merging with the servers already there and keeping a
+`.bak` of the file it changed. `--transport http` writes the URL form instead,
+with a bearer token generated once into `~/.semfind/mcp_token`. `--write` is
+required to actually touch a file; without it the command prints the diff, which
+is what you want the first time.
+
+```bash
+semfind connect                      # show what would change, all clients found
+semfind connect cursor --write       # edit one client
+semfind connect --transport http --write
+semfind connect print                # paste-ready JSON
+```
 
 ## How it works
 
@@ -189,12 +214,87 @@ is the bottleneck.
 
 Two numbers the plan should have known:
 
-- **First query after a restart costs 2.6 s** on the 217k-chunk index: the
-  vector matrix (333 MB) is read from SQLite and stacked. It is cached per
-  process afterwards (21 ms), and the UI server pre-warms it at startup. This is
-  exactly the point where `sqlite-vec` stops being optional.
-- **The index is 1.06 GB for 8.4k files.** Most of it is the float32 matrix, not
-  text. Deduplicating identical chunks across the tree would cut it substantially.
+- **Cold start used to cost 2.6 s** on the 217k-chunk index: the vector matrix
+  (333 MB) was read from SQLite and stacked. It is now a memory-mapped pack —
+  see the next section — so the first query after a restart costs the same as
+  the second.
+- **The index is 1.06 GB for 8.4k files**, plus a 320 MB pack. Most of it is
+  float32 vectors, not text. Deduplicating identical chunks across the tree
+  would cut it substantially.
+
+## Scaling past 100k files
+
+Three things used to grow with the corpus in a way that would have broken at
+100k files. All three were replaced, and each number below is measured, not
+estimated.
+
+### Names live in memory, not in SQLite
+
+`core/nameindex.py`. Every name, path and kind is loaded once into flat arrays
+with a 63-bit character bloom, and the bloom prefilter is one vectorised AND over
+the whole corpus. Literal-substring queries are answered by a single C-level
+regex scan over a NUL-joined byte buffer, scored in numpy — so the cost tracks
+the number of hits, not the size of the index.
+
+| Names | Before (SQL scan) | Now, literal | Now, abbreviation |
+|---|---|---|---|
+| 8 000 | 35 ms | 0.2 ms | 1.7 ms |
+| 100 000 | — | 1.7 ms | 19 ms (capped) |
+| 1 000 000 | — | 20 ms | 45 ms (capped) |
+
+The abbreviation tier is capped at 20k candidates, newest first, which is what
+keeps it **bounded** instead of linear: a query over 1M names costs the same as
+over 100k.
+
+### Vectors are memory-mapped, not stacked
+
+`core/vectors.py`. The 333 MB float32 matrix used to be read from SQLite and
+copied into a numpy array at startup. It is now a packed side file
+(`index.db.vec`) mapped into the process: no copy, no anonymous 333 MB, and the
+pages stay in the OS cache across restarts.
+
+| Backend | Cold start | Query, 217k chunks | Extra disk |
+|---|---|---|---|
+| numpy matrix (before) | 2 600 ms | 21 ms | — |
+| sqlite-vec `vec0` | 0 ms | 90–255 ms | +333 MB |
+| memory-mapped pack | ~0 ms | 40 ms | +320 MB |
+
+`sqlite-vec` is implemented and available (`--vector-backend sqlite-vec`) but is
+not the default: its exact KNN walks shadow rows one at a time and costs 4–12x
+more per query than one matmul. The pack is a pure cache — `vectors` in SQLite
+stays the source of truth, so deleting the file costs a rebuild, never data.
+
+### Near-duplicates collapse
+
+`core/group.py`. Two rows that say the same thing are one row with a badge:
+
+- **versions** — `resume.docx`, `resume_v2.docx`, `resume-final.docx`,
+  `resume (1).docx`, `итоговый_отчет_в2.docx` group by a normalised stem inside
+  one folder. Conservative on purpose: merging two genuinely different documents
+  is worse than missing a merge, so `report` and `report_2024` stay apart.
+- **copies** — the same file copied into two folders is one row. Same name and
+  same sha256, different path: `openWallpaper\...\steambootstrapper_russian.txt`
+  and `zz\...\steambootstrapper_russian.txt` are one answer, not two. Same
+  bytes under a *different* name stay separate, because a name is usually the
+  reason the user kept the second copy. On this corpus that is 611 rows (7%)
+  that used to be noise.
+- **bursts** — screenshots of the same screen within 15 minutes, in the same
+  folder, at the **same pixel size**, within 10 bits of a 63-bit dHash **and**
+  sharing 60% of their OCR words. Every one of those conditions comes from a
+  false positive on real data: dHash resizes to 9×8 first, so it is blind to
+  scale and scored one icon exported at 30, 44, 71 and 1024 px as identical.
+  Hence the size floor (640 px — a screenshot is a screen, not a 32×32 sprite
+  frame) and, when neither side has OCR text to confirm the match, a near-exact
+  hash (≤2 bits). A wrong merge hides a file; a missed one leaves an extra row.
+
+Clicking the badge expands the group. The badge is a fact, not decoration: it
+tells you the row you see is the one the ranker picked out of N.
+
+Bursts need a perceptual hash, which arrived in schema v4. An index built by an
+older version gets it backfilled at the end of `semfind index` — decode only, no
+OCR, 1 097 images in 3.8 s here. Without it the detector would silently see no
+hashes on exactly the screenshots that were indexed first, since an unchanged
+file is never re-indexed.
 
 ## Quality
 
@@ -234,6 +334,21 @@ small text; only Tesseract gets the grayscale-and-invert treatment.
 Engine order: `windows-ocr` → `tesseract-cli` → `pytesseract` → `rapidocr`.
 The engine that produced a screenshot's text is recorded in the index, so a
 later switch is visible instead of silent.
+
+**CJK.** The Windows engine only knows the language packs that are installed, so
+a Chinese or Japanese screenshot comes back as a handful of stray Latin letters —
+worse than nothing, because it looks indexed and is not findable. The OCR layer
+therefore runs a second pass through a CJK-capable engine when the first result
+is implausibly small for the image, and keeps whichever result scores higher
+(letters and digits, with ideographs weighted double). The second pass only runs
+on screenshots that failed, so Russian screenshots are unaffected — measured at
+0.03–0.24 s with no extra engine call.
+
+Verified on this machine: `你好世界文件搜索` read correctly from a rendered test
+image via RapidOCR's bundled Chinese model. Japanese and Korean need a
+recognition model that RapidOCR does not ship; point `ocr_cjk_model` at one and
+the router will use it. `semfind doctor` prints exactly which scripts are covered
+rather than claiming CJK in general.
 
 ## Embedders
 
@@ -321,16 +436,19 @@ turns Recall@10 from a claim into a number.
 - `CLIP` and `e5` weights are not bundled; the installer budget is 378 MB
   against the plan's 150 MB, and that decision is still open.
 - Index encryption, an app blocklist and a global OCR pause switch.
-- `sqlite-vec` — brute force is fine at 21 ms warm, but the 2.6 s cold load and
-  333 MB matrix are the reason to move.
 - Tauri shell, global hotkey, MSI/DMG/AppImage packaging.
 - No tray icon, no global summon key: it is a browser tab, not a launcher yet.
 - Facet counts are computed for filter-only queries, not for ranked ones — the
   candidate pool is bounded, so the number would be a lie.
-- Version grouping ("resume_v2", "resume_final") and screenshot burst collapsing
-  are not implemented; near-duplicates still show as separate rows.
+- Japanese and Korean OCR need a recognition model that RapidOCR does not bundle;
+  `ocr_cjk_model` points at one, but nothing fetches it for you.
 - The document itself still has the inconsistencies listed in the review
   (top-10 table vs figure, p95 vs median, 30 Nov vs 29 Nov).
+
+Closed since the kensaku comparison: the name index (1.7 ms at 100k instead of a
+35 ms scan at 8k), the vector matrix (a memory-mapped pack: ~40 ms warm, ~0 ms
+cold, no 333 MB allocation), version grouping and screenshot bursts, MCP over
+HTTP with `semfind connect`, and CJK OCR.
 
 ## License
 

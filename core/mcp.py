@@ -155,7 +155,7 @@ class McpServer:
     def _open(self) -> Store:
         if self._store is None:
             embedder = get_embedder("auto", self.config.model_dir)
-            self._store = Store(self.db_path, embedder.name, embedder.dim, readonly=True)
+            self._store = Store(self.db_path, embedder.name, embedder.dim, readonly=True, vector_backend=self.config.vector_backend)
         else:
             self._store.touch_check()
         return self._store

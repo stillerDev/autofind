@@ -22,6 +22,8 @@ from typing import Protocol
 
 from PIL import Image
 
+from .script import CJK_TAGS
+
 
 @dataclass(slots=True)
 class OcrResult:
@@ -80,6 +82,14 @@ class WindowsOcr:
                 engine = WinOcrEngine.try_create_from_language(Language(self.language))
             except Exception:
                 engine = None
+            if engine is None:
+                # Do not fall back to the profile languages here: asking for `ja`
+                # and silently getting `en-US` makes `available()` lie, and the
+                # CJK router would then "retry" with the engine that already
+                # failed.
+                available = [item.language_tag for item in WinOcrEngine.available_recognizer_languages]
+                self._error = f"no recogniser for {self.language}; available: {available}"
+                return None
         if engine is None:
             try:
                 engine = WinOcrEngine.try_create_from_user_profile_languages()
@@ -91,6 +101,10 @@ class WindowsOcr:
             self._error = f"no recogniser for profile languages; available: {available}"
             return None
         self._engine = engine
+        try:
+            self.language = engine.recognizer_language.language_tag
+        except Exception:
+            pass
         return engine
 
     def recognize(self, image: Image.Image) -> OcrResult:
@@ -180,10 +194,21 @@ class PyTesseractOcr:
 
 
 class RapidOcr:
-    name = "rapidocr"
-    preprocess_mode = "gray"
+    """PP-OCR through onnxruntime.
 
-    def __init__(self) -> None:
+    Its bundled recognition model is the Chinese one (`ch_PP-OCRv3_rec`), which
+    reads Simplified Chinese and Latin text and is the only CJK-capable engine
+    that needs no OS language pack and no Tesseract install. Japanese and Korean
+    need a different recognition model; `rec_model` points at one if the user
+    has fetched it, otherwise those screenshots fall back to the Windows engine.
+    """
+
+    name = "rapidocr"
+    preprocess_mode = "rgb"
+
+    def __init__(self, rec_model: str | None = None, rec_keys: str | None = None) -> None:
+        self.rec_model = rec_model
+        self.rec_keys = rec_keys
         self._engine = None
 
     def available(self) -> bool:
@@ -193,11 +218,22 @@ class RapidOcr:
             return False
         return True
 
-    def recognize(self, image: Image.Image) -> OcrResult:
+    def _build(self):
         from rapidocr_onnxruntime import RapidOCR
 
+        if self.rec_model:
+            params = {"Rec.model_path": self.rec_model}
+            if self.rec_keys:
+                params["Rec.rec_keys_path"] = self.rec_keys
+            try:
+                return RapidOCR(params=params)
+            except Exception:
+                pass  # a broken custom model must not disable OCR entirely
+        return RapidOCR()
+
+    def recognize(self, image: Image.Image) -> OcrResult:
         if self._engine is None:
-            self._engine = RapidOCR()
+            self._engine = self._build()
         import numpy as np
 
         result, _ = self._engine(np.asarray(image.convert("RGB")))
@@ -225,6 +261,54 @@ def available_engines(languages: str = "rus+eng") -> list[OcrEngine]:
         except Exception:
             continue
     return found
+
+
+def cjk_engines(rec_model: str | None = None, rec_keys: str | None = None) -> list[OcrEngine]:
+    """Engines that can read Chinese, Japanese or Korean, best first.
+
+    A Windows language pack is preferred when it exists because it is free and
+    already installed; RapidOCR is next because its Chinese model is bundled
+    with the package; Tesseract is last because it needs `chi_sim` traineddata
+    that users rarely have.
+    """
+    found: list[OcrEngine] = []
+    if sys.platform == "win32":
+        for tag in CJK_TAGS:
+            engine = WindowsOcr(tag)
+            if engine.available():
+                found.append(engine)
+                break
+    rapid = RapidOcr(rec_model, rec_keys)
+    if rapid.available():
+        found.append(rapid)
+    tesseract = TesseractCli("chi_sim+jpn+kor+eng")
+    if tesseract.available():
+        found.append(tesseract)
+    return found
+
+
+def cjk_coverage() -> dict:
+    """Which scripts CJK OCR can actually handle on this machine."""
+    engines = cjk_engines()
+    scripts = set()
+    for engine in engines:
+        if isinstance(engine, WindowsOcr):
+            tag = (engine.language or "").lower()
+            if tag.startswith("zh"):
+                scripts.update({"chinese"})
+            elif tag.startswith("ja"):
+                scripts.update({"japanese", "chinese"})
+            elif tag.startswith("ko"):
+                scripts.update({"korean"})
+        elif isinstance(engine, RapidOcr):
+            scripts.add("chinese")
+        elif isinstance(engine, TesseractCli):
+            scripts.update({"chinese", "japanese", "korean"})
+    return {
+        "engines": [engine.name + (f":{engine.language}" if isinstance(engine, WindowsOcr) else "")
+                    for engine in engines],
+        "scripts": sorted(scripts),
+    }
 
 
 def get_engine(preferred: str | None = None, languages: str = "rus+eng") -> OcrEngine | None:

@@ -15,6 +15,17 @@ function esc(text) {
   ));
 }
 
+// "5 версии" is the kind of detail that makes a UI feel translated. Russian
+// needs three forms, and the count is the whole message of the badge.
+function plural(count, one, few, many) {
+  const tail = count % 100;
+  if (tail >= 11 && tail <= 14) return many;
+  const last = count % 10;
+  if (last === 1) return one;
+  if (last >= 2 && last <= 4) return few;
+  return many;
+}
+
 function highlight(snippet, query) {
   let html = esc(snippet);
   const terms = (query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) || [])
@@ -145,6 +156,19 @@ function card(hit, query, index) {
     .join("");
   const similar = hit.is_image
     ? `<button class="act" data-similar="${hit.file_id}">похожие</button>` : "";
+  // A group is a fact about the result, not decoration: "3 версии" tells you the
+  // row you are looking at is the one the ranker picked out of three files.
+  const groupLabel = {
+    burst: () => plural(hit.group_size, "снимок", "снимка", "снимков"),
+    copy: () => plural(hit.group_size, "копия", "копии", "копий"),
+    version: () => plural(hit.group_size, "версия", "версии", "версий"),
+  };
+  const group = hit.group_size > 1
+    ? `<button class="badge b-group" data-group="${hit.file_id}"
+         title="показать все ${hit.group_size}">${
+         hit.group_size} ${(groupLabel[hit.group_reason] || groupLabel.version)()
+       }</button>`
+    : "";
   return `
     <div class="card" data-index="${index}">
       ${icon}
@@ -153,6 +177,7 @@ function card(hit, query, index) {
           <a class="name" data-open="${hit.file_id}">${esc(hit.name)}</a>
           <span class="badge">${esc(hit.kind)}</span>
           ${badges}
+          ${group}
         </div>
         <div class="path" title="${esc(hit.path)}">${esc(hit.path)}</div>
         <div class="snippet">${highlight(hit.snippet, query)}</div>
@@ -164,6 +189,42 @@ function card(hit, query, index) {
         </div>
       </div>
     </div>`;
+}
+
+/* Expanding a group is a lazy fetch, not a server-side expansion: the collapsed
+   row already carries the member ids, and asking for one preview each keeps the
+   search response small on a query that groups twenty screenshots. */
+async function toggleGroup(button) {
+  const card = button.closest(".card");
+  const existing = card.querySelector(".group-list");
+  if (existing) { existing.remove(); button.classList.remove("open"); return; }
+
+  const hit = state.hits[Number(card.dataset.index)];
+  if (!hit || !hit.group_members || !hit.group_members.length) return;
+  button.classList.add("open");
+
+  const rows = await Promise.all(
+    hit.group_members.slice(0, 12).map((id) =>
+      api(`/api/preview?id=${id}`).catch(() => null)
+    )
+  );
+  // For a copy group the folder is the only thing that tells the rows apart,
+  // so it belongs in the row; for versions the folder is identical by
+  // definition and printing it four times is noise.
+  const loaded = rows.filter(Boolean);
+  const showWhere = hit.group_reason === "copy";
+  const folders = showWhere
+    ? relativeFolders([hit.path, ...loaded.map((row) => row.path)]) : [];
+  const items = loaded.map((row, index) => `
+    <div class="group-item">
+      <a data-open="${row.file_id}">${esc(row.name)}</a>
+      <span class="group-meta">${
+        showWhere && folders[index + 1] ? `${esc(folders[index + 1])} · ` : ""}${
+        (row.size / 1024).toFixed(0)} КБ · ${
+        new Date(row.mtime * 1000).toLocaleDateString("ru-RU")}</span>
+    </div>`).join("");
+  card.insertAdjacentHTML("beforeend",
+    `<div class="group-list">${items || '<div class="group-item">не удалось загрузить</div>'}</div>`);
 }
 
 /* The chips row is the contract of the natural-language compiler: every filter
@@ -378,6 +439,20 @@ function shortPath(path) {
   return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
 }
 
+/* Two copies of one file differ at the *front* of the path, which is exactly
+   what shortPath throws away. Strip what they share and show what is left:
+   "openWallpaper\bin\steamcmd\public" against "zz\bin\steamcmd\public". */
+function relativeFolders(paths) {
+  const split = paths.map((path) => String(path).split(/[\\/]/));
+  let depth = 0;
+  while (split.every((parts) => parts.length > depth + 1)) {
+    const segment = split[0][depth].toLowerCase();
+    if (!split.every((parts) => parts[depth].toLowerCase() === segment)) break;
+    depth += 1;
+  }
+  return split.map((parts) => parts.slice(depth, -1).join("\\"));
+}
+
 /* ------------------------------------------------------------------ modal */
 
 async function openSimilar(fileId) {
@@ -399,6 +474,9 @@ document.addEventListener("click", async (event) => {
   if (chip) { clearChip(chip.dataset.chip); return; }
 
   if (event.target.closest("#more-btn")) { runSearch({ append: true }); return; }
+
+  const group = event.target.closest("[data-group]");
+  if (group) { toggleGroup(group); return; }
 
   const preview = event.target.closest("[data-preview]");
   if (preview) { openPreview(Number(preview.dataset.preview)); return; }

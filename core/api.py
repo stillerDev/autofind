@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import secrets
 import subprocess
 import sys
 import threading
@@ -23,9 +24,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import numpy as np
+
 from .config import IndexConfig
+from .connect import token as mcp_token
 from .embed import get_embedder, get_visual_embedder
 from .indexer import IndexStats, run_index
+from .mcp import McpServer
 from .ocr import engine_report
 from .privacy import describe as describe_privacy
 from .privacy import indexed_sensitive, purge_indexed
@@ -124,6 +129,21 @@ JOB = IndexJob()
 WATCHER: Watcher | None = None
 WATCH_LOCK = threading.Lock()
 CACHE = VectorCache()
+# Set by serve(): the MCP handler keeps a warm Store between tool calls, and the
+# token is read once at startup rather than per request.
+MCP = None
+MCP_TOKEN = ""
+
+
+def _mcp_token_ok(header: str | None) -> bool:
+    """Constant-time bearer check against the token on disk."""
+    expected = MCP_TOKEN
+    if not expected or not header:
+        return False
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() != "bearer" or not value:
+        return False
+    return secrets.compare_digest(value.strip(), expected)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -160,7 +180,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _store(self, readonly: bool = True) -> Store:
         embedder = get_embedder("auto", self.config.model_dir)
-        return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly, cache=CACHE)
+        return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly, cache=CACHE, vector_backend=self.config.vector_backend)
 
     # ------------------------------------------------------------------ GET
 
@@ -173,7 +193,15 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         try:
-            if route.startswith("/api/"):
+            if route == "/mcp":
+                # The MCP transport is POST-only; a GET here is usually a client
+                # probing for the legacy SSE endpoint.
+                self._json({
+                    "error": "use POST for JSON-RPC",
+                    "transport": "streamable-http",
+                    "endpoint": "/mcp",
+                }, 405)
+            elif route.startswith("/api/"):
                 self._api_get(route, query)
             else:
                 self._static(route)
@@ -266,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
                 "chips": page.chips,
                 "hints": page.hints,
                 "facets": page.facets,
+                "groups": page.groups,
+                "collapsed": page.collapsed,
                 "hits": [
                     {
                         "file_id": hit.file_id,
@@ -280,6 +310,9 @@ class Handler(BaseHTTPRequestHandler):
                         "is_image": hit.is_image,
                         "width": hit.width,
                         "height": hit.height,
+                        "group_size": hit.group_size,
+                        "group_reason": hit.group_reason,
+                        "group_members": list(hit.group_members),
                         "thumb": f"/api/thumb?id={hit.file_id}" if hit.is_image else None,
                     }
                     for hit in page.hits
@@ -519,6 +552,8 @@ class Handler(BaseHTTPRequestHandler):
             prune = bool(payload.get("prune"))
             started = JOB.start(roots, self.config, self.db_path, prune)
             self._json({"started": started}, 202 if started else 409)
+        elif parsed.path == "/mcp":
+            self._mcp(payload)
         elif parsed.path == "/api/reindex":
             self._reindex()
         elif parsed.path == "/api/watch":
@@ -527,6 +562,63 @@ class Handler(BaseHTTPRequestHandler):
             self._purge()
         else:
             self._error("unknown route", 404)
+
+    # ------------------------------------------------------------------- MCP
+
+    def _mcp(self, payload) -> None:
+        """Streamable-HTTP transport for the MCP server.
+
+        The same JSON-RPC handler as `semfind mcp`, served on the port the app
+        already listens on. A bearer token is required because binding to
+        127.0.0.1 is not a security boundary on a machine with a browser: any
+        page can POST to localhost, and the index is the user's whole disk.
+        """
+        if not _mcp_token_ok(self.headers.get("Authorization")):
+            self._json({"error": "unauthorized"}, 401)
+            return
+        if MCP is None:
+            self._json({"error": "mcp not enabled"}, 503)
+            return
+
+        messages = payload if isinstance(payload, list) else [payload]
+        responses = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            try:
+                response = MCP.handle(message)
+            except Exception as exc:  # a bad call must not drop the session
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": message.get("id"),
+                    "error": {"code": -32603, "message": f"{type(exc).__name__}: {exc}"},
+                }
+            if response is not None:
+                responses.append(response)
+
+        if not responses:
+            # Notifications get 202 and no body, per the transport spec.
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = json.dumps(responses if isinstance(payload, list) else responses[0],
+                          ensure_ascii=False).encode("utf-8")
+        accept = (self.headers.get("Accept") or "").lower()
+        if "text/event-stream" in accept:
+            # Some clients only speak SSE; one event, then close.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body) + 8))
+            self.end_headers()
+            self.wfile.write(b"data: " + body + b"\n\n")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _watch(self, payload: dict) -> None:
         global WATCHER
@@ -559,7 +651,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _purge(self) -> None:
         embedder = get_embedder("auto", self.config.model_dir)
-        store = Store(self.db_path, embedder.name, embedder.dim)
+        store = Store(self.db_path, embedder.name, embedder.dim, vector_backend=self.config.vector_backend)
         try:
             result = purge_indexed(store)
         finally:
@@ -600,6 +692,7 @@ def serve(
     port: int = 8765,
     open_browser: bool = False,
 ) -> None:
+    global MCP, MCP_TOKEN
     Handler.config = config
     Handler.db_path = db_path
 
@@ -614,9 +707,13 @@ def serve(
     if server is None:
         raise RuntimeError("no free port in range")
 
+    MCP = McpServer(db_path, config)
+    MCP_TOKEN = mcp_token(config)
+
     url = f"http://{host}:{port}/"
     print(f"SemFind UI  ->  {url}")
     print(f"index       ->  {db_path}")
+    print(f"mcp (http)  ->  http://{host}:{port}/mcp  (bearer token in {config.home / 'mcp_token'})")
     threading.Thread(target=_prewarm, args=(db_path, config), name="semfind-prewarm", daemon=True).start()
     if open_browser:
         threading.Timer(0.6, lambda: _open_browser(url)).start()
@@ -629,16 +726,23 @@ def serve(
 
 
 def _prewarm(db_path: Path, config: IndexConfig) -> None:
-    """Load the vector matrix before the first user query.
+    """Touch the vector store before the first user query.
 
-    Cold load on a 217k-chunk index is ~2.6 s; paying it at startup instead of
-    on the first keystroke is the difference between "instant" and "broken".
+    With the pack backend this is an mmap plus one warm-up scan, not a 2.6 s
+    matrix build: the point is to fault the pages in on a background thread
+    instead of on the first keystroke.
     """
     try:
         embedder = get_embedder("auto", config.model_dir)
-        store = Store(db_path, embedder.name, embedder.dim, readonly=True, cache=CACHE)
+        store = Store(db_path, embedder.name, embedder.dim, readonly=True,
+                      cache=CACHE, vector_backend=config.vector_backend)
         try:
-            store.vector_index()
+            if store.vector_backend == "pack":
+                pack = store.pack()
+                if pack is not None:
+                    pack.search(np.zeros(store.dim, dtype=np.float32), 1)
+            else:
+                store.vector_index()
         finally:
             store.close()
     except Exception:
