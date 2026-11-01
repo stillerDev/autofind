@@ -26,7 +26,7 @@ with no model downloads:
 | Layer | State | Engine |
 |---|---|---|
 | Text (PDF, DOCX, PPTX, XLSX, EPUB, ODT, RTF, TXT/MD, code) | works | built-in extractors, no deps |
-| Screenshots: OCR | works | Windows OCR via WinRT (`ru` + `en` on this machine) |
+| Screenshots: OCR | works | 3 tiers, 66 languages here: Windows packs → PP-OCRv6 multi → PP-OCRv5 per script |
 | Screenshots: visual similarity | works | 228-dim layout/colour descriptor |
 | Search | works | fuzzy names + BM25 + vectors, fused with RRF |
 | Name search | works | in-memory name index, 1.7 ms at 100k names |
@@ -35,7 +35,7 @@ with no model downloads:
 | Query language | works | `type:`, `ext:`, `in:`, `modified:`, `size:`, `re:`, … |
 | Natural language | works | deterministic RU/EN intent compiler with removable chips |
 | Agent access | works | MCP over stdio **and** HTTP (`semfind connect`) |
-| CJK screenshots | works | second OCR pass via RapidOCR (Chinese verified) |
+| CJK screenshots | works | Japanese, Chinese and Korean read via RapidOCR, not just retried |
 | Live updates | works | polling watcher, ~2 s debounce |
 | Quality measurement | works | `eval` with Recall@10, MRR, ablation |
 | Privacy filter | works | path blocklist + `.gitignore` parity, `privacy purge` |
@@ -392,20 +392,80 @@ Engine order: `windows-ocr` → `tesseract-cli` → `pytesseract` → `rapidocr`
 The engine that produced a screenshot's text is recorded in the index, so a
 later switch is visible instead of silent.
 
-**CJK.** The Windows engine only knows the language packs that are installed, so
-a Chinese or Japanese screenshot comes back as a handful of stray Latin letters —
-worse than nothing, because it looks indexed and is not findable. The OCR layer
-therefore runs a second pass through a CJK-capable engine when the first result
-is implausibly small for the image, and keeps whichever result scores higher
-(letters and digits, with ideographs weighted double). The second pass only runs
-on screenshots that failed, so Russian screenshots are unaffected — measured at
-0.03–0.24 s with no extra engine call.
+**66 languages.** Three tiers, and the order is the design:
 
-Verified on this machine: `你好世界文件搜索` read correctly from a rendered test
-image via RapidOCR's bundled Chinese model. Japanese and Korean need a
-recognition model that RapidOCR does not ship; point `ocr_cjk_model` at one and
-the router will use it. `semfind doctor` prints exactly which scripts are covered
-rather than claiming CJK in general.
+| Tier | Engine | Languages | Cost |
+|---|---|---|---|
+| 1 | Windows OCR, *every* installed pack | `ru`, `en-US` here | 6–60 ms |
+| 2 | rapidocr PP-OCRv6 `multi` | 53: all Latin-script, Japanese, Chinese | ~1.9 s |
+| 3 | rapidocr PP-OCRv5 per script | Korean, Arabic, Cyrillic, Devanagari, Greek, Thai, Tamil, Telugu | ~1.2 s each |
+
+Tier 1 tries every installed language pack rather than the display language: on
+this machine `en-US` reads Russian as `npl'1BeT` and the `ru` pack reads it
+correctly, for the same 10 ms. Tiers 2 and 3 only run when the result is
+implausibly small for the amount of ink in the image — the same measured gate as
+before — so a Russian screenshot costs 10 ms and a Japanese one costs 2 s
+instead of being indexed as stray Latin letters.
+
+Measured end to end on rendered test images:
+
+| Image | Engine that won | Time | Text |
+|---|---|---|---|
+| English | `windows-ocr` | 0.01 s | exact |
+| Russian | `windows-ocr` (`ru`) | 0.01 s | exact |
+| Chinese | `rapidocr:multi` | 2.0 s | `你好世界 中文测试` |
+| Japanese | `rapidocr:multi` | 3.4 s | `こんにちは世界 日本語のテスト` |
+| Korean | `rapidocr:korean` | 5.3 s | `세계 … 테스트` |
+| Arabic | `rapidocr:arabic` | 7.2 s | Arabic script, partially correct |
+
+The tail is expensive on purpose, and bounded in two ways. Models that are not
+on disk are never downloaded in the middle of an index run — `semfind ocr
+download all` fetches them once (9 models, 70 MB). And the chain switches itself
+off after eight consecutive attempts that changed nothing, so a folder of
+photographs stops paying for the fallback after ~10 s while a folder of Japanese
+screenshots — where every attempt succeeds — never hits the limit.
+
+`semfind ocr languages` prints the languages readable *right now* with their
+greetings; `semfind doctor` prints the count, the models on disk and the
+installed packs. `ocr_cjk_model` still pins a custom recognition model.
+
+## Cold start
+
+`tools/coldstart.py` spawns the real app and polls until the index is warm,
+timing three separate milestones. Three runs, median:
+
+| Milestone | Median | What it means |
+|---|---|---|
+| port answers | 0.65 s | Python is up, the server thread is running |
+| index ready | 0.77 s | vector pack faulted in — `/api/ready` flips |
+| window visible | 0.96 s | a borderless window titled AutoFind is on screen |
+| first search | 148 ms | one query against the now-warm index |
+
+The gap between "port answers" and "index ready" is 120–160 ms of prewarm; the
+rest is interpreter start plus `import webview`, which no amount of our own
+optimisation removes. The gap between "index ready" and "window visible" is
+WebView2 painting its first frame.
+
+A true cold start also needs the OS page cache dropped, which needs
+administrator rights; this measures a start with the index on disk and a
+lukewarm file cache. The median of several runs is the number to quote.
+
+## The boot screen
+
+![The boot screen greeting in Japanese](docs/shot-boot.png)
+
+Because the window paints ~190 ms after the index is already warm, the splash is
+not covering a slow load — it exists so the first thing on screen is not an
+empty grid. It shows one greeting, changing every 700 ms, drawn from the
+languages this machine's OCR can actually read: **the languages on screen are
+exactly the ones the index can find text in.** On this machine that is 66 of
+them, so the greeting is as likely to be `こんにちは` or `안녕하세요` as `Hello`.
+
+It is bounded at both ends — minimum 900 ms so it never flashes, maximum 8 s of
+polling so it can never hang — and Escape or a click dismisses it. A deep link
+(`?q=` or `?preview=`) skips it: a link to a file is not a request for a
+greeting.
+
 
 ## Embedders
 
@@ -476,9 +536,10 @@ SQLite file. An app-level blocklist, a pause switch and SQLCipher are open items
 python -m unittest discover -s tests -t .
 ```
 
-161 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
-image preprocessing, visual features, thumbnails, real OCR (skipped when no
-engine), FTS query sanitising, the full index→search cycle, kind filters,
+178 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
+image preprocessing, visual features, thumbnails, real OCR including Japanese
+(skipped when no engine), the language table and the boot screen's greeting
+pool, `/api/ready`, FTS query sanitising, the full index→search cycle, kind filters,
 incremental skips, screenshot dedup, similar-image search, the privacy
 blocklist, `.gitignore` parity, watcher diffing and startup cleanup, the eval
 metrics, the bundle estimate, the query grammar and intent compiler, fuzzy name
@@ -499,16 +560,21 @@ turns Recall@10 from a claim into a number.
   a wizard.
 - Facet counts are computed for filter-only queries, not for ranked ones — the
   candidate pool is bounded, so the number would be a lie.
-- Japanese and Korean OCR need a recognition model that RapidOCR does not bundle;
-  `ocr_cjk_model` points at one, but nothing fetches it for you.
+- OCR covers 66 languages on this machine; the rest of rapidocr's table
+  (Hebrew, Bengali, Georgian, Armenian) needs a Windows language pack, which
+  only the OS installer can add.
+- Cold start is 0.77 s to a warm index, of which ~0.65 s is interpreter start
+  and `import webview`. Getting under that needs a packaged binary, not faster
+  Python.
 - The document itself still has the inconsistencies listed in the review
   (top-10 table vs figure, p95 vs median, 30 Nov vs 29 Nov).
 
 Closed since the kensaku comparison: the name index (1.7 ms at 100k instead of a
 35 ms scan at 8k), the vector matrix (a memory-mapped pack: ~40 ms warm, ~0 ms
 cold, no 333 MB allocation), version grouping, identical copies and screenshot
-bursts, MCP over HTTP with `semfind connect`, CJK OCR, and the launcher — a real
-window with a tray icon, a global summon key and a login entry.
+bursts, MCP over HTTP with `semfind connect`, OCR in 66 languages, cold start
+under a second, and the launcher — a borderless window over the taskbar, a tray
+icon, a global summon key and a login entry.
 
 ## License
 

@@ -1,13 +1,20 @@
 """OCR engines.
 
-The chain tries, in order: the Windows built-in recogniser (via WinRT, ships
-with the OS and knows Russian if the language pack is installed), Tesseract on
-PATH, pytesseract, then RapidOCR. The first available engine wins; the pipeline
-records which one produced the text so a later engine change is visible instead
-of silent.
+Three tiers, and the order is the whole design:
 
-On this machine the Windows engine is what actually runs: languages en-US and ru
-are both present, no binary to install, ~150 ms per screenshot.
+1. **Windows OCR** — ships with the OS, ~10 ms per screenshot, but it only reads
+   the scripts whose language packs are installed. Every installed pack is
+   tried, not just the display language: on this machine `en-US` reads Russian
+   as `npl'1BeT`, and the `ru` pack reads it correctly, for the same 10 ms.
+2. **rapidocr PP-OCRv6 `multi`** — bundled with the package, 53 languages
+   (all Latin-script languages, Japanese, Chinese), ~1 s per screenshot.
+3. **rapidocr PP-OCRv5 script models** — Korean, Arabic, Cyrillic, Devanagari,
+   Greek, Thai, Tamil, Telugu. Downloaded on first use (~8 MB each), then ~1 s.
+
+Tiers 2 and 3 only run when the tier below could not read the image at all, so
+the common case stays at 10 ms and a Korean screenshot costs two seconds instead
+of being indexed as garbage. `script.looks_unread` is the gate — see there for
+why it is measured rather than guessed.
 """
 
 from __future__ import annotations
@@ -18,10 +25,12 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 from PIL import Image
 
+from . import languages
 from .script import CJK_TAGS
 
 
@@ -118,6 +127,47 @@ class WindowsOcr:
         return OcrResult(text=text.strip(), engine=self.name, confidence=0.0, lines=lines)
 
 
+def windows_language_tags() -> list[str]:
+    """Language packs with a Windows recogniser, most useful first."""
+    if sys.platform != "win32":
+        return []
+    try:
+        from winrt.windows.media.ocr import OcrEngine as WinOcrEngine
+    except ImportError:
+        return []
+    try:
+        tags = [item.language_tag for item in WinOcrEngine.available_recognizer_languages]
+    except Exception:
+        return []
+    # The display language first: it is the one the user's own screenshots are
+    # most likely to be in.
+    try:
+        from winrt.windows.media.ocr import OcrEngine as _Engine
+
+        profile = _Engine.try_create_from_user_profile_languages()
+        if profile is not None:
+            preferred = profile.recognizer_language.language_tag
+            tags.sort(key=lambda tag: (tag != preferred, tag))
+    except Exception:
+        tags.sort()
+    return tags
+
+
+def windows_engines(limit: int = 4) -> list[OcrEngine]:
+    """One engine per installed language pack.
+
+    Trying every pack costs about 10 ms each and is the cheapest way to widen
+    coverage: a Russian screenshot on a Russian Windows should not be read by the
+    English recogniser and then sent to a 1 s model to be fixed.
+    """
+    found: list[OcrEngine] = []
+    for tag in windows_language_tags()[:limit]:
+        engine = WindowsOcr(tag)
+        if engine.available():
+            found.append(engine)
+    return found
+
+
 async def _recognize_bytes(engine, png: bytes) -> str:
     from winrt.windows.graphics.imaging import BitmapDecoder
     from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
@@ -145,6 +195,156 @@ def _run_async(coroutine):
         return loop.run_until_complete(coroutine)
     finally:
         loop.close()
+
+
+# ----------------------------------------------------------------- rapidocr
+
+
+def _rapid_models_dir() -> Path | None:
+    try:
+        import rapidocr
+    except ImportError:
+        return None
+    return Path(rapidocr.__file__).resolve().parent / "models"
+
+
+def downloaded_models() -> set[str]:
+    """Recognition models already on disk.
+
+    `multi` is the PP-OCRv6 model that ships inside the wheel. The script models
+    are 8 MB downloads, so they are reported only once they exist — the boot
+    screen must not promise a language that would take ten seconds and a network
+    round trip to honour.
+    """
+    directory = _rapid_models_dir()
+    if directory is None:
+        return set()
+    found: set[str] = set()
+    try:
+        names = [path.name.lower() for path in directory.glob("*rec*.onnx")]
+    except OSError:
+        return set()
+    for name in names:
+        if name.startswith("pp-ocrv6_rec") or name.startswith("multi_"):
+            found.add("multi")
+        for model in languages.MODELS:
+            if model != "multi" and name.startswith(f"{model}_"):
+                found.add(model)
+    # `en` and `ch` share the multi model; a bare v5 Chinese model also reads
+    # Latin text well enough to count as `multi` coverage.
+    if any(name.startswith("ch_pp-ocrv5_rec") for name in names):
+        found.add("multi")
+    return found
+
+
+class RapidOcrMulti:
+    """rapidocr 3.x with a per-script recognition model.
+
+    The default (`multi`) is PP-OCRv6 and reads 53 languages including Japanese
+    and Chinese. Everything else asks for a PP-OCRv5 model by name; rapidocr
+    downloads it on first construction.
+    """
+
+    name = "rapidocr"
+    preprocess_mode = "rgb"
+
+    def __init__(self, lang: str = "multi", model_dir: Path | None = None) -> None:
+        self.lang = lang
+        self.model_dir = model_dir
+        self._engine = None
+        self._error: str | None = None
+
+    @property
+    def label(self) -> str:
+        return f"{self.name}:{self.lang}"
+
+    def available(self) -> bool:
+        try:
+            import rapidocr  # noqa: F401
+        except ImportError:
+            return False
+        return self._error is None
+
+    def _build(self):
+        from rapidocr import ModelType, OCRVersion, RapidOCR
+
+        params: dict = {"Global.log_level": "warning"}
+        if self.lang != "multi":
+            params.update(
+                {
+                    "Rec.lang_type": self.lang,
+                    "Rec.ocr_version": OCRVersion.PPOCRV5,
+                    "Rec.model_type": ModelType.MOBILE,
+                }
+            )
+        if self.model_dir is not None:
+            params["Global.model_root_dir"] = str(self.model_dir)
+        return RapidOCR(params=params or None)
+
+    def recognize(self, image: Image.Image) -> OcrResult:
+        if self._engine is None:
+            try:
+                self._engine = self._build()
+            except Exception as exc:
+                self._error = str(exc)
+                raise RuntimeError(f"rapidocr:{self.lang} unavailable: {exc}") from exc
+        import numpy as np
+
+        output = self._engine(np.asarray(image.convert("RGB")))
+        lines = list(output.txts or [])
+        scores = [float(score) for score in (output.scores or [])]
+        confidence = sum(scores) / len(scores) if scores else 0.0
+        return OcrResult(
+            text="\n".join(lines), engine=self.label, confidence=confidence, lines=lines
+        )
+
+
+class RapidOcr:
+    """The older `rapidocr_onnxruntime` package: Chinese + Latin only.
+
+    Kept as the last resort for machines that have the old wheel and not the new
+    one. It is slower and reads less than `RapidOcrMulti`, so it never wins a
+    tie.
+    """
+
+    name = "rapidocr-legacy"
+    preprocess_mode = "rgb"
+
+    def __init__(self, rec_model: str | None = None, rec_keys: str | None = None) -> None:
+        self.rec_model = rec_model
+        self.rec_keys = rec_keys
+        self._engine = None
+
+    def available(self) -> bool:
+        try:
+            from rapidocr_onnxruntime import RapidOCR  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def _build(self):
+        from rapidocr_onnxruntime import RapidOCR
+
+        if self.rec_model:
+            params = {"Rec.model_path": self.rec_model}
+            if self.rec_keys:
+                params["Rec.rec_keys_path"] = self.rec_keys
+            try:
+                return RapidOCR(params=params)
+            except Exception:
+                pass  # a broken custom model must not disable OCR entirely
+        return RapidOCR()
+
+    def recognize(self, image: Image.Image) -> OcrResult:
+        if self._engine is None:
+            self._engine = self._build()
+        import numpy as np
+
+        result, _ = self._engine(np.asarray(image.convert("RGB")))
+        lines = [item[1] for item in (result or [])]
+        scores = [float(item[2]) for item in (result or [])]
+        confidence = sum(scores) / len(scores) if scores else 0.0
+        return OcrResult(text="\n".join(lines), engine=self.name, confidence=confidence, lines=lines)
 
 
 class TesseractCli:
@@ -193,69 +393,20 @@ class PyTesseractOcr:
         return OcrResult(text=text.strip(), engine=self.name, lines=lines)
 
 
-class RapidOcr:
-    """PP-OCR through onnxruntime.
-
-    Its bundled recognition model is the Chinese one (`ch_PP-OCRv3_rec`), which
-    reads Simplified Chinese and Latin text and is the only CJK-capable engine
-    that needs no OS language pack and no Tesseract install. Japanese and Korean
-    need a different recognition model; `rec_model` points at one if the user
-    has fetched it, otherwise those screenshots fall back to the Windows engine.
-    """
-
-    name = "rapidocr"
-    preprocess_mode = "rgb"
-
-    def __init__(self, rec_model: str | None = None, rec_keys: str | None = None) -> None:
-        self.rec_model = rec_model
-        self.rec_keys = rec_keys
-        self._engine = None
-
-    def available(self) -> bool:
-        try:
-            from rapidocr_onnxruntime import RapidOCR  # noqa: F401
-        except ImportError:
-            return False
-        return True
-
-    def _build(self):
-        from rapidocr_onnxruntime import RapidOCR
-
-        if self.rec_model:
-            params = {"Rec.model_path": self.rec_model}
-            if self.rec_keys:
-                params["Rec.rec_keys_path"] = self.rec_keys
-            try:
-                return RapidOCR(params=params)
-            except Exception:
-                pass  # a broken custom model must not disable OCR entirely
-        return RapidOCR()
-
-    def recognize(self, image: Image.Image) -> OcrResult:
-        if self._engine is None:
-            self._engine = self._build()
-        import numpy as np
-
-        result, _ = self._engine(np.asarray(image.convert("RGB")))
-        lines = [item[1] for item in (result or [])]
-        scores = [float(item[2]) for item in (result or [])]
-        confidence = sum(scores) / len(scores) if scores else 0.0
-        return OcrResult(text="\n".join(lines), engine=self.name, confidence=confidence, lines=lines)
-
-
 FACTORIES = (
     (WindowsOcr, False),
     (TesseractCli, True),
     (PyTesseractOcr, True),
+    (RapidOcrMulti, False),
     (RapidOcr, False),
 )
 
 
-def available_engines(languages: str = "rus+eng") -> list[OcrEngine]:
+def available_engines(languages_hint: str = "rus+eng") -> list[OcrEngine]:
     found: list[OcrEngine] = []
     for factory, takes_languages in FACTORIES:
         try:
-            engine = factory(languages) if takes_languages else factory()
+            engine = factory(languages_hint) if takes_languages else factory()
             if engine.available():
                 found.append(engine)
         except Exception:
@@ -263,14 +414,71 @@ def available_engines(languages: str = "rus+eng") -> list[OcrEngine]:
     return found
 
 
-def cjk_engines(rec_model: str | None = None, rec_keys: str | None = None) -> list[OcrEngine]:
-    """Engines that can read Chinese, Japanese or Korean, best first.
+def primary_engines(languages_hint: str = "rus+eng") -> list[OcrEngine]:
+    """The fast tier: every installed Windows pack, then Tesseract if present."""
+    found: list[OcrEngine] = windows_engines()
+    for factory in (TesseractCli, PyTesseractOcr):
+        try:
+            engine = factory(languages_hint)
+            if engine.available():
+                found.append(engine)
+        except Exception:
+            continue
+    if found:
+        return found
+    # No OS recogniser: the bundled model is the only thing left, and it is
+    # still better than refusing to read the screenshot.
+    multi = RapidOcrMulti("multi")
+    if multi.available():
+        found.append(multi)
+    legacy = RapidOcr()
+    if legacy.available():
+        found.append(legacy)
+    return found
 
-    A Windows language pack is preferred when it exists because it is free and
-    already installed; RapidOCR is next because its Chinese model is bundled
-    with the package; Tesseract is last because it needs `chi_sim` traineddata
-    that users rarely have.
+
+def fallback_engines(skip: set[str] | None = None, limit: int = 4) -> list[OcrEngine]:
+    """The slow tier: bundled multi model first, then per-script models.
+
+    Models that are not on disk yet are included only when nothing else is left,
+    because including them means a download in the middle of an index run.
     """
+    skip = skip or set()
+    installed = set(downloaded_models())
+    found: list[OcrEngine] = []
+
+    def add(model: str) -> None:
+        if model in skip or len(found) >= limit or model not in installed:
+            return
+        engine = RapidOcrMulti(model)
+        if engine.available():
+            found.append(engine)
+            skip.add(model)
+
+    add("multi")
+    covered = {languages.for_tag(tag).model for tag in windows_language_tags() if languages.for_tag(tag)}
+    for model in languages.MODELS:
+        if model == "multi" or model in covered:
+            continue
+        if model in installed:
+            add(model)
+    if len(found) < 2:
+        # Nothing downloaded: the bundled model is all there is. The script
+        # models are reachable on demand through `--ocr-lang`, not by surprise.
+        legacy = RapidOcr()
+        if legacy.available():
+            found.append(legacy)
+    return found
+
+
+def script_engine(model: str) -> OcrEngine | None:
+    """One named model, for `--ocr-lang korean` and for tests."""
+    engine = RapidOcrMulti(model)
+    return engine if engine.available() else None
+
+
+def cjk_engines(rec_model: str | None = None, rec_keys: str | None = None) -> list[OcrEngine]:
+    """Engines that can read Chinese, Japanese or Korean, best first."""
     found: list[OcrEngine] = []
     if sys.platform == "win32":
         for tag in CJK_TAGS:
@@ -278,13 +486,40 @@ def cjk_engines(rec_model: str | None = None, rec_keys: str | None = None) -> li
             if engine.available():
                 found.append(engine)
                 break
-    rapid = RapidOcr(rec_model, rec_keys)
-    if rapid.available():
-        found.append(rapid)
+    multi = RapidOcrMulti("multi")
+    if multi.available():
+        found.append(multi)
+    korean = RapidOcrMulti("korean")
+    if "korean" in downloaded_models() and korean.available():
+        found.append(korean)
+    legacy = RapidOcr(rec_model, rec_keys)
+    if legacy.available():
+        found.append(legacy)
     tesseract = TesseractCli("chi_sim+jpn+kor+eng")
     if tesseract.available():
         found.append(tesseract)
     return found
+
+
+def coverage() -> dict:
+    """What can be read on this machine, and by what."""
+    models = downloaded_models()
+    packs = windows_language_tags()
+    readable = languages.greeting_pool(models)
+    return {
+        "windows": packs,
+        "models": sorted(models),
+        "languages": [
+            {
+                "tag": language.tag,
+                "name": language.name,
+                "hello": language.hello,
+                "model": language.model,
+            }
+            for language in readable
+        ],
+        "total": len(readable),
+    }
 
 
 def cjk_coverage() -> dict:
@@ -300,21 +535,28 @@ def cjk_coverage() -> dict:
                 scripts.update({"japanese", "chinese"})
             elif tag.startswith("ko"):
                 scripts.update({"korean"})
-        elif isinstance(engine, RapidOcr):
-            scripts.add("chinese")
-        elif isinstance(engine, TesseractCli):
+        elif isinstance(engine, RapidOcrMulti):
+            if engine.lang == "multi":
+                scripts.update({"chinese", "japanese"})
+            elif engine.lang == "korean":
+                scripts.add("korean")
+        elif isinstance(engine, (RapidOcr, TesseractCli)):
             scripts.update({"chinese", "japanese", "korean"})
     return {
-        "engines": [engine.name + (f":{engine.language}" if isinstance(engine, WindowsOcr) else "")
-                    for engine in engines],
+        "engines": [
+            engine.name
+            + (f":{engine.language}" if isinstance(engine, WindowsOcr) else "")
+            + (f":{engine.lang}" if isinstance(engine, RapidOcrMulti) else "")
+            for engine in engines
+        ],
         "scripts": sorted(scripts),
     }
 
 
-def get_engine(preferred: str | None = None, languages: str = "rus+eng") -> OcrEngine | None:
-    engines = available_engines(languages)
+def get_engine(preferred: str | None = None, languages_hint: str = "rus+eng") -> OcrEngine | None:
+    engines = available_engines(languages_hint)
     if preferred:
         for engine in engines:
-            if engine.name == preferred:
+            if engine.name == preferred or getattr(engine, "label", "") == preferred:
                 return engine
     return engines[0] if engines else None

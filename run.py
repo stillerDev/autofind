@@ -30,6 +30,7 @@ from core.config import IndexConfig  # noqa: E402
 COMMANDS = {
     "index", "search", "watch", "eval", "doctor", "privacy", "mcp",
     "cheat", "stats", "connect", "serve", "app", "autostart",
+    "shortcut", "install", "ocr",
 }
 
 

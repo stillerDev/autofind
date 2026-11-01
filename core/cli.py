@@ -69,6 +69,15 @@ def main(argv: list[str] | None = None) -> int:
     privacy_cmd.add_argument("action", nargs="?", default="scan", choices=["scan", "purge"])
     privacy_cmd.add_argument("--json", action="store_true")
 
+    ocr_cmd = sub.add_parser("ocr", help="list readable languages, or fetch a script model")
+    ocr_cmd.add_argument("action", nargs="?", default="languages",
+                         choices=["languages", "download", "read"])
+    ocr_cmd.add_argument("target", nargs="?", default=None,
+                         help="language or model for `download`, image for `read`")
+    ocr_cmd.add_argument("--lang", default=None,
+                         help="pin one model when reading, e.g. korean, arabic, cyrillic")
+    ocr_cmd.add_argument("--json", action="store_true")
+
     search_cmd = sub.add_parser("search", help="hybrid search over the index")
     search_cmd.add_argument("query", nargs="+", help="search query")
     search_cmd.add_argument("-n", "--limit", type=int, default=10)
@@ -140,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(args, config, db_path)
     if args.command == "privacy":
         return _cmd_privacy(args, config, db_path)
+    if args.command == "ocr":
+        return _cmd_ocr(args, config)
     if args.command == "mcp":
         from .mcp import serve as serve_mcp
 
@@ -532,6 +543,77 @@ def _cmd_doctor(args, config: IndexConfig, db_path: Path) -> int:
         return 0
     print(format_doctor(data))
     return 0
+
+
+def _cmd_ocr(args, config: IndexConfig) -> int:
+    from .ocr import coverage, ocr_image
+    from .ocr import engine as ocr_engine
+    from .ocr import languages as ocr_languages
+
+    if args.action == "languages":
+        cover = coverage()
+        if args.json:
+            print(json.dumps(cover, ensure_ascii=False, indent=2))
+            return 0
+        print(f"windows packs  {', '.join(cover['windows']) or 'none'}")
+        print(f"models         {', '.join(cover['models']) or 'none'}")
+        print(f"readable now   {cover['total']} languages")
+        missing = [model for model in ocr_languages.MODELS if model not in cover["models"]]
+        if missing:
+            print(f"one download   {', '.join(missing)}  (semfind ocr download all)")
+        for language in cover["languages"]:
+            print(f"  {language['tag']:<8} {language['name']:<18} {language['hello']}")
+        return 0
+
+    if args.action == "download":
+        target = args.target or "all"
+        models = list(ocr_languages.MODELS) if target in ("all", "*") else [target]
+        failed = 0
+        for model in models:
+            if model in ("multi",):
+                continue  # ships with the package
+            engine = ocr_engine.RapidOcrMulti(model)
+            print(f"{model:<12}", end=" ", flush=True)
+            try:
+                engine.recognize(_probe_image())
+            except Exception as exc:
+                failed += 1
+                print(f"failed: {str(exc)[:120]}")
+                continue
+            print("ok")
+        print(f"models on disk: {', '.join(sorted(ocr_engine.downloaded_models())) or 'none'}")
+        return 1 if failed else 0
+
+    if not args.target:
+        print("usage: semfind ocr read <image> [--lang korean]", file=sys.stderr)
+        return 2
+    preferred = f"rapidocr:{args.lang}" if getattr(args, "lang", None) else None
+    result = ocr_image(args.target, config.ocr_languages, preferred)
+    if args.json:
+        print(json.dumps({"engine": result.engine, "text": result.text}, ensure_ascii=False, indent=2))
+    else:
+        print(f"[{result.engine}]")
+        print(result.text)
+    return 0
+
+
+def _probe_image():
+    """An image with text on it, so the recogniser actually loads its model.
+
+    A blank canvas only exercises the detector: rapidocr builds the recognition
+    model lazily, on the first text box it finds, so `download` against a blank
+    image reports success and downloads nothing.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (480, 120), "white")
+    draw = ImageDraw.Draw(image)
+    try:
+        font = ImageFont.load_default(size=56)
+    except TypeError:  # Pillow < 10 has no size argument
+        font = ImageFont.load_default()
+    draw.text((20, 30), "Test 123 hello", font=font, fill="black")
+    return image
 
 
 def _cmd_privacy(args, config: IndexConfig, db_path: Path) -> int:

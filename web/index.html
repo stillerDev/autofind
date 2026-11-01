@@ -8,6 +8,17 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<!-- Painted before any script runs, so the window never shows a white flash or
+     an empty grid while the vector pack is being faulted in. The greeting is
+     filled in by app.js from the languages this machine can actually read. -->
+<div class="boot" id="boot" role="status" aria-live="polite">
+  <div class="boot-inner">
+    <div class="boot-hello" id="boot-hello">Hello</div>
+    <div class="boot-lang" id="boot-lang">English</div>
+    <div class="boot-track"><span class="boot-bar" id="boot-bar"></span></div>
+    <div class="boot-stage" id="boot-stage">запускаю</div>
+  </div>
+</div>
 <div class="app">
   <header class="hero">
     <div class="hero-inner">

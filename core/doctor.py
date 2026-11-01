@@ -181,6 +181,11 @@ def format_report(data: dict) -> str:
         + (f"   available: {', '.join(ocr['available'])}" if ocr["available"] else ""),
         f"ocr cjk      {', '.join(ocr.get('cjk', {}).get('scripts') or []) or 'none'}"
         + (f"   via {', '.join(ocr['cjk']['engines'])}" if ocr.get("cjk", {}).get("engines") else ""),
+        f"ocr langs    {ocr.get('supported_languages', 0)} readable"
+        + (f"   models: {', '.join(ocr['coverage']['models'])}"
+           if ocr.get("coverage", {}).get("models") else "")
+        + (f"   packs: {', '.join(ocr['coverage']['windows'])}"
+           if ocr.get("coverage", {}).get("windows") else ""),
         "",
         f"app window   {'yes' if data['app']['window'] else 'no (browser fallback)'}"
         + (f"   pywebview {data['app']['version']}" if data["app"].get("version") else "")

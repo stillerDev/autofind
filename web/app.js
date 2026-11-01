@@ -597,6 +597,115 @@ function wireWindowControls() {
   });
 }
 
+/* ------------------------------------------------------------ boot screen */
+
+/* The window is up in ~200 ms; the vector pack is not. Instead of showing an
+   idle screen that cannot search yet, the app opens on a greeting: one "hello"
+   from the languages this machine's OCR can actually read, changing every
+   700 ms while the pack warms. It is a loading screen that states a fact about
+   the product — the languages on screen are exactly the ones the index can
+   find text in — and it is bounded at both ends, so it can neither flash nor
+   hang. */
+const BOOT_MIN_MS = 900;
+const BOOT_POLL_MS = 120;
+const BOOT_MAX_POLLS = 70;
+
+// Shown for the first frame, before `/api/ocr` answers with the real list of
+// languages this machine can read. All of these are readable on any machine
+// that has the bundled model or a CJK language pack.
+const BOOT_GREETINGS = [
+  { hello: "Hello", name: "English" },
+  { hello: "Привет", name: "Русский" },
+  { hello: "Hola", name: "Español" },
+  { hello: "Bonjour", name: "Français" },
+  { hello: "Hallo", name: "Deutsch" },
+  { hello: "こんにちは", name: "日本語" },
+  { hello: "你好", name: "中文" },
+  { hello: "Ciao", name: "Italiano" },
+  { hello: "Olá", name: "Português" },
+  { hello: "Merhaba", name: "Türkçe" },
+];
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function boot() {
+  const box = $("boot");
+  if (!box) return;
+  const hello = $("boot-hello");
+  const lang = $("boot-lang");
+  const bar = $("boot-bar");
+  const stage = $("boot-stage");
+  const started = performance.now();
+
+  let pool = BOOT_GREETINGS;
+  let index = Math.floor(Math.random() * pool.length);
+  const show = () => {
+    const item = pool[index % pool.length];
+    index += 1;
+    hello.classList.add("fade");
+    setTimeout(() => {
+      hello.textContent = item.hello;
+      lang.textContent = item.name;
+      hello.classList.remove("fade");
+    }, 110);
+  };
+  show();
+  const timer = setInterval(show, 700);
+
+  // The server knows exactly which languages this machine can read; the
+  // built-in list above is only there so the first frame does not wait for it.
+  api("/api/ocr")
+    .then((data) => {
+      const list = (data.coverage && data.coverage.languages) || [];
+      if (!list.length) return;
+      pool = list;
+      index = Math.floor(Math.random() * pool.length);
+    })
+    .catch(() => {
+      // A splash must never be the reason the app does not start.
+    });
+
+  for (let attempt = 0; attempt < BOOT_MAX_POLLS; attempt += 1) {
+    try {
+      const state = await api("/api/ready");
+      if (state.ready) {
+        bar.style.width = "100%";
+        stage.textContent = `готово · ${Math.round(state.uptime_ms)} мс`;
+        break;
+      }
+      const warm = state.stage === "vectors";
+      bar.style.width = warm ? "74%" : "26%";
+      stage.textContent = warm ? "грею векторы" : "открываю индекс";
+    } catch (error) {
+      stage.textContent = "жду сервер";
+    }
+    await sleep(BOOT_POLL_MS);
+  }
+
+  const spent = performance.now() - started;
+  if (spent < BOOT_MIN_MS) await sleep(BOOT_MIN_MS - spent);
+  clearInterval(timer);
+  hello.classList.remove("fade");
+  box.classList.add("done");
+  setTimeout(() => box.remove(), 620);
+  // The cursor belongs in the search box: this is a launcher, not a dashboard.
+  $("q")?.focus();
+}
+
+function skipBoot() {
+  const box = $("boot");
+  if (!box || box.classList.contains("done")) return;
+  box.classList.add("done");
+  setTimeout(() => box.remove(), 620);
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") skipBoot();
+}, true);
+document.addEventListener("click", (event) => {
+  if (event.target.closest("#boot")) skipBoot();
+}, true);
+
 renderIdle();
 wireWindowControls();
 loadStats();
@@ -614,3 +723,8 @@ if (initial) {
 // what a link pasted into a chat should do.
 const initialPreview = params.get("preview");
 if (initialPreview) openPreview(Number(initialPreview));
+
+// A deep link is a request for a specific file, not a request for a greeting:
+// the splash would be in the way of the thing the link points at.
+if (initial || initialPreview) skipBoot();
+else boot();

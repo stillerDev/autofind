@@ -155,6 +155,36 @@ class OcrTests(unittest.TestCase):
             self.assertIn("прокси", result.text.lower())
             self.assertTrue(result.engine)
 
+    def test_recognises_japanese_text(self):
+        """The Windows packs cannot read kana; the bundled model can.
+
+        This is the whole point of the fallback tier: without it the screenshot
+        is indexed as a handful of stray Latin letters and is unsearchable.
+        """
+        from core.ocr import reset_fallbacks
+        from core.ocr.engine import downloaded_models
+
+        if "multi" not in downloaded_models():
+            self.skipTest("rapidocr multi model not installed")
+        font = Path("C:/Windows/Fonts/YuGothR.ttc")
+        if not font.exists():
+            self.skipTest("no Japanese font to render a test image")
+
+        reset_fallbacks()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "shot.png"
+            image = Image.new("RGB", (1280, 420), (250, 250, 248))
+            draw = ImageDraw.Draw(image)
+            typeface = ImageFont.truetype(str(font), 44)
+            draw.text((60, 60), "こんにちは世界", font=typeface, fill=(20, 20, 20))
+            draw.text((60, 150), "日本語のテスト", font=typeface, fill=(20, 20, 20))
+            draw.text((60, 240), "ファイル検索", font=typeface, fill=(20, 20, 20))
+            image.save(path)
+
+            result = ocr_image(path)
+            self.assertTrue(result.engine.startswith("rapidocr"), result.engine)
+            self.assertIn("世界", result.text)
+
 
 class SearchTests(unittest.TestCase):
     def test_match_query_is_safe(self):

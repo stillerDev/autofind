@@ -17,7 +17,7 @@ from .config import IndexConfig
 from .extract import extract_text
 from .group import dhash
 from .images import load_image, thumbnail_bytes, visual_features
-from .ocr import OcrUnavailable, ocr_image
+from .ocr import OcrUnavailable, ocr_image, reset_fallbacks
 from .scanner import iter_entries, sha256_file
 from .store import Store
 
@@ -74,6 +74,10 @@ def run_index(
     commit_every: int = 25,
 ) -> IndexStats:
     started = time.perf_counter()
+    # A folder of photographs teaches the OCR fallback chain nothing; a folder of
+    # screenshots teaches it everything. Start each run with a clean slate so the
+    # verdict from the previous folder does not carry over.
+    reset_fallbacks()
     blocked: list[tuple[str, str]] = []
     entries = list(
         iter_entries(

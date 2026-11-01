@@ -129,6 +129,17 @@ JOB = IndexJob()
 WATCHER: Watcher | None = None
 WATCH_LOCK = threading.Lock()
 CACHE = VectorCache()
+# What the boot screen polls. The server answers requests from the first
+# millisecond, but "ready" means the vector pack has been faulted in — that is
+# the difference between a window that opens and a window that can search.
+READY: dict = {
+    "ready": False,
+    "stage": "boot",
+    "warm_ms": None,
+    "at": None,
+    "error": None,
+    "started": time.time(),
+}
 # Set by serve(): the MCP handler keeps a warm Store between tool calls, and the
 # token is read once at startup rather than per request.
 MCP = None
@@ -220,6 +231,15 @@ class Handler(BaseHTTPRequestHandler):
             self._status()
         elif route == "/api/progress":
             self._json(JOB.snapshot())
+        elif route == "/api/ready":
+            self._json(
+                {
+                    **READY,
+                    "uptime_ms": round((time.time() - READY["started"]) * 1000.0, 1),
+                }
+            )
+        elif route == "/api/ocr":
+            self._json(engine_report(self.config.ocr_languages))
         elif route == "/api/thumb":
             self._thumb(query)
         elif route == "/api/preview":
@@ -712,6 +732,16 @@ def start_server(
     global MCP, MCP_TOKEN
     Handler.config = config
     Handler.db_path = db_path
+    READY.update(
+        {
+            "ready": False,
+            "stage": "boot",
+            "warm_ms": None,
+            "at": None,
+            "error": None,
+            "started": time.time(),
+        }
+    )
 
     server = None
     for candidate in range(port, port + 20):
@@ -772,6 +802,8 @@ def _prewarm(db_path: Path, config: IndexConfig) -> None:
     matrix build: the point is to fault the pages in on a background thread
     instead of on the first keystroke.
     """
+    started = time.perf_counter()
+    READY["stage"] = "vectors"
     try:
         embedder = get_embedder("auto", config.model_dir)
         store = Store(db_path, embedder.name, embedder.dim, readonly=True,
@@ -785,8 +817,13 @@ def _prewarm(db_path: Path, config: IndexConfig) -> None:
                 store.vector_index()
         finally:
             store.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        READY["error"] = str(exc)[:200]
+    finally:
+        READY["stage"] = "ready"
+        READY["warm_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+        READY["at"] = time.time()
+        READY["ready"] = True
 
 
 def _open_browser(url: str) -> None:
