@@ -27,8 +27,11 @@ from .config import IndexConfig
 from .embed import get_embedder, get_visual_embedder
 from .indexer import IndexStats, run_index
 from .ocr import engine_report
+from .privacy import describe as describe_privacy
+from .privacy import indexed_sensitive, purge_indexed
 from .search import hybrid_search, similar_images, visual_text_search
-from .store import Store
+from .store import Store, VectorCache
+from .watch import Watcher
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
@@ -117,6 +120,9 @@ class IndexJob:
 
 
 JOB = IndexJob()
+WATCHER: Watcher | None = None
+WATCH_LOCK = threading.Lock()
+CACHE = VectorCache()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -153,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _store(self, readonly: bool = True) -> Store:
         embedder = get_embedder("auto", self.config.model_dir)
-        return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly)
+        return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly, cache=CACHE)
 
     # ------------------------------------------------------------------ GET
 
@@ -188,6 +194,10 @@ class Handler(BaseHTTPRequestHandler):
             self._similar(query)
         elif route == "/api/images":
             self._images(query)
+        elif route == "/api/watch":
+            self._json(WATCHER.state.as_dict() if WATCHER else {"running": False})
+        elif route == "/api/privacy":
+            self._privacy()
         elif route in ("/api/open", "/api/reveal"):
             self._open_file(query, reveal=route.endswith("reveal"))
         else:
@@ -279,6 +289,8 @@ class Handler(BaseHTTPRequestHandler):
                 "visual_embedder": visual.name,
                 "visual_supports_text": bool(getattr(visual, "supports_text", False)),
                 "ocr": engine_report(self.config.ocr_languages),
+                "privacy": {"enabled": self.config.privacy, "patterns": len(describe_privacy()["sensitive_dirs"])},
+                "watching": bool(WATCHER and WATCHER.state.running),
                 "db": str(self.db_path),
                 "default_roots": _default_roots(),
                 "version": "0.1.0",
@@ -346,6 +358,21 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
+    def _privacy(self) -> None:
+        store = self._store()
+        try:
+            found = indexed_sensitive(store, limit=50)
+        finally:
+            store.close()
+        self._json(
+            {
+                "enabled": self.config.privacy,
+                "patterns": len(describe_privacy()["sensitive_dirs"]),
+                "count": len(found),
+                "files": found,
+            }
+        )
+
     def _open_file(self, query: dict, reveal: bool) -> None:
         file_id = int((query.get("id") or ["0"])[0])
         store = self._store()
@@ -409,8 +436,50 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"started": started}, 202 if started else 409)
         elif parsed.path == "/api/reindex":
             self._reindex()
+        elif parsed.path == "/api/watch":
+            self._watch(payload)
+        elif parsed.path == "/api/privacy/purge":
+            self._purge()
         else:
             self._error("unknown route", 404)
+
+    def _watch(self, payload: dict) -> None:
+        global WATCHER
+        if not payload.get("enabled", True):
+            with WATCH_LOCK:
+                if WATCHER is not None:
+                    WATCHER.stop()
+                    WATCHER = None
+            self._json({"running": False, "roots": []})
+            return
+
+        roots = [str(root) for root in (payload.get("roots") or []) if str(root).strip()]
+        if not roots:
+            roots = _default_roots()
+        if not roots:
+            self._error("no folders to watch")
+            return
+        wanted = [str(Path(root).expanduser()) for root in roots]
+
+        with WATCH_LOCK:
+            if WATCHER is not None and WATCHER.state.running and WATCHER.roots == wanted:
+                self._json(WATCHER.state.as_dict())
+                return
+            if WATCHER is not None:
+                WATCHER.stop()
+            WATCHER = Watcher(wanted, self.config, self.db_path, pause_when=lambda: JOB.running)
+            WATCHER.start()
+            snapshot = WATCHER.state.as_dict()
+        self._json(snapshot)
+
+    def _purge(self) -> None:
+        embedder = get_embedder("auto", self.config.model_dir)
+        store = Store(self.db_path, embedder.name, embedder.dim)
+        try:
+            result = purge_indexed(store)
+        finally:
+            store.close()
+        self._json(result)
 
     def _reindex(self) -> None:
         store = self._store()
@@ -463,6 +532,7 @@ def serve(
     url = f"http://{host}:{port}/"
     print(f"SemFind UI  ->  {url}")
     print(f"index       ->  {db_path}")
+    threading.Thread(target=_prewarm, args=(db_path, config), name="semfind-prewarm", daemon=True).start()
     if open_browser:
         threading.Timer(0.6, lambda: _open_browser(url)).start()
     try:
@@ -471,6 +541,23 @@ def serve(
         print("\nstopping")
     finally:
         server.server_close()
+
+
+def _prewarm(db_path: Path, config: IndexConfig) -> None:
+    """Load the vector matrix before the first user query.
+
+    Cold load on a 217k-chunk index is ~2.6 s; paying it at startup instead of
+    on the first keystroke is the difference between "instant" and "broken".
+    """
+    try:
+        embedder = get_embedder("auto", config.model_dir)
+        store = Store(db_path, embedder.name, embedder.dim, readonly=True, cache=CACHE)
+        try:
+            store.vector_index()
+        finally:
+            store.close()
+    except Exception:
+        pass
 
 
 def _open_browser(url: str) -> None:

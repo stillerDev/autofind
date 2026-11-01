@@ -34,6 +34,8 @@ class IndexStats:
     duplicates: int = 0
     ocr_empty: int = 0
     pruned: int = 0
+    sensitive: int = 0
+    sensitive_examples: list[tuple[str, str]] = field(default_factory=list)
     seconds: float = 0.0
     errors: list[tuple[str, str]] = field(default_factory=list)
 
@@ -52,6 +54,7 @@ class IndexStats:
             "duplicates": self.duplicates,
             "ocr_empty": self.ocr_empty,
             "pruned": self.pruned,
+            "sensitive": self.sensitive,
             "seconds": round(self.seconds, 2),
             "files_per_second": round(self.files_per_second, 1),
         }
@@ -68,15 +71,18 @@ def run_index(
     commit_every: int = 25,
 ) -> IndexStats:
     started = time.perf_counter()
+    blocked: list[tuple[str, str]] = []
     entries = list(
         iter_entries(
             roots,
             excluded_dirs=config.excluded_dirs,
             max_bytes=config.max_file_bytes,
             min_bytes=config.min_file_bytes,
+            privacy=config.privacy and not config.allow_sensitive,
+            skipped=blocked,
         )
     )
-    stats = IndexStats(scanned=len(entries))
+    stats = IndexStats(scanned=len(entries), sensitive=len(blocked), sensitive_examples=blocked[:5])
     seen: set[str] = set()
 
     for position, entry in enumerate(entries, start=1):

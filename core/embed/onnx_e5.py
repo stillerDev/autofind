@@ -24,6 +24,9 @@ class EmbedderUnavailable(RuntimeError):
 class OnnxE5:
     name = "e5-small-int8"
     dim = 384
+    # A real semantic model earns an equal share of the fusion.
+    rrf_weight = 1.0
+    semantic = True
 
     def __init__(self, model_dir: str | Path) -> None:
         directory = Path(model_dir)

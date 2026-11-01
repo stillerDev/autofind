@@ -23,6 +23,14 @@ NGRAM_WEIGHT = 0.35
 class HashingEmbedder:
     name = "hashing-384"
     dim = DIM
+    # Weight of this channel inside the RRF fusion. Hashed features mostly
+    # duplicate what BM25 already does, only worse, so the channel is damped:
+    # measured on the 8.4k-file corpus, an equal weight cost ~0.04 MRR.
+    rrf_weight = 0.3
+    # Not a semantic model: it cannot connect «кофемашина» to an espresso recipe.
+    # Callers use this to decide whether a zero-lexical query should fall back to
+    # the vector channel at all, or honestly return nothing.
+    semantic = False
 
     def encode_passages(self, texts: Iterable[str]) -> np.ndarray:
         return np.vstack([self._vector(text) for text in texts]) if texts else np.zeros((0, DIM), np.float32)

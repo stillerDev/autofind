@@ -16,6 +16,12 @@ from typing import Sequence
 from .store import Store
 
 RRF_K = 60
+# Channel weights for the fusion. Equal weights are the textbook default, but
+# they assume both channels are equally good. The vector weight is taken from
+# the embedder itself (`rrf_weight`): a semantic model gets 1.0, the hashed
+# fallback 0.3, because it largely duplicates BM25 and ranks worse. Measured
+# with `semfind eval --ablate`; re-measure before trusting it on another corpus.
+RRF_WEIGHTS = {"bm25": 1.0, "vector": 0.3}
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 SNIPPET_WINDOW = 180
 
@@ -60,9 +66,22 @@ class ImageHit:
 
 
 def build_match_query(text: str, max_terms: int = 16) -> str | None:
-    """Turn free text into a safe FTS5 query: quoted terms, OR-joined, prefix-matched."""
-    terms = [token.lower() for token in TOKEN_RE.findall(text)]
-    terms = [term for term in terms if len(term) >= 2][:max_terms]
+    """Turn free text into a safe FTS5 query: quoted terms, OR-joined, prefix-matched.
+
+    Russian has no stemmer in SQLite, so a query for «схема» misses «схемы» and
+    «схеме». For words long enough to be unambiguous the term is also added as a
+    shortened prefix, which is a cheap stand-in for stemming. Short words are
+    left alone: «база» -> «ба» would match half the corpus.
+    """
+    terms: list[str] = []
+    for token in TOKEN_RE.findall(text):
+        token = token.lower()
+        if len(token) < 2:
+            continue
+        terms.append(token)
+        if len(token) >= 6:
+            terms.append(token[:-2])
+    terms = list(dict.fromkeys(terms))[:max_terms]
     if not terms:
         return None
     return " OR ".join(f'"{term}"*' for term in terms)
@@ -78,13 +97,25 @@ def hybrid_search(
     kinds: Sequence[str] | None = None,
     folder: str | None = None,
     since: float | None = None,
+    channels: Sequence[str] = ("bm25", "vector"),
+    weights: dict[str, float] | None = None,
 ) -> list[Hit]:
     filtered = bool(kinds or folder or since)
     pool = candidates * 4 if filtered else candidates
+    channel_weights = dict(RRF_WEIGHTS)
+    channel_weights["vector"] = float(getattr(embedder, "rrf_weight", RRF_WEIGHTS["vector"]))
+    if weights:
+        channel_weights.update(weights)
 
-    match = build_match_query(query)
+    match = build_match_query(query) if "bm25" in channels else None
     lexical = store.bm25(match, pool) if match else []
-    semantic = store.knn(embedder.encode_query(query), pool)
+    # No lexical match plus a non-semantic fallback embedder means every vector
+    # "hit" is noise: hashed features have no notion of meaning, so a query like
+    # «кофемашина» matches spinner scripts on hash collisions alone. Returning
+    # nothing is the honest answer.
+    if "bm25" in channels and not lexical and not getattr(embedder, "semantic", False):
+        return []
+    semantic = store.knn(embedder.encode_query(query), pool) if "vector" in channels else []
 
     candidate_ids = {chunk_id for chunk_id, _ in lexical} | {chunk_id for chunk_id, _ in semantic}
     rows = store.chunk_rows(candidate_ids)
@@ -105,11 +136,12 @@ def hybrid_search(
     channels: dict[int, list[str]] = {}
     for channel, results in (("bm25", lexical), ("vector", semantic)):
         rank = 0
+        weight = channel_weights.get(channel, 1.0)
         for chunk_id, _ in results:
             if not allowed(chunk_id):
                 continue
             rank += 1
-            fused[chunk_id] = fused.get(chunk_id, 0.0) + 1.0 / (k + rank)
+            fused[chunk_id] = fused.get(chunk_id, 0.0) + weight / (k + rank)
             channels.setdefault(chunk_id, []).append(channel)
 
     ordered = sorted(fused.items(), key=lambda item: -item[1])[:limit]

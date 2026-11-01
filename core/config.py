@@ -61,6 +61,10 @@ class IndexConfig:
     ocr_engine: str | None = None
     ocr_enabled: bool = True
     excluded_dirs: frozenset[str] = EXCLUDED_DIRS
+    privacy: bool = True
+    allow_sensitive: bool = False
+    watch_interval: float = 2.0
+    watch_settle: float = 1.0
 
     @property
     def db_path(self) -> Path:

@@ -74,8 +74,17 @@
         <input type="checkbox" id="prune">
       </label>
       <button class="btn primary" id="index-btn" style="margin-top:8px">Индексировать</button>
+      <button class="btn" id="watch-btn" style="margin-top:6px">Следить за папками</button>
       <div class="progress"><div id="bar"></div></div>
       <div class="progress-label" id="progress-label">готов к работе</div>
+      <div class="progress-label" id="watch-label">слежение выключено</div>
+    </div>
+
+    <div class="panel">
+      <h3>Приватность</h3>
+      <div class="stat-row"><span>фильтр путей</span><b id="p-enabled">—</b></div>
+      <div class="stat-row"><span>приватного в индексе</span><b id="p-count">—</b></div>
+      <button class="btn" id="purge-btn" style="margin-top:8px">Убрать из индекса</button>
     </div>
 
     <div class="panel">

@@ -12,15 +12,19 @@ from PIL import Image, ImageDraw, ImageFont
 
 from core.chunker import chunk_text
 from core.config import IndexConfig
+from core.doctor import estimate_bundle
 from core.embed import HashingEmbedder
 from core.embed.visual import LAYOUT_DIM, LayoutEmbedder
+from core.evaluate import evaluate, matches
 from core.extract import extract_text
 from core.images import preprocess_for_ocr, thumbnail_bytes, visual_features
 from core.indexer import run_index
 from core.ocr import available_engines, ocr_image
-from core.scanner import kind_for
+from core.privacy import match_reason, purge_indexed
+from core.scanner import iter_entries, kind_for
 from core.search import build_match_query, hybrid_search, similar_images
 from core.store import Store
+from core.watch import Watcher
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -218,6 +222,21 @@ class SearchTests(unittest.TestCase):
             store.close()
 
 
+    def test_fallback_embedder_does_not_invent_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir()
+            (root / "notes.md").write_text("поиск по документам и файлам", encoding="utf-8")
+            config = IndexConfig(home=Path(tmp) / "home")
+            embedder = HashingEmbedder()
+            store = Store(Path(tmp) / "index.db", embedder.name, embedder.dim)
+            run_index([root], config, store, embedder)
+
+            self.assertEqual(hybrid_search(store, embedder, "кофемашина эспрессо", limit=5), [])
+            self.assertTrue(hybrid_search(store, embedder, "документы", limit=5))
+            store.close()
+
+
 class ImageIndexTests(unittest.TestCase):
     def test_image_gets_thumbnail_and_similar_works(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -261,6 +280,159 @@ class ImageIndexTests(unittest.TestCase):
             self.assertEqual(stats.images, 1)
             self.assertEqual(stats.duplicates, 1)
             store.close()
+
+
+class PrivacyTests(unittest.TestCase):
+    def test_key_material_is_sensitive(self):
+        self.assertIsNotNone(match_reason("/home/me/.ssh/id_ed25519"))
+        self.assertIsNotNone(match_reason("/home/me/vault.kdbx"))
+        self.assertIsNotNone(match_reason("/srv/app/.env"))
+        self.assertIsNotNone(match_reason("/home/me/wallets/electrum.dat"))
+
+    def test_stdlib_module_named_secrets_is_not_sensitive(self):
+        self.assertIsNone(match_reason("/opt/blender/python/lib/secrets.py"))
+        self.assertIsNone(match_reason("/home/me/project/notes.md"))
+
+    def test_scanner_skips_and_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            (root / "keepass").mkdir(parents=True)
+            (root / "keepass" / "vault.txt").write_text("пароль от архива " * 4, encoding="utf-8")
+            (root / "passwords.txt").write_text("hunter2 " * 20, encoding="utf-8")
+            (root / "notes.md").write_text("обычная заметка про поиск файлов", encoding="utf-8")
+
+            skipped: list[tuple[str, str]] = []
+            paths = [entry.path for entry in iter_entries([root], privacy=True, skipped=skipped)]
+            self.assertEqual(len(paths), 1)
+            self.assertTrue(paths[0].endswith("notes.md"))
+            self.assertEqual(len(skipped), 2)
+
+            everything = [entry.path for entry in iter_entries([root], privacy=False)]
+            self.assertEqual(len(everything), 3)
+
+    def test_index_reports_sensitive_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir()
+            (root / "passwords.txt").write_text("hunter2 " * 20, encoding="utf-8")
+            (root / "notes.md").write_text("заметка про поиск", encoding="utf-8")
+            config = IndexConfig(home=Path(tmp) / "home")
+            embedder = HashingEmbedder()
+            store = Store(Path(tmp) / "index.db", embedder.name, embedder.dim)
+            stats = run_index([root], config, store, embedder)
+            self.assertEqual(stats.sensitive, 1)
+            self.assertEqual(stats.indexed, 1)
+
+            purged = purge_indexed(store)
+            self.assertEqual(purged["removed"], 0)  # nothing sensitive got in
+            store.close()
+
+
+class WatcherTests(unittest.TestCase):
+    def test_diff_detects_changes_and_removals(self):
+        watcher = Watcher(["."], IndexConfig(), Path("index.db"), interval=0.1, settle=0)
+        previous = {"a": (1, 1.0), "b": (2, 2.0)}
+        current = {"a": (1, 1.0), "b": (3, 2.0), "c": (4, 4.0)}
+        changed, removed = watcher._diff(previous, current)
+        self.assertEqual(sorted(changed), ["b", "c"])
+        self.assertEqual(removed, [])
+
+        changed, removed = watcher._diff(current, {"a": (1, 1.0)})
+        self.assertEqual(changed, [])
+        self.assertEqual(sorted(removed), ["b", "c"])
+
+    def test_batch_indexes_new_file_and_drops_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir()
+            (root / "a.txt").write_text("первый документ про поиск файлов", encoding="utf-8")
+            config = IndexConfig(home=Path(tmp) / "home")
+            config.ocr_enabled = False
+            db_path = Path(tmp) / "index.db"
+            embedder = HashingEmbedder()
+            store = Store(db_path, embedder.name, embedder.dim)
+            run_index([root], config, store, embedder)
+
+            watcher = Watcher([root], config, db_path, interval=0.1, settle=0)
+            before = watcher._snapshot()
+            (root / "b.txt").write_text("второй документ про скриншоты", encoding="utf-8")
+            (root / "a.txt").unlink()
+            after = watcher._snapshot()
+
+            changed, removed = watcher._diff(before, after)
+            self.assertEqual(len(changed), 1)
+            self.assertEqual(len(removed), 1)
+
+            watcher._apply(store, embedder, None, changed, removed)
+            self.assertEqual(store.stats()["files"], 1)
+            self.assertEqual(watcher.state.removed, 1)
+            self.assertEqual(watcher.state.added, 1)
+            store.close()
+
+
+    def test_startup_drops_files_deleted_while_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir()
+            (root / "a.txt").write_text("первый документ про поиск", encoding="utf-8")
+            (root / "b.txt").write_text("второй документ про скриншоты", encoding="utf-8")
+            config = IndexConfig(home=Path(tmp) / "home")
+            embedder = HashingEmbedder()
+            db_path = Path(tmp) / "index.db"
+            store = Store(db_path, embedder.name, embedder.dim)
+            run_index([root], config, store, embedder)
+            self.assertEqual(store.stats()["files"], 2)
+
+            (root / "b.txt").unlink()
+            watcher = Watcher([root], config, db_path, interval=0.1, settle=0)
+            removed = watcher._drop_missing(store, watcher._snapshot())
+            self.assertEqual(removed, 1)
+            self.assertEqual(store.stats()["files"], 1)
+            store.close()
+
+
+class EvalTests(unittest.TestCase):
+    def test_matches_accepts_basename_and_fragment(self):
+        self.assertTrue(matches("/home/me/docs/plan.docx", "plan.docx"))
+        self.assertTrue(matches("/home/me/docs/plan.docx", "docs/plan"))
+        self.assertFalse(matches("/home/me/docs/plan.docx", "other.md"))
+
+    def test_recall_and_mrr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir()
+            (root / "rrf.md").write_text("Ранговое слияние объединяет два списка результатов.", encoding="utf-8")
+            (root / "ocr.md").write_text("Распознавание текста со скриншотов через движок системы.", encoding="utf-8")
+            config = IndexConfig(home=Path(tmp) / "home")
+            embedder = HashingEmbedder()
+            store = Store(Path(tmp) / "index.db", embedder.name, embedder.dim)
+            run_index([root], config, store, embedder)
+
+            labels = {
+                "label": "unit",
+                "queries": [
+                    {"q": "ранговое слияние", "expected": ["rrf.md"]},
+                    {"q": "совершенно посторонний запрос про пингвинов", "expected": ["missing.md"]},
+                ],
+            }
+            report = evaluate(store, embedder, labels, limit=10)
+            self.assertEqual(report.n, 2)
+            self.assertAlmostEqual(report.recall, 0.5, places=3)
+            self.assertAlmostEqual(report.mrr, 0.5, places=3)
+            self.assertEqual(report.scores[0].rank, 1)
+            self.assertIsNone(report.scores[1].rank)
+            store.close()
+
+
+class DoctorTests(unittest.TestCase):
+    def test_bundle_estimate_is_internally_consistent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = IndexConfig(home=Path(tmp) / "home")
+            bundle = estimate_bundle(config)
+            total = round(sum(part["mb"] for part in bundle["parts"]), 1)
+            self.assertAlmostEqual(bundle["total_mb"], total, places=1)
+            self.assertEqual(bundle["fits"], bundle["total_mb"] <= bundle["budget_mb"])
+            self.assertTrue(any(part["part"].startswith("model:") for part in bundle["parts"]))
 
 
 if __name__ == "__main__":

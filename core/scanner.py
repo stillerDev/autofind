@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from .privacy import SENSITIVE_DIRS, match_reason
+
 TEXT_EXT = {
     ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json",
     ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".tex",
@@ -65,32 +67,54 @@ def iter_entries(
     excluded_dirs: frozenset[str] = frozenset(),
     max_bytes: int = 20 * 1024 * 1024,
     min_bytes: int = 32,
+    privacy: bool = True,
+    skipped: list[tuple[str, str]] | None = None,
 ) -> Iterator[FileEntry]:
-    """Yield supported files under every root, skipping noise directories."""
+    """Yield supported files under every root, skipping noise directories.
+
+    With `privacy` on, sensitive locations are dropped before they are opened and
+    appended to `skipped` as (path, reason) so the caller can report the count.
+    """
     seen: set[str] = set()
     for root in roots:
         base = Path(root).expanduser()
         if base.is_file():
             entry = _entry_for(base, max_bytes, min_bytes)
-            if entry and entry.path not in seen:
+            if entry and entry.path not in seen and _passes_privacy(entry.path, privacy, skipped):
                 seen.add(entry.path)
                 yield entry
             continue
         if not base.is_dir():
             continue
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-            dirnames[:] = [
-                name
-                for name in dirnames
-                if name not in excluded_dirs and not name.startswith(".")
-            ]
+            kept = []
+            for name in dirnames:
+                if name in excluded_dirs or name.startswith("."):
+                    continue
+                if privacy and name.lower() in SENSITIVE_DIRS:
+                    if skipped is not None:
+                        skipped.append((str(Path(dirpath) / name), f"directory '{name.lower()}'"))
+                    continue
+                kept.append(name)
+            dirnames[:] = kept
             for name in filenames:
                 if name.startswith("."):
                     continue
                 entry = _entry_for(Path(dirpath) / name, max_bytes, min_bytes)
-                if entry and entry.path not in seen:
+                if entry and entry.path not in seen and _passes_privacy(entry.path, privacy, skipped):
                     seen.add(entry.path)
                     yield entry
+
+
+def _passes_privacy(path: str, privacy: bool, skipped: list[tuple[str, str]] | None) -> bool:
+    if not privacy:
+        return True
+    reason = match_reason(path)
+    if reason is None:
+        return True
+    if skipped is not None:
+        skipped.append((path, reason))
+    return False
 
 
 def _entry_for(path: Path, max_bytes: int, min_bytes: int) -> FileEntry | None:

@@ -1,0 +1,21 @@
+{
+  "label": "demo corpus (smoke set)",
+  "corpus": ".demo-corpus/screens + SemFind plan docx + this repository",
+  "note": "Small hand-built set that exists to prove the harness works end to end. It is NOT the acceptance measurement: the plan asks for 20 real queries over a real corpus, judged by someone other than the author.",
+  "queries": [
+    { "q": "неверный пароль при входе", "expected": ["dark-proxy-settings.png"] },
+    { "q": "раскладка клавиатуры и caps lock", "expected": ["dark-proxy-settings.png"] },
+    { "q": "настройки прокси сервера в браузере", "expected": ["dark-proxy-settings.png"] },
+    { "q": "cannot find module react-dom", "expected": ["build-error-react.png"] },
+    { "q": "ошибка сборки npm run build", "expected": ["build-error-react.png"] },
+    { "q": "бюджет проекта 2026 таблица факт и план", "expected": ["budget-table-2026.png"] },
+    { "q": "дашборд продаж по месяцам", "expected": ["sales-dashboard.png"] },
+    { "q": "заказ подтверждён сумма и доставка", "expected": ["order-4821-confirm.png"] },
+    { "q": "функция слияния результатов поиска", "expected": ["core/search.py"] },
+    { "q": "ранговое слияние RRF", "expected": ["core/search.py", "SemFind_план_реализации_MVP.docx"] },
+    { "q": "схема базы данных FTS5 и векторы", "expected": ["core/store.py"] },
+    { "q": "размер инсталлятора и модели в int8", "expected": ["SemFind_план_реализации_MVP.docx"] },
+    { "q": "как запустить локальный интерфейс", "expected": ["README.md"] },
+    { "q": "распознавание текста на скриншотах", "expected": ["core/ocr/engine.py", "core/ocr/__init__.py"] }
+  ]
+}

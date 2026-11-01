@@ -10,6 +10,7 @@ touching the callers.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -78,10 +79,16 @@ IMAGE_COLUMNS = {
 
 class Store:
     def __init__(
-        self, path: str | Path, embedder: str = "hashing-384", dim: int = 384, readonly: bool = False
+        self,
+        path: str | Path,
+        embedder: str = "hashing-384",
+        dim: int = 384,
+        readonly: bool = False,
+        cache: "VectorCache | None" = None,
     ) -> None:
         self.path = Path(path)
         self.readonly = readonly
+        self.cache = cache
         if readonly:
             uri = f"file:{self.path.as_posix()}?mode=ro"
             self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
@@ -92,6 +99,7 @@ class Store:
         self._vec_ids: np.ndarray | None = None
         self._vec_matrix: np.ndarray | None = None
         self._vec_key: tuple[int, int] | None = None
+        self._file_key: tuple[int, int] | None = None
         if not readonly:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -267,6 +275,11 @@ class Store:
         return [(int(row["id"]), float(row["score"])) for row in rows]
 
     def vector_index(self) -> tuple[np.ndarray, np.ndarray]:
+        if self.cache is not None:
+            return self.cache.get(self)
+        return self._load_vectors()
+
+    def _load_vectors(self) -> tuple[np.ndarray, np.ndarray]:
         key_row = self.conn.execute(
             "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m FROM vectors WHERE owner_type='chunk'"
         ).fetchone()
@@ -338,6 +351,24 @@ class Store:
         self._vec_ids = None
         self._vec_matrix = None
 
+    def touch_check(self) -> None:
+        """Drop the vector cache when another connection wrote to the file.
+
+        A long-lived reader (the UI server) would otherwise keep serving the
+        matrix it loaded at startup. WAL writes land in -wal first, so the main
+        file's mtime alone is not enough.
+        """
+        stamps = []
+        for candidate in (self.path, Path(str(self.path) + "-wal")):
+            try:
+                stamps.append(candidate.stat().st_mtime_ns)
+            except OSError:
+                stamps.append(0)
+        key = (stamps[0], stamps[1])
+        if key != self._file_key:
+            self._file_key = key
+            self._invalidate_vectors()
+
     def close(self) -> None:
         self.conn.close()
 
@@ -347,6 +378,51 @@ class Store:
     def __exit__(self, *exc_info) -> None:
         self.commit()
         self.close()
+
+
+def _file_stamps(path: Path) -> tuple[int, int]:
+    stamps = []
+    for candidate in (path, Path(str(path) + "-wal")):
+        try:
+            stamps.append(candidate.stat().st_mtime_ns)
+        except OSError:
+            stamps.append(0)
+    return (stamps[0], stamps[1])
+
+
+class VectorCache:
+    """Process-wide cache of the chunk vector matrix.
+
+    The UI opens a short-lived Store per request. Without this cache every
+    request re-reads 200k blobs and rebuilds a 300 MB matrix, which measured at
+    ~2.6 s per query. One read-only matrix, shared by all threads, invalidated
+    when the database file (or its WAL) changes.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._key: tuple | None = None
+        self._ids: np.ndarray | None = None
+        self._matrix: np.ndarray | None = None
+
+    def get(self, store: "Store") -> tuple[np.ndarray, np.ndarray]:
+        key = (str(store.path), _file_stamps(store.path))
+        with self._lock:
+            if key == self._key and self._ids is not None and self._matrix is not None:
+                return self._ids, self._matrix
+
+        ids, matrix = store._load_vectors()
+        matrix.setflags(write=False)
+        ids.setflags(write=False)
+        with self._lock:
+            self._key, self._ids, self._matrix = key, ids, matrix
+        return ids, matrix
+
+    def clear(self) -> None:
+        with self._lock:
+            self._key = None
+            self._ids = None
+            self._matrix = None
 
 
 def _top_k(ids: np.ndarray, matrix: np.ndarray, query: np.ndarray, limit: int) -> list[tuple[int, float]]:

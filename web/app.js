@@ -137,7 +137,9 @@ function shot(image) {
 
 async function loadStats() {
   try {
-    const [stats, status] = await Promise.all([api("/api/stats"), api("/api/status")]);
+    const [stats, status, privacy, watch] = await Promise.all([
+      api("/api/stats"), api("/api/status"), api("/api/privacy"), api("/api/watch"),
+    ]);
     $("s-files").textContent = stats.files ?? 0;
     $("s-chunks").textContent = stats.chunks ?? 0;
     $("s-images").textContent = stats.images ?? 0;
@@ -145,6 +147,11 @@ async function loadStats() {
     $("s-size").textContent = `${((stats.db_bytes || 0) / 1048576).toFixed(1)} МБ`;
     $("status-text").textContent = stats.files ? `${stats.files} файлов в индексе` : "индекс пуст";
     $("status-dot").style.background = stats.files ? "var(--teal)" : "var(--accent)";
+
+    $("p-enabled").textContent = privacy.enabled ? "включён" : "выключен";
+    $("p-count").textContent = privacy.count ?? 0;
+    $("purge-btn").disabled = !privacy.count;
+    renderWatch(watch);
 
     const engines = status.ocr?.available || [];
     $("engines").innerHTML = `
@@ -158,6 +165,40 @@ async function loadStats() {
   } catch (error) {
     $("status-text").textContent = "сервер не отвечает";
     $("status-dot").style.background = "var(--red, #e24b4a)";
+  }
+}
+
+function renderWatch(watch) {
+  const on = Boolean(watch && watch.running);
+  $("watch-btn").classList.toggle("primary", on);
+  $("watch-label").textContent = on
+    ? `слежение: ${watch.added} обновлено · ${watch.removed} удалено · ${watch.last_batch} в последней пачке`
+    : (watch && watch.last_error ? `слежение остановлено: ${watch.last_error}` : "слежение выключено");
+}
+
+async function toggleWatch() {
+  const on = $("watch-btn").classList.contains("primary");
+  const roots = $("roots").value.split("\n").map((line) => line.trim()).filter(Boolean);
+  try {
+    const watch = await api("/api/watch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !on, roots }),
+    });
+    renderWatch(watch);
+    toast(watch.running ? "Слежу за папками" : "Слежение выключено");
+  } catch (error) {
+    toast(`Не удалось: ${error.message}`);
+  }
+}
+
+async function purgePrivate() {
+  try {
+    const result = await api("/api/privacy/purge", { method: "POST", body: "{}" });
+    toast(`Убрано из индекса: ${result.removed}`);
+    loadStats();
+  } catch (error) {
+    toast(`Не удалось: ${error.message}`);
   }
 }
 
@@ -245,6 +286,8 @@ $("folder").addEventListener("change", () => { state.folder = $("folder").value.
 $("since").addEventListener("change", () => { state.since = $("since").value; if (state.query) runSearch(); });
 $("go").addEventListener("click", () => { clearTimeout(state.timer); runSearch(); });
 $("index-btn").addEventListener("click", startJob);
+$("watch-btn").addEventListener("click", toggleWatch);
+$("purge-btn").addEventListener("click", purgePrivate);
 $("modal-close").addEventListener("click", () => $("modal").classList.remove("open"));
 $("modal").addEventListener("click", (event) => { if (event.target.id === "modal") $("modal").classList.remove("open"); });
 
