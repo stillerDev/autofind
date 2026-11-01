@@ -145,6 +145,9 @@ function setSince(value) {
   state.since = value;
   paintSince();
   openCalendar(false);
+  // The day button that was just clicked is gone with the popup; focus goes
+  // back to the trigger so the keyboard is not stranded on a hidden element.
+  $("since-btn").focus();
   if (state.query) runSearch();
 }
 
