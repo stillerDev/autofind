@@ -315,12 +315,23 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 
 main {
   grid-area: main;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   padding: 16px 24px 48px;
   /* Translucent on purpose: the photo keeps showing through the gaps between
      cards, which is what makes the page read as one surface instead of a
      photo header glued to a black list. */
   background: rgba(9, 10, 12, 0.44);
+}
+
+/* #content has to carry the height down to the idle state, otherwise `height:
+   100%` on .empty resolves against an auto-height div and the plate stops
+   being centred. `1 0 auto` keeps a long result list from being squeezed. */
+#content {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .results { display: flex; flex-direction: column; gap: 10px; }
@@ -490,12 +501,39 @@ main {
 
 aside {
   grid-area: side;
+  display: flex;
+  flex-direction: column;
   border-left: 1px solid rgba(255, 255, 255, 0.07);
-  padding: 14px 16px 16px;
+  padding: 12px 16px 16px;
   overflow-y: auto;
   background: rgba(11, 12, 14, 0.56);
   backdrop-filter: blur(16px) saturate(120%);
-  padding-top: 12px;
+}
+
+/* Four panels are shorter than a full-height column, so the empty tail of the
+   sidebar looked like a rendering bug. The shortcut hint anchors the column to
+   the bottom edge and pays for the space it occupies. */
+.side-foot {
+  margin-top: auto;
+  padding: 14px 2px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.side-foot span { display: inline-flex; align-items: center; gap: 5px; }
+
+.side-foot kbd {
+  font: inherit;
+  min-width: 18px;
+  padding: 1px 5px;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
 }
 
 .panel {
@@ -640,22 +678,27 @@ aside {
 
 /* ---------------------------------------------------------------- states */
 
+/* Centred, not top-aligned: the photo now runs the full height of the window,
+   so a plate pinned under the filter row leaves a visible void beneath it and
+   the column reads as half-finished. A small bottom bias keeps the optical
+   centre where the eye expects it. */
 .empty {
   display: grid;
-  /* Top-aligned, not centred: on a tall window a centred plate floats in the
-     middle of empty forest and reads as a modal. It belongs just under the
-     filter row, where the eye lands after typing. */
-  place-items: start center;
+  place-items: center;
+  flex: 1 1 auto;
   height: 100%;
   min-height: 320px;
-  padding-top: 26px;
+  padding: 8px 0 4vh;
   text-align: center;
 }
 
-/* The idle screen sits straight on the photo now, so it needs its own glass
-   plate: pale grey text on a foggy forest is unreadable without one. */
-.empty > div {
-  max-width: 470px;
+/* The idle screen sits straight on the photo, so it needs its own glass plate:
+   pale grey text on a foggy forest is unreadable without one. */
+.empty > div:not(.empty-body),
+.empty-card {
+  /* `100%` matters: the plate is centred as a flex item, so without a cap it
+     keeps its 470px natural width on a phone and pushes the page sideways. */
+  max-width: min(470px, 100%);
   padding: 26px 34px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 18px;
@@ -665,6 +708,41 @@ aside {
 
 .empty h2 { font-size: 17px; font-weight: 500; color: #e4e6e9; margin: 0 0 6px; }
 .empty p { margin: 0; font-size: 13px; max-width: 380px; color: var(--muted); }
+
+/* The idle column: plate on top, a strip of recent screenshots underneath. */
+.empty-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  min-width: 0;
+  max-width: 640px;
+  padding: 0;
+  border: 0;
+  background: none;
+  backdrop-filter: none;
+}
+
+.recent { width: 100%; }
+
+.recent h3 {
+  margin: 0 0 8px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.recent .grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.recent .shot img { height: 76px; }
+.recent .shot .cap { padding: 5px 7px; font-size: 10.5px; }
+
+@media (max-width: 980px) {
+  .recent .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 
 .toast {
   position: fixed;

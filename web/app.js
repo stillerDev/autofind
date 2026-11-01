@@ -70,12 +70,38 @@ async function runSearch() {
 function renderIdle() {
   $("content").innerHTML = `
     <div class="empty">
-      <div>
-        <h2>Ищите по смыслу, а не по имени файла</h2>
-        <p>Строка находит содержимое документов, текст на скриншотах и фрагменты кода.
-           Всё считается на этом компьютере, наружу ничего не уходит.</p>
+      <div class="empty-body">
+        <div class="empty-card">
+          <h2>Ищите по смыслу, а не по имени файла</h2>
+          <p>Строка находит содержимое документов, текст на скриншотах и фрагменты кода.
+             Всё считается на этом компьютере, наружу ничего не уходит.</p>
+        </div>
+        <div class="recent" id="recent" hidden></div>
       </div>
     </div>`;
+  loadRecent();
+}
+
+/* The idle screen used to be one small plate on a very large photo, which read
+   as a half-empty page. Six recent screenshots give the space a floor: the eye
+   lands on something real and the whole column stops looking unfinished. */
+let recentLoaded = false;
+
+async function loadRecent() {
+  if (recentLoaded) return;
+  recentLoaded = true;
+  const host = $("recent");
+  if (!host) return;
+  try {
+    const data = await api("/api/images?limit=6");
+    const images = (data.images || []).slice(0, 6);
+    if (!images.length || !$("recent")) return;
+    host.innerHTML = `<h3>недавние скриншоты</h3>
+      <div class="grid">${images.map(shot).join("")}</div>`;
+    host.hidden = false;
+  } catch (error) {
+    recentLoaded = false; // a decoration must never break the idle screen
+  }
 }
 
 function card(hit, query) {
