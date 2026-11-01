@@ -41,6 +41,7 @@ with no model downloads:
 | Privacy filter | works | path blocklist + `.gitignore` parity, `privacy purge` |
 | App | works | native window (WebView2), tray, `Ctrl+Alt+Space`, autostart |
 | Interface | works | English by default, Russian in one click, index in a drawer |
+| Appearance | works | five walls or your own picture; the palette is derived from it |
 | Personal layer | works | pins, saved searches, dictionary — and `import kensaku` |
 | Code definitions | works | `sym:` over nine language families, no tree-sitter |
 
@@ -313,6 +314,47 @@ The gear opens the same dialog in both languages: the segmented switch, and an
 About list that reports what this install actually is — files and chunks, the
 database size, how many languages the OCR can read here, which embedders are
 loaded, and the version.
+
+### The background is the theme
+
+![The appearance section: five walls, and a tile to pick your own](docs/ui-appearance.png)
+
+A dark interface next to a photograph is usually a black rectangle with a photo
+behind it. Here the picture *is* the palette: every surface is
+`hsl(var(--hue) var(--sat) …)`, the picker sets two numbers, and the panels,
+borders, chips and hover states follow. Pick the brown wall and the borders go
+warm; pick the ocean and they go teal.
+
+That means a picture you supply has to answer one question: what colour is it?
+An RGB average cannot answer it — the mean of a sunset is grey, because the
+orange and the blue cancel out. The measurement is a **circular mean of hues**,
+weighted by saturation and ignoring the washed-out pixels:
+
+```js
+sum += saturation * sin(hue);   // hues are angles, so they add as vectors
+cos += saturation * cos(hue);
+hue = atan2(sum, cos);
+```
+
+![The same window on the dusk wall: the panels are purple because the background is](docs/ui-dusk.png)
+
+Two smaller decisions come out of the same idea.
+
+**The wallpaper is a file, not a `localStorage` entry.** A 4 MB photo in browser
+storage is a quota error waiting for the wrong day, and it would die with a
+cache clear. It is written to `~/.semfind/background.<ext>` next to the index —
+so it survives, it travels with a backup of the config directory, and
+`GET /api/background` serves it back with a cache-busting query. Only one is kept
+at a time: a new PNG deletes the old JPG, because two files would leave the
+reader picking whichever extension it happened to try first.
+
+**The first frame is already the right colour.** `app.js` runs at the end of the
+body, which is one paint too late: the window would flash the default forest
+background and then jump to yours. A twelve-line script in `<head>` reads the
+stored choice and sets `--wall`, `--hue` and `--sat` on the root element before
+anything is rendered. `tests/test_theme.py` checks that the script is in the
+head, that it reads the same storage key `app.js` writes, and that every surface
+in the stylesheet is derived from the hue rather than pinned to a hex value.
 
 ## What you bring with you
 
@@ -666,7 +708,7 @@ SQLite file. An app-level blocklist, a pause switch and SQLCipher are open items
 python -m unittest discover -s tests -t .
 ```
 
-231 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
+260 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
 image preprocessing, visual features, thumbnails, real OCR including Japanese
 (skipped when no engine), the language table and the boot screen's greeting
 pool, `/api/ready`, FTS query sanitising, the full index→search cycle, kind filters,
@@ -678,8 +720,12 @@ vector pack, grouping, the desktop-app plumbing (lock, geometry, autostart),
 symbol extraction per language and the `sym:` channel, pins as a bonus rather
 than a filter, saved-search upsert, the dictionary's whole-word and
 `key:value` guards, the kensaku import from both a JSON and a SQLite config,
-and the two dictionaries against each other, against the markup and against
-the kinds the query compiler can emit.
+the wallpaper route over a real socket (a bad data URL, an oversized upload, a
+new extension replacing the old file, and a refusal that leaves the previous
+wallpaper alone), the head script that paints it before the first frame, every
+surface in the stylesheet being derived from `--hue` rather than pinned to a hex
+value, and the two dictionaries against each other, against the markup and
+against the kinds the query compiler can emit.
 
 `tests/queries/queries.json` holds the fixed 20-query acceptance set from the
 plan. Expected answers are still placeholders — attaching a real corpus is what

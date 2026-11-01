@@ -6,6 +6,22 @@
   <title>AutoFind — local search over files and screenshots</title>
   <link rel="icon" href="/icon.png">
   <link rel="stylesheet" href="/style.css">
+  <!-- The chosen wallpaper has to be on the element before the first paint, or
+       every launch flashes the default photo for a frame. This duplicates the
+       key and the variable names that `loadTheme` in app.js uses; there is no
+       way around it short of a blocking round trip, and a one-frame flash of the
+       wrong background is exactly the kind of thing people notice. -->
+  <script>
+    try {
+      var savedWall = JSON.parse(localStorage.getItem("autofind.wall") || "null");
+      if (savedWall && savedWall.wall) {
+        var wallRoot = document.documentElement.style;
+        wallRoot.setProperty("--wall", savedWall.wall);
+        wallRoot.setProperty("--hue", String(Math.round(savedWall.hue)));
+        wallRoot.setProperty("--sat", (savedWall.sat || 9) + "%");
+      }
+    } catch (error) { /* storage blocked: the default background is fine */ }
+  </script>
 </head>
 <body>
 <!-- Painted before any script runs, so the window never shows a white flash or
@@ -251,6 +267,33 @@
       <button class="close" id="settings-close" data-i18n="settings.close">close</button>
     </div>
     <div class="settings-body">
+      <section class="settings-section">
+        <h4 data-i18n="settings.appearance">Appearance</h4>
+        <div class="wall-row" id="wall-row" role="radiogroup" data-i18n-aria="settings.background">
+          <!-- The tiles are painted from the same table the theme comes from, so
+               a preview cannot drift away from what clicking it does. -->
+          <button class="wall-tile" type="button" data-wall="forest" role="radio"
+                  data-i18n-title="wall.forest" aria-checked="false"></button>
+          <button class="wall-tile" type="button" data-wall="dusk" role="radio"
+                  data-i18n-title="wall.dusk" aria-checked="false"></button>
+          <button class="wall-tile" type="button" data-wall="slate" role="radio"
+                  data-i18n-title="wall.slate" aria-checked="false"></button>
+          <button class="wall-tile" type="button" data-wall="sand" role="radio"
+                  data-i18n-title="wall.sand" aria-checked="false"></button>
+          <button class="wall-tile" type="button" data-wall="ocean" role="radio"
+                  data-i18n-title="wall.ocean" aria-checked="false"></button>
+          <button class="wall-tile wall-pick" type="button" id="wall-pick"
+                  data-i18n-title="settings.chooseImage" data-i18n-aria="settings.chooseImage">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+                 stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                 aria-hidden="true">
+              <path d="M12 5v14M5 12h14"></path>
+            </svg>
+          </button>
+          <input type="file" id="wall-file" accept="image/*" hidden>
+        </div>
+        <p class="settings-note" data-i18n="settings.wallNote"></p>
+      </section>
       <section class="settings-section">
         <h4 data-i18n="settings.language">Language</h4>
         <div class="segmented" id="lang-switch" role="radiogroup"

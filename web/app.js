@@ -224,7 +224,199 @@ function renderIdle() {
   loadRecent();
 }
 
-/* ---------------------------------------------------------------- personal */
+/* ------------------------------------------------------------------ theme */
+
+/* The window is a photo with an interface on top of it, so the interface cannot
+   have one fixed palette: a blue-grey panel on a warm sand photo reads as a
+   mistake. Everything is derived from a single hue, `--hue`, and a background
+   brings its own: the presets carry theirs, and a picture chosen by hand is
+   measured with a canvas — the circular mean of its saturated pixels, which is
+   the colour the eye remembers rather than the average RGB (which is almost
+   always grey).
+
+   The choice lives in `localStorage`, the picture itself on the server: a 4 MB
+   photo does not belong in a 5 MB storage quota, and `~/.semfind` travels with
+   a backup while a cache clear would take the wallpaper with it. */
+const WALL_KEY = "autofind.wall";
+const WALL_MAX_MB = 12;
+
+const WALLS = [
+  { id: "forest", wall: 'url("/fon.jpg")', hue: 205, sat: 8 },
+  { id: "dusk", wall: "linear-gradient(155deg,#3b2450 0%,#1a1124 48%,#0b0a10 100%)", hue: 272, sat: 10 },
+  { id: "slate", wall: "linear-gradient(155deg,#28313a 0%,#141a1f 52%,#0a0d10 100%)", hue: 208, sat: 8 },
+  { id: "sand", wall: "linear-gradient(155deg,#3c3024 0%,#1e1813 52%,#0c0b09 100%)", hue: 34, sat: 11 },
+  { id: "ocean", wall: "linear-gradient(155deg,#0f3a44 0%,#0a1b20 52%,#050b0d 100%)", hue: 191, sat: 12 },
+];
+
+let theme = WALLS[0];
+
+function applyTheme(next) {
+  theme = next;
+  const root = document.documentElement;
+  root.style.setProperty("--wall", next.wall);
+  root.style.setProperty("--hue", String(Math.round(next.hue)));
+  root.style.setProperty("--sat", `${next.sat}%`);
+}
+
+function saveTheme(next) {
+  try {
+    localStorage.setItem(WALL_KEY, JSON.stringify(next));
+  } catch (error) {
+    // Storage can be full or blocked; the theme still applies for this session.
+  }
+}
+
+function loadTheme() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(WALL_KEY) || "null");
+  } catch (error) {
+    saved = null;
+  }
+  if (saved && typeof saved.wall === "string" && Number.isFinite(saved.hue)) {
+    applyTheme({
+      id: saved.id || "custom",
+      wall: saved.wall,
+      hue: saved.hue,
+      sat: Number.isFinite(saved.sat) ? saved.sat : 9,
+    });
+    return;
+  }
+  applyTheme(WALLS[0]);
+}
+
+function renderWalls() {
+  const row = $("wall-row");
+  if (!row) return;
+  row.querySelectorAll("[data-wall]").forEach((tile) => {
+    const preset = WALLS.find((item) => item.id === tile.dataset.wall);
+    // Only the image, never the `background` shorthand: the shorthand would
+    // reset `cover` and the tile would show the top-left corner of the photo
+    // instead of the picture as it will actually be laid out.
+    if (preset) tile.style.backgroundImage = preset.wall;
+    const active = theme.id === tile.dataset.wall;
+    tile.classList.toggle("on", active);
+    tile.setAttribute("aria-checked", String(active));
+  });
+  const custom = $("wall-pick");
+  if (!custom) return;
+  const active = theme.id === "custom";
+  custom.classList.toggle("on", active);
+  custom.style.backgroundImage = active ? theme.wall : "";
+}
+
+function chooseWall(id) {
+  const preset = WALLS.find((item) => item.id === id);
+  if (!preset) return;
+  applyTheme(preset);
+  saveTheme(preset);
+  renderWalls();
+}
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("could not load the image"));
+    image.src = url;
+  });
+}
+
+function rgbToHsl(red, green, blue) {
+  const r = red / 255;
+  const g = green / 255;
+  const b = blue / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const lightness = (max + min) / 2;
+  const delta = max - min;
+  if (delta === 0) return [0, 0, lightness];
+  const saturation = delta / (1 - Math.abs(2 * lightness - 1));
+  let hue;
+  if (max === r) hue = ((g - b) / delta) % 6;
+  else if (max === g) hue = (b - r) / delta + 2;
+  else hue = (r - g) / delta + 4;
+  return [(hue * 60 + 360) % 360, saturation, lightness];
+}
+
+/* One hue for the whole window, taken from the picture itself.
+
+   A plain average of the pixels is always grey — a photo has as much red as
+   blue and the mean lands in the middle. So each pixel votes weighted by how
+   saturated and how mid-toned it is, and the votes are averaged as angles,
+   which is the only correct way to average a hue (350° and 10° are 20° apart,
+   not 340°). A grey picture returns null and the default blue-grey stays. */
+function hueOfImage(image) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 32;
+  canvas.height = 32;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return null;
+  context.drawImage(image, 0, 0, 32, 32);
+  let data;
+  try {
+    data = context.getImageData(0, 0, 32, 32).data;
+  } catch (error) {
+    return null; // a tainted canvas; the default palette is fine
+  }
+  let x = 0;
+  let y = 0;
+  let weight = 0;
+  for (let index = 0; index < data.length; index += 4) {
+    const [hue, saturation, lightness] = rgbToHsl(data[index], data[index + 1], data[index + 2]);
+    const vote = saturation * (1 - Math.abs(2 * lightness - 1));
+    if (vote <= 0.02) continue;
+    const angle = (hue * Math.PI) / 180;
+    x += Math.cos(angle) * vote;
+    y += Math.sin(angle) * vote;
+    weight += vote;
+  }
+  if (weight < 0.6) return null;
+  // One decimal is all a palette needs, and `20.000000000000284` in storage
+  // reads like a bug the next time somebody opens the dev tools.
+  const degrees = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+  return Math.round(degrees * 10) / 10;
+}
+
+function readAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function useWallFile(file) {
+  if (!file) return;
+  if (file.size > WALL_MAX_MB * 1048576) {
+    toast(t("settings.wallTooBig", { mb: WALL_MAX_MB }));
+    return;
+  }
+  try {
+    const data = await readAsDataUrl(file);
+    const saved = await api("/api/background", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data }),
+    });
+    let hue = 205;
+    try {
+      hue = hueOfImage(await loadImage(saved.url)) ?? 205;
+    } catch (error) {
+      hue = 205; // the picture is fine, only the measuring failed
+    }
+    const next = { id: "custom", wall: `url("${saved.url}")`, hue, sat: 9 };
+    applyTheme(next);
+    saveTheme(next);
+    renderWalls();
+    toast(t("settings.wallSaved"));
+  } catch (error) {
+    toast(t("settings.wallFailed", { error: error.message }));
+  }
+}
+
+/* --------------------------------------------------------------- personal */
 
 /* Pins, saved searches and the dictionary are the three things a person brings
    with them from another search app, so they get the prime screen: the empty
@@ -252,21 +444,25 @@ function paintPersonal() {
   if (!host || !personal) return;
   const pins = personal.pins || [];
   const saved = personal.saved || [];
-  const blocks = [];
-  if (pins.length) {
-    blocks.push(`<div class="personal-block">
+  // An empty block is not hidden: the empty screen is the one place where a
+  // feature nobody has used yet can explain itself in a line, and "nothing
+  // pinned yet" is how a star on a result becomes a thing people know about.
+  const blocks = [
+    `<div class="personal-block">
         <h3>${esc(t("idle.pinned"))}</h3>
-        <div class="pin-list">${pins.map(pinRow).join("")}</div>
-      </div>`);
-  }
-  if (saved.length) {
-    blocks.push(`<div class="personal-block">
+        ${pins.length
+          ? `<div class="pin-list">${pins.map(pinRow).join("")}</div>`
+          : `<p class="personal-empty">${esc(t("idle.pinsEmpty"))}</p>`}
+      </div>`,
+    `<div class="personal-block">
         <h3>${esc(t("idle.saved"))}</h3>
-        <div class="saved-list">${saved.map(savedChip).join("")}</div>
-      </div>`);
-  }
+        ${saved.length
+          ? `<div class="saved-list">${saved.map(savedChip).join("")}</div>`
+          : `<p class="personal-empty">${esc(t("idle.savedEmpty"))}</p>`}
+      </div>`,
+  ];
   host.innerHTML = blocks.join("");
-  host.hidden = !blocks.length;
+  host.hidden = false;
 }
 
 function pinRow(item) {
@@ -818,6 +1014,7 @@ function setSettings(open) {
     renderAbout();
     paintLang();
     loadPersonal().then(renderAliases);
+    renderWalls();
     // Focus the card, not the close button: a ring on "close" is the first
     // thing the eye lands on, and it is not what the dialog is about.
     $("settings").querySelector(".settings-card").focus();
@@ -966,6 +1163,18 @@ $("clear").addEventListener("click", () => {
 });
 $("save-btn").addEventListener("click", saveSearch);
 $("alias-add").addEventListener("click", addAlias);
+$("wall-row").addEventListener("click", (event) => {
+  const tile = event.target.closest("[data-wall]");
+  if (tile) { chooseWall(tile.dataset.wall); return; }
+  if (event.target.closest("#wall-pick")) $("wall-file").click();
+});
+$("wall-file").addEventListener("change", () => {
+  const file = $("wall-file").files && $("wall-file").files[0];
+  // Reset first: choosing the same file twice must upload it twice, and a file
+  // input that keeps its value fires no change event the second time.
+  $("wall-file").value = "";
+  useWallFile(file);
+});
 // Enter in either dictionary field adds the entry: a two-field form with no
 // keyboard path is a form people fill in with the mouse or not at all.
 ["alias-word", "alias-means"].forEach((id) => {
@@ -1187,6 +1396,8 @@ document.addEventListener("click", (event) => {
 }, true);
 
 applyStaticText();
+loadTheme();
+renderWalls();
 paintLang();
 paintSince();
 renderIdle();

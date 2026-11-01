@@ -617,6 +617,16 @@ def run_app(
             server.server_close()
         except Exception:
             pass
+        # The MCP handler holds a read-only Store for the whole session. On
+        # Windows that handle blocks deleting or replacing the index, so the
+        # window must let go of it on the way out.
+        try:
+            from .api import MCP
+
+            if MCP is not None:
+                MCP.close()
+        except Exception:
+            pass
         release_instance_lock(lock)
     return 0
 

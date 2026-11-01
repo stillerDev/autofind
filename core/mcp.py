@@ -171,6 +171,12 @@ class McpServer:
 
     # ------------------------------------------------------------- plumbing
 
+    def close(self) -> None:
+        """Let go of the index. A read-only handle still blocks a delete on Windows."""
+        if self._store is not None:
+            self._store.close()
+            self._store = None
+
     def _open(self) -> Store:
         if self._store is None:
             embedder = get_embedder("auto", self.config.model_dir)

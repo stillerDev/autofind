@@ -526,6 +526,40 @@ class MissingTableTests(PersonalBase):
         self.assertIsNone(_reraises_unless_missing(sqlite3.OperationalError("no such table: pins")))
 
 
+class BackfillTests(PersonalBase):
+    """An index built before `symbols` existed gets definitions without a re-index."""
+
+    def test_the_pass_runs_once(self):
+        from core.indexer import backfill_symbols
+
+        store = self.store(readonly=False)
+        try:
+            store.conn.execute("DELETE FROM symbols")
+            store.set_meta("symbols_backfilled", "")
+            first = backfill_symbols(store)
+            second = backfill_symbols(store)
+        finally:
+            store.close()
+        self.assertGreater(first, 0)
+        self.assertEqual(second, 0)
+
+    def test_the_startup_hook_is_a_no_op_when_already_done(self):
+        from core.api import _backfill_symbols
+
+        _backfill_symbols(self.db, self.config)
+        store = self.store()
+        try:
+            before = store.symbol_count()
+        finally:
+            store.close()
+        _backfill_symbols(self.db, self.config)
+        store = self.store()
+        try:
+            self.assertEqual(store.symbol_count(), before)
+        finally:
+            store.close()
+
+
 class McpTests(PersonalBase):
     """The same three things reach an agent, not only the window."""
 
@@ -546,9 +580,7 @@ class McpTests(PersonalBase):
         # Closing here rather than in a cleanup matters: `addCleanup` runs after
         # `tearDown`, so the file would still be locked when the directory goes.
         for server in getattr(self, "_servers", []):
-            if server._store is not None:
-                server._store.close()
-                server._store = None
+            server.close()
         super().tearDown()
 
     def call(self, tool: str, **arguments):

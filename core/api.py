@@ -12,9 +12,11 @@ raw path, so a page cannot ask us to open something we never scanned.
 
 from __future__ import annotations
 
+import base64
 import json
 import mimetypes
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -50,6 +52,19 @@ KIND_MAP = {
     "docx": ("docx",),
     "image": ("image",),
 }
+
+# A wallpaper is a picture, not a photo library: 12 MB covers a 4K JPEG and
+# stops a 200 MB TIFF from being pasted into the window and into the config dir.
+BACKGROUND_MAX = 12 * 1024 * 1024
+BACKGROUND_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/avif": ".avif",
+}
+BACKGROUND_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif")
 
 
 class IndexJob:
@@ -255,6 +270,8 @@ class Handler(BaseHTTPRequestHandler):
             self._privacy()
         elif route == "/api/personal":
             self._personal()
+        elif route == "/api/background":
+            self._background()
         elif route == "/api/pins":
             self._json({"pins": self._pins()})
         elif route == "/api/saved":
@@ -401,6 +418,70 @@ class Handler(BaseHTTPRequestHandler):
                 "version": "0.1.0",
             }
         )
+
+    # ------------------------------------------------------------- background
+
+    def _background_file(self) -> Path | None:
+        for extension in BACKGROUND_EXTENSIONS:
+            candidate = self.config.home / f"background{extension}"
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _background(self) -> None:
+        """The chosen wallpaper, served from the config directory.
+
+        It lives next to the index rather than in the browser's storage: a 4 MB
+        photo in `localStorage` is a quota error waiting to happen, and the file
+        then travels with a backup of `~/.semfind` instead of dying with a cache
+        clear.
+        """
+        path = self._background_file()
+        if path is None:
+            self._error("no background", 404)
+            return
+        content_type, _ = mimetypes.guess_type(str(path))
+        self._send(200, path.read_bytes(), content_type or "image/png")
+
+    def _set_background(self, payload: dict) -> None:
+        if payload.get("clear"):
+            for extension in BACKGROUND_EXTENSIONS:
+                (self.config.home / f"background{extension}").unlink(missing_ok=True)
+            self._json({"cleared": True})
+            return
+
+        data = str(payload.get("data") or "")
+        match = re.match(r"^data:(image/[a-z0-9.+-]+);base64,(.+)$", data, re.S | re.I)
+        if not match:
+            self._error("expected a base64 image data URL")
+            return
+        mime, encoded = match.group(1).lower(), match.group(2)
+        extension = BACKGROUND_TYPES.get(mime)
+        if extension is None:
+            self._error(f"unsupported image type: {mime}")
+            return
+        try:
+            raw = base64.b64decode(encoded, validate=False)
+        except (ValueError, TypeError):
+            self._error("image data is not valid base64")
+            return
+        if not raw:
+            self._error("empty image")
+            return
+        if len(raw) > BACKGROUND_MAX:
+            self._error(f"image is larger than {BACKGROUND_MAX // 1048576} MB", 413)
+            return
+
+        self.config.ensure_home()
+        # One background at a time: writing a new PNG over an old JPG would leave
+        # both on disk and the reader picking whichever extension it tries first.
+        for other in BACKGROUND_EXTENSIONS:
+            (self.config.home / f"background{other}").unlink(missing_ok=True)
+        target = self.config.home / f"background{extension}"
+        temporary = target.with_suffix(target.suffix + ".part")
+        temporary.write_bytes(raw)
+        temporary.replace(target)
+        self._json({"url": f"/api/background?v={int(time.time() * 1000)}", "bytes": len(raw)})
 
     # ------------------------------------------------------------- personal
 
@@ -786,6 +867,8 @@ class Handler(BaseHTTPRequestHandler):
             self._set_alias(payload)
         elif parsed.path == "/api/alias/drop":
             self._drop_alias(payload)
+        elif parsed.path == "/api/background":
+            self._set_background(payload)
         elif parsed.path == "/api/focus":
             # A second launch asks the running app to come forward instead of
             # starting a rival instance with its own port and its own index.
@@ -996,6 +1079,8 @@ def serve(
         print("\nstopping")
     finally:
         server.server_close()
+        if MCP is not None:
+            MCP.close()
 
 
 def _prewarm(db_path: Path, config: IndexConfig) -> None:
@@ -1027,6 +1112,32 @@ def _prewarm(db_path: Path, config: IndexConfig) -> None:
         READY["warm_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
         READY["at"] = time.time()
         READY["ready"] = True
+
+    # After READY, not before: the window opens on time and this runs behind it.
+    # An index built before the `symbols` table existed would otherwise answer
+    # `sym:` with nothing until the next re-index, which looks like a broken
+    # feature rather than a migration that has not run yet.
+    _backfill_symbols(db_path, config)
+
+
+def _backfill_symbols(db_path: Path, config: IndexConfig) -> None:
+    from .indexer import backfill_symbols
+
+    try:
+        embedder = get_embedder("auto", config.model_dir)
+        store = Store(
+            db_path, embedder.name, embedder.dim,
+            readonly=False, vector_backend=config.vector_backend,
+        )
+        try:
+            if store.get_meta("symbols_backfilled"):
+                return
+            backfill_symbols(store)
+            store.commit()
+        finally:
+            store.close()
+    except Exception:
+        pass  # a migration must never be the reason the app does not open
 
 
 def _open_browser(url: str) -> None:
