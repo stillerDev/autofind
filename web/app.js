@@ -155,9 +155,8 @@ async function loadStats() {
 
     const engines = status.ocr?.available || [];
     $("engines").innerHTML = `
-      <div>текст: <span>${esc(status.text_embedder)}</span></div>
-      <div>картинки: <span>${esc(status.visual_embedder)}</span>${status.visual_supports_text ? "" : ' <span class="hint" title="без CLIP поиск по описанию недоступен">без CLIP</span>'}</div>
-      <div>OCR: <span>${engines.length ? esc(engines.join(", ")) : "не найден"}</span></div>`;
+      <div>текст <span>${esc(status.text_embedder)}</span> · картинки <span>${esc(status.visual_embedder)}</span>${status.visual_supports_text ? "" : ' <span class="hint" title="без CLIP поиск по описанию недоступен">без CLIP</span>'}</div>
+      <div>OCR <span>${engines.length ? esc(engines.join(", ")) : "не найден"}</span></div>`;
     if (!$("roots").value.trim() && status.default_roots?.length) {
       $("roots").value = status.default_roots.join("\n");
     }

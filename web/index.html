@@ -60,23 +60,27 @@
   <aside>
     <div class="panel">
       <h3>Индекс</h3>
-      <div class="stat-row"><span>файлов</span><b id="s-files">—</b></div>
-      <div class="stat-row"><span>фрагментов</span><b id="s-chunks">—</b></div>
-      <div class="stat-row"><span>скриншотов</span><b id="s-images">—</b></div>
-      <div class="stat-row"><span>с OCR-текстом</span><b id="s-ocr">—</b></div>
-      <div class="stat-row"><span>размер</span><b id="s-size">—</b></div>
+      <div class="stat-grid">
+        <div class="stat"><span>файлов</span><b id="s-files">—</b></div>
+        <div class="stat"><span>фрагментов</span><b id="s-chunks">—</b></div>
+        <div class="stat"><span>скриншотов</span><b id="s-images">—</b></div>
+        <div class="stat"><span>с OCR</span><b id="s-ocr">—</b></div>
+        <div class="stat"><span>размер</span><b id="s-size">—</b></div>
+      </div>
     </div>
 
     <div class="panel">
       <h3>Индексировать</h3>
-      <textarea class="paths" id="roots" spellcheck="false"
+      <textarea class="paths" id="roots" rows="3" spellcheck="false"
                 placeholder="По одной папке в строке"></textarea>
       <label class="stat-row" style="cursor:pointer">
         <span>удалять пропавшие</span>
         <input type="checkbox" id="prune">
       </label>
-      <button class="btn primary" id="index-btn" style="margin-top:8px">Индексировать</button>
-      <button class="btn" id="watch-btn" style="margin-top:6px">Следить за папками</button>
+      <div class="btn-row">
+        <button class="btn primary" id="index-btn">Индексировать</button>
+        <button class="btn" id="watch-btn">Следить</button>
+      </div>
       <div class="progress"><div id="bar"></div></div>
       <div class="status-line">
         <span class="progress-label" id="progress-label">готов к работе</span>
@@ -86,9 +90,10 @@
 
     <div class="panel">
       <h3>Приватность</h3>
-      <div class="stat-row"><span>фильтр путей</span><b id="p-enabled">—</b></div>
-      <div class="stat-row"><span>приватного в индексе</span><b id="p-count">—</b></div>
-      <button class="btn" id="purge-btn" style="margin-top:8px">Убрать из индекса</button>
+      <div class="stat-row">
+        <span>фильтр <b id="p-enabled">—</b> · приватного <b id="p-count">—</b></span>
+        <button class="btn mini" id="purge-btn">убрать</button>
+      </div>
     </div>
 
     <div class="panel">
