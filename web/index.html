@@ -89,10 +89,49 @@
       <span data-i18n="tools.folder">folder</span>
       <input id="folder" data-i18n-placeholder="tools.any" autocomplete="off">
     </label>
-    <label class="field">
+    <div class="field date-field">
       <span data-i18n="tools.since">since</span>
-      <input id="since" type="date">
-    </label>
+      <!-- A native <input type="date"> draws its placeholder and its picker in
+           the OS locale: an English interface on a Russian Windows still said
+           "дд.мм.гггг" and opened a Russian calendar. This is ours instead, so
+           it is rounded, grey and in the interface language. -->
+      <button class="date-btn" id="since-btn" type="button"
+              data-i18n-title="cal.open" data-i18n-aria="cal.open"
+              aria-haspopup="dialog" aria-expanded="false">
+        <span id="since-label"></span>
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             aria-hidden="true">
+          <rect x="3.5" y="5" width="17" height="15.5" rx="3.5"></rect>
+          <path d="M3.5 9.5h17M8.5 3.5v3M15.5 3.5v3"></path>
+        </svg>
+        <!-- Same affordance as the sort menu: a chevron says "this opens
+             something", which an icon alone does not. -->
+        <svg class="date-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+             stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 9.5l6 6 6-6"></path>
+        </svg>
+      </button>
+      <div class="calendar" id="calendar" role="dialog"
+           data-i18n-aria="cal.open" hidden>
+        <div class="cal-head">
+          <button class="cal-nav" type="button" data-cal="prev"
+                  data-i18n-aria="cal.prev">‹</button>
+          <div class="cal-title" id="cal-title"></div>
+          <button class="cal-nav" type="button" data-cal="next"
+                  data-i18n-aria="cal.next">›</button>
+        </div>
+        <div class="cal-week" id="cal-week"></div>
+        <div class="cal-grid" id="cal-grid"></div>
+        <div class="cal-foot">
+          <button class="cal-act" type="button" data-cal="clear"
+                  data-i18n="cal.clear">clear</button>
+          <button class="cal-act" type="button" data-cal="today"
+                  data-i18n="cal.today">today</button>
+        </div>
+      </div>
+    </div>
     <label class="field">
       <span data-i18n="tools.sort">sort</span>
       <select id="sort">

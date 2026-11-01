@@ -412,6 +412,11 @@ body.in-app .win-controls { display: flex; align-items: center; }
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(10, 11, 13, 0.5);
   backdrop-filter: blur(14px) saturate(120%);
+  /* Positioned so the calendar, which hangs below this bar, paints over the
+     results instead of under them: `main` comes later in the document and
+     would otherwise cover it. */
+  position: relative;
+  z-index: 3;
 }
 
 .pill {
@@ -481,6 +486,166 @@ body.in-app .win-controls { display: flex; align-items: center; }
 }
 
 .field select option { background: #16181b; color: var(--text); }
+
+/* ---------------------------------------------------------------- calendar */
+
+/* Ours, not the platform's. A native date input draws its ghost text and its
+   popup in the OS locale, so an English interface on a Russian Windows said
+   "дд.мм.гггг" and opened a Russian calendar. This one is rounded, grey and
+   speaks whatever the interface speaks. */
+.date-field { position: relative; }
+
+.date-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 84px;
+  padding: 1px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 0.14s ease;
+}
+
+.date-btn svg { flex: none; color: var(--faint); }
+.date-btn:hover { color: var(--text); }
+.date-btn.set { color: var(--text); font-weight: 600; }
+.date-btn:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.4); outline-offset: 3px; border-radius: 6px; }
+
+/* The chevron is the same "this opens a menu" cue the sort select gives for
+   free. It turns over while the calendar is showing, so the button says which
+   state it is in, not just that it is a button. */
+.date-btn .date-caret {
+  margin-left: -3px;
+  transition: transform 0.16s ease;
+}
+
+.date-btn[aria-expanded="true"] .date-caret { transform: rotate(180deg); }
+
+.calendar {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: -4px;
+  z-index: 48;
+  width: 268px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  background: rgba(28, 31, 35, 0.97);
+  backdrop-filter: blur(20px) saturate(130%);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.55);
+}
+
+.calendar[hidden] { display: none; }
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.cal-title {
+  flex: 1;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-nav {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0 0 2px;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.cal-nav:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cal-week,
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.cal-week span {
+  padding: 2px 0 6px;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.cal-day {
+  height: 30px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.cal-day:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+
+/* Today is a ring, the chosen day is filled: two different facts, two
+   different marks. */
+.cal-day.today { color: var(--text); border-color: rgba(255, 255, 255, 0.24); }
+
+.cal-day.sel {
+  color: #15181b;
+  font-weight: 600;
+  border-color: transparent;
+  background: var(--accent);
+}
+
+.cal-foot {
+  display: flex;
+  gap: 6px;
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.cal-act {
+  flex: 1;
+  padding: 5px 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.cal-act:hover { color: var(--text); background: rgba(255, 255, 255, 0.13); }
 
 .meta-line {
   margin-left: auto;
@@ -813,24 +978,28 @@ main {
 /* ------------------------------------------------------------------ drawer */
 
 /* The index panel: everything that used to be a permanent right column, behind
-   one button. It slides over the results instead of pushing them aside, so
-   opening it never reflows the list you were reading. */
+   one button. It floats — inset from the window edge, rounded on all four
+   corners — so it reads as a card laid over the results rather than as a wall
+   attached to the side of the window. */
 .drawer {
   position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
   z-index: 46;
-  width: min(360px, 92vw);
+  width: min(360px, calc(92vw - 20px));
   display: flex;
   flex-direction: column;
   padding: 14px 16px 16px;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(11, 12, 14, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  background: rgba(13, 15, 17, 0.92);
   backdrop-filter: blur(22px) saturate(130%);
-  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.45);
+  box-shadow: -18px 0 64px rgba(0, 0, 0, 0.5);
   overflow-y: auto;
-  transform: translateX(100%);
+  /* 100% of the panel is not enough to clear the 10 px inset: a sliver of the
+     rounded edge would stay on screen. */
+  transform: translateX(calc(100% + 14px));
   visibility: hidden;
   transition: transform 0.26s cubic-bezier(0.32, 0.72, 0.28, 1), visibility 0.26s ease;
 }

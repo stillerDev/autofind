@@ -50,6 +50,17 @@ class DictionaryTests(unittest.TestCase):
         source = I18N.read_text(encoding="utf-8")
         self.assertIn('const DEFAULT_LANG = "en"', source)
 
+    def test_the_calendar_has_twelve_months_and_seven_days(self):
+        # The calendar is ours, so its words are ours too: a comma list that is
+        # one word short would silently misname a month.
+        source = I18N.read_text(encoding="utf-8")
+        for lang in ("en", "ru"):
+            block = _block(source, lang)
+            months = re.search(r'"cal\.months": "([^"]*)"', block).group(1)
+            days = re.search(r'"cal\.weekdays": "([^"]*)"', block).group(1)
+            self.assertEqual(len(months.split(",")), 12, f"{lang}: months")
+            self.assertEqual(len(days.split(",")), 7, f"{lang}: weekdays")
+
     def test_plural_bases_have_three_forms(self):
         english, russian = keys("en"), keys("ru")
         for base in PLURAL_BASES:
@@ -85,6 +96,14 @@ class CodeTests(unittest.TestCase):
         # The boot screen's greeting table is the one legitimate exception: it is
         # data — "Привет" is a word in a language, not a piece of the interface.
         source = APP.read_text(encoding="utf-8")
+        # Blank out block comments but keep their newlines, so the line numbers
+        # in a failure message still point at the file.
+        source = re.sub(
+            r"/\*.*?\*/",
+            lambda match: re.sub(r"[^\n]", " ", match.group(0)),
+            source,
+            flags=re.S,
+        )
         offenders = []
         in_greetings = False
         for number, line in enumerate(source.splitlines(), start=1):

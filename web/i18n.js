@@ -51,6 +51,15 @@ const I18N = {
     "sort.largest": "largest",
     "sort.name": "by name",
 
+    "cal.open": "Pick a date",
+    "cal.prev": "Previous month",
+    "cal.next": "Next month",
+    "cal.clear": "clear",
+    "cal.today": "today",
+    "cal.monthYear": "{month} {year}",
+    "cal.months": "January,February,March,April,May,June,July,August,September,October,November,December",
+    "cal.weekdays": "Mo,Tu,We,Th,Fr,Sa,Su",
+
     "status.checking": "checking the index…",
     "status.files.one": "{n} file in the index",
     "status.files.few": "{n} files in the index",
@@ -238,6 +247,15 @@ const I18N = {
     "sort.oldest": "старые",
     "sort.largest": "крупные",
     "sort.name": "по имени",
+
+    "cal.open": "Выбрать дату",
+    "cal.prev": "Предыдущий месяц",
+    "cal.next": "Следующий месяц",
+    "cal.clear": "сбросить",
+    "cal.today": "сегодня",
+    "cal.monthYear": "{month} {year}",
+    "cal.months": "Январь,Февраль,Март,Апрель,Май,Июнь,Июль,Август,Сентябрь,Октябрь,Ноябрь,Декабрь",
+    "cal.weekdays": "Пн,Вт,Ср,Чт,Пт,Сб,Вс",
 
     "status.checking": "проверяю индекс…",
     "status.files.one": "{n} файл в индексе",
@@ -475,14 +493,6 @@ function applyStaticText() {
   });
   document.querySelectorAll("[data-i18n-aria]").forEach((node) => {
     node.setAttribute("aria-label", t(node.dataset.i18nAria));
-  });
-  // A date field is a platform control: the "dd.mm.yyyy" ghost inside it is
-  // drawn by the browser in the *OS* locale and cannot be changed from script
-  // (the `lang` attribute does not move it). It is declared here anyway so the
-  // value is announced in the interface language; the format itself is the
-  // format this computer uses, which is what a date field should show.
-  document.querySelectorAll('input[type="date"]').forEach((node) => {
-    node.lang = LANG;
   });
 }
 

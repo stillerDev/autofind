@@ -65,6 +65,89 @@ async function api(path, options) {
   return response.json();
 }
 
+/* ----------------------------------------------------------------- calendar */
+
+/* The "since" filter used to be `<input type="date">`. A native date input
+   draws its ghost text and its popup in the OS locale and cannot be told
+   otherwise from script — an English interface on a Russian Windows still said
+   "дд.мм.гггг" and opened a Russian calendar. This one is ours: rounded, grey,
+   and it speaks the interface language because its month and weekday names come
+   from the same dictionary as everything else. */
+const CAL = { open: false, year: 0, month: 0 };
+
+function pad2(number) {
+  return String(number).padStart(2, "0");
+}
+
+function isoDate(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function parseIso(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+}
+
+function calWords(key) {
+  return t(key).split(",").map((word) => word.trim());
+}
+
+function paintSince() {
+  const label = $("since-label");
+  if (!label) return;
+  const date = parseIso(state.since);
+  label.textContent = date
+    ? date.toLocaleDateString(locale(), { day: "numeric", month: "short", year: "numeric" })
+    : t("tools.any");
+  $("since-btn").classList.toggle("set", Boolean(date));
+}
+
+function openCalendar(open) {
+  const box = $("calendar");
+  if (!box) return;
+  CAL.open = open;
+  box.hidden = !open;
+  $("since-btn").setAttribute("aria-expanded", String(open));
+  if (!open) return;
+  const anchor = parseIso(state.since) || new Date();
+  CAL.year = anchor.getFullYear();
+  CAL.month = anchor.getMonth();
+  renderCalendar();
+}
+
+function renderCalendar() {
+  const months = calWords("cal.months");
+  $("cal-title").textContent = t("cal.monthYear", {
+    month: months[CAL.month], year: CAL.year,
+  });
+  $("cal-week").innerHTML = calWords("cal.weekdays")
+    .map((name) => `<span>${esc(name)}</span>`).join("");
+
+  // Monday first, which is what the rest of the interface assumes: the week
+  // starts on Monday in the locale this was written for, and a Sunday-first
+  // grid next to a Monday-first hint row is a bug waiting to be reported.
+  const start = (new Date(CAL.year, CAL.month, 1).getDay() + 6) % 7;
+  const days = new Date(CAL.year, CAL.month + 1, 0).getDate();
+  const today = isoDate(new Date());
+  const cells = [];
+  for (let blank = 0; blank < start; blank += 1) cells.push("<span></span>");
+  for (let day = 1; day <= days; day += 1) {
+    const value = isoDate(new Date(CAL.year, CAL.month, day));
+    const classes = ["cal-day"];
+    if (value === state.since) classes.push("sel");
+    if (value === today) classes.push("today");
+    cells.push(`<button type="button" class="${classes.join(" ")}" data-day="${value}">${day}</button>`);
+  }
+  $("cal-grid").innerHTML = cells.join("");
+}
+
+function setSince(value) {
+  state.since = value;
+  paintSince();
+  openCalendar(false);
+  if (state.query) runSearch();
+}
+
 /* ------------------------------------------------------------------ search */
 
 function scheduleSearch() {
@@ -626,7 +709,33 @@ $("sort").addEventListener("change", () => {
   if (state.query) runSearch();
 });
 $("folder").addEventListener("change", () => { state.folder = $("folder").value.trim(); if (state.query) runSearch(); });
-$("since").addEventListener("change", () => { state.since = $("since").value; if (state.query) runSearch(); });
+$("since-btn").addEventListener("click", (event) => {
+  event.stopPropagation();
+  openCalendar(!CAL.open);
+});
+$("calendar").addEventListener("click", (event) => {
+  event.stopPropagation();
+  const action = event.target.closest("[data-cal]");
+  if (action) {
+    const name = action.dataset.cal;
+    if (name === "clear") { setSince(""); return; }
+    if (name === "today") { setSince(isoDate(new Date())); return; }
+    const step = name === "prev" ? -1 : 1;
+    const next = new Date(CAL.year, CAL.month + step, 1);
+    CAL.year = next.getFullYear();
+    CAL.month = next.getMonth();
+    renderCalendar();
+    return;
+  }
+  const day = event.target.closest("[data-day]");
+  if (day) setSince(day.dataset.day);
+});
+// A click anywhere else closes the popup, the way a menu behaves.
+document.addEventListener("click", (event) => {
+  if (!CAL.open) return;
+  if (event.target.closest("#calendar") || event.target.closest("#since-btn")) return;
+  openCalendar(false);
+});
 $("clear").addEventListener("click", () => {
   $("q").value = "";
   clearTimeout(state.timer);
@@ -663,6 +772,8 @@ $("lang-switch").addEventListener("click", (event) => {
   if (!setLang(button.dataset.lang)) { paintLang(); return; }
   paintLang();
   renderAbout();
+  paintSince();
+  if (CAL.open) renderCalendar();
   loadStats();
   if (state.query) runSearch(); else renderIdle();
 });
@@ -681,6 +792,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "Escape") {
+    if (CAL.open) { openCalendar(false); return; }
     if ($("preview").classList.contains("open")) { $("preview").classList.remove("open"); return; }
     if ($("settings").classList.contains("open")) { setSettings(false); return; }
     if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }
@@ -844,6 +956,7 @@ document.addEventListener("click", (event) => {
 
 applyStaticText();
 paintLang();
+paintSince();
 renderIdle();
 wireWindowControls();
 loadStats();

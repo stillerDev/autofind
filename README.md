@@ -264,8 +264,11 @@ Two things about the layout are decisions rather than taste.
 on the right, which cost a third of the result width for four panels that are
 read once and then ignored for the rest of the session. It now opens over the
 results from one button in the header, with a scrim that is also a close button,
-and closing it never reflows the list you were reading. Everything the column
-held is still there — counts, roots, watch state, privacy, engines, shortcuts.
+and closing it never reflows the list you were reading. It floats — inset from
+the window edge, rounded on all four corners — so it reads as a card laid over
+the results rather than as a wall attached to the side of the window. Everything
+the column held is still there — counts, roots, watch state, privacy, engines,
+shortcuts.
 
 **Every word is a key.** `web/i18n.js` holds two dictionaries, English as the
 source language, and the markup carries `data-i18n` attributes; anything drawn
@@ -287,6 +290,16 @@ Russian needs three plural forms and English two; the rule lives next to the
 strings. `3 snapshots` and `3 снимка` come from the same call.
 
 ![The same idle screen after switching to Russian](docs/ui-ru.png)
+
+The date filter is the same story in a smaller box. A native `<input type="date">`
+draws its ghost text and opens its picker in the *OS* locale and cannot be told
+otherwise from script: an English interface on a Russian Windows still said
+"дд.мм.гггг" and opened a Russian calendar. So the calendar is ours — rounded,
+grey, Monday-first, with today as a ring and the chosen day as a filled cell,
+and its month and weekday names come out of the same dictionary as everything
+else.
+
+![The date filter, drawn by the app rather than by the OS](docs/ui-calendar.png)
 
 ![Settings, with the language switch and the build's own numbers](docs/ui-settings.png)
 
@@ -578,7 +591,7 @@ SQLite file. An app-level blocklist, a pause switch and SQLCipher are open items
 python -m unittest discover -s tests -t .
 ```
 
-190 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
+191 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
 image preprocessing, visual features, thumbnails, real OCR including Japanese
 (skipped when no engine), the language table and the boot screen's greeting
 pool, `/api/ready`, FTS query sanitising, the full index→search cycle, kind filters,
