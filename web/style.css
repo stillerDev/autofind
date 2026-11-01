@@ -61,9 +61,12 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
   grid-template-rows: auto auto minmax(0, 1fr);
+  /* The sidebar spans all three rows. It used to start below the hero and the
+     filter row, which left it ~450px tall on a 700px window: the privacy and
+     engine panels were cut off no matter how far you scrolled. */
   grid-template-areas:
-    "head head"
-    "tools tools"
+    "head side"
+    "tools side"
     "main side";
   height: 100vh;
   max-height: 100vh;
@@ -495,19 +498,20 @@ aside {
   overflow-y: auto;
   background: rgba(11, 12, 14, 0.56);
   backdrop-filter: blur(16px) saturate(120%);
+  padding-top: 12px;
 }
 
 .panel {
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: var(--radius);
-  padding: 14px;
-  margin-bottom: 12px;
+  padding: 11px 12px;
+  margin-bottom: 8px;
   background: rgba(22, 24, 27, 0.72);
   backdrop-filter: blur(10px);
 }
 
 .panel h3 {
-  margin: 0 0 10px;
+  margin: 0 0 7px;
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
@@ -518,15 +522,26 @@ aside {
 .stat-row {
   display: flex;
   justify-content: space-between;
-  padding: 3px 0;
+  padding: 2px 0;
   font-size: 12.5px;
   color: var(--muted);
 }
 
 .stat-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
-.engines { font-size: 11.5px; color: var(--faint); line-height: 1.7; }
+.engines { font-size: 11px; color: var(--faint); line-height: 1.55; }
 .engines span { color: var(--muted); }
+.engines .hint { color: var(--faint); border-bottom: 1px dotted rgba(255, 255, 255, 0.22); cursor: help; }
+
+.status-line {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.status-line .progress-label { flex: 1 1 auto; min-width: 0; }
+.status-line .progress-label + .progress-label { flex: 0 1 auto; text-align: right; }
 
 .btn {
   width: 100%;
@@ -537,6 +552,8 @@ aside {
   border-radius: 9px;
   cursor: pointer;
   font-size: 12.5px;
+  padding-top: 7px;
+  padding-bottom: 7px;
 }
 
 .btn:hover { border-color: #3a4048; }
@@ -546,7 +563,7 @@ aside {
 
 .paths {
   width: 100%;
-  min-height: 62px;
+  min-height: 52px;
   resize: vertical;
   background: rgba(10, 11, 13, 0.72);
   border: 1px solid var(--border);
