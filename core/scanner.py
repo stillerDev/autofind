@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from .ignore import IgnoreSet
 from .privacy import SENSITIVE_DIRS, match_reason
 
 TEXT_EXT = {
@@ -24,18 +25,26 @@ CODE_EXT = {
     ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".php", ".sh", ".bash", ".ps1",
     ".sql", ".html", ".css", ".scss", ".vue", ".svelte", ".lua", ".swift",
 }
-DOC_EXT = {".pdf", ".docx"}
+DOC_EXT = {".pdf", ".docx", ".pptx", ".xlsx", ".epub", ".odt", ".ods", ".odp", ".rtf"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 
 KIND_BY_EXT = {
     **{ext: "text" for ext in TEXT_EXT},
     **{ext: "code" for ext in CODE_EXT},
-    **{ext: "pdf" for ext in DOC_EXT if ext == ".pdf"},
-    **{ext: "docx" for ext in DOC_EXT if ext == ".docx"},
+    ".pdf": "pdf",
+    ".docx": "docx",
+    ".pptx": "pptx",
+    ".xlsx": "xlsx",
+    ".epub": "epub",
+    # OpenDocument is one XML schema behind three extensions, so one kind.
+    ".odt": "odt",
+    ".ods": "odt",
+    ".odp": "odt",
+    ".rtf": "rtf",
     **{ext: "image" for ext in IMAGE_EXT},
 }
 
-SUPPORTED_KINDS = frozenset({"text", "code", "pdf", "docx", "image"})
+SUPPORTED_KINDS = frozenset({"text", "code", "pdf", "docx", "pptx", "xlsx", "epub", "odt", "rtf", "image"})
 
 
 @dataclass(slots=True)
@@ -69,11 +78,16 @@ def iter_entries(
     min_bytes: int = 32,
     privacy: bool = True,
     skipped: list[tuple[str, str]] | None = None,
+    respect_ignore: bool = True,
 ) -> Iterator[FileEntry]:
     """Yield supported files under every root, skipping noise directories.
 
     With `privacy` on, sensitive locations are dropped before they are opened and
     appended to `skipped` as (path, reason) so the caller can report the count.
+
+    With `respect_ignore` on, `.gitignore` / `.cursorignore` / `.semfindignore`
+    are honoured: an ignored directory is pruned from the walk (git semantics —
+    nothing inside can be re-included) and ignored files never reach the index.
     """
     seen: set[str] = set()
     for root in roots:
@@ -86,7 +100,10 @@ def iter_entries(
             continue
         if not base.is_dir():
             continue
+        ignore = IgnoreSet()
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+            if respect_ignore:
+                ignore.add_directory(dirpath)
             kept = []
             for name in dirnames:
                 if name in excluded_dirs or name.startswith("."):
@@ -95,12 +112,17 @@ def iter_entries(
                     if skipped is not None:
                         skipped.append((str(Path(dirpath) / name), f"directory '{name.lower()}'"))
                     continue
+                if respect_ignore and ignore.is_ignored(str(Path(dirpath) / name), True):
+                    continue
                 kept.append(name)
             dirnames[:] = kept
             for name in filenames:
                 if name.startswith("."):
                     continue
-                entry = _entry_for(Path(dirpath) / name, max_bytes, min_bytes)
+                path = Path(dirpath) / name
+                if respect_ignore and ignore.is_ignored(str(path), False):
+                    continue
+                entry = _entry_for(path, max_bytes, min_bytes)
                 if entry and entry.path not in seen and _passes_privacy(entry.path, privacy, skipped):
                     seen.add(entry.path)
                     yield entry

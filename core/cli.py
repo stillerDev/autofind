@@ -16,7 +16,8 @@ from .evaluate import compare_channels, evaluate, format_report, load_labels
 from .indexer import run_index
 from .ocr import engine_report
 from .privacy import indexed_sensitive, purge_indexed
-from .search import hybrid_search, rank_paths
+from .query import understand
+from .search import search_page
 from .store import Store
 from .watch import Watcher, watch_forever
 
@@ -65,8 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     search_cmd = sub.add_parser("search", help="hybrid search over the index")
     search_cmd.add_argument("query", nargs="+", help="search query")
     search_cmd.add_argument("-n", "--limit", type=int, default=10)
+    search_cmd.add_argument("--offset", type=int, default=0)
     search_cmd.add_argument("--candidates", type=int, default=50)
     search_cmd.add_argument("--kind", default=None, help="text|code|pdf|docx|image")
+    search_cmd.add_argument("--sort", default=None, choices=["best", "newest", "oldest", "largest", "name"])
     search_cmd.add_argument("--files", action="store_true", help="collapse results to one row per file")
     search_cmd.add_argument("--json", action="store_true", help="machine readable output")
     search_cmd.add_argument("--embedder", default="auto", choices=["auto", "e5", "hashing"])
@@ -75,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     serve_cmd.add_argument("--port", type=int, default=8765)
     serve_cmd.add_argument("--no-browser", action="store_true")
 
+    sub.add_parser("mcp", help="MCP server over stdio for AI agents (read-only)")
+    sub.add_parser("cheat", help="print the query grammar")
     sub.add_parser("stats", help="show index size and settings")
 
     args = parser.parse_args(argv)
@@ -93,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(args, config, db_path)
     if args.command == "privacy":
         return _cmd_privacy(args, config, db_path)
+    if args.command == "mcp":
+        from .mcp import serve as serve_mcp
+
+        return serve_mcp(db_path, config)
+    if args.command == "cheat":
+        return _cmd_cheat()
     if args.command == "serve":
         from .api import serve
 
@@ -157,49 +168,78 @@ def _cmd_search(args, config: IndexConfig, db_path: Path) -> int:
     try:
         query = " ".join(args.query)
         started = time.perf_counter()
-        hits = hybrid_search(
-            store,
-            embedder,
-            query,
-            limit=args.limit,
-            candidates=args.candidates,
-            kinds=(args.kind,) if args.kind else None,
+        page = search_page(
+            store, embedder, query, limit=args.limit, offset=args.offset, sort=args.sort,
+            parsed=understand(query), usage=store.usage_map(),
         )
         elapsed_ms = (time.perf_counter() - started) * 1000
     finally:
         store.close()
 
     if args.json:
-        payload = [
-            {
-                "path": hit.path,
-                "kind": hit.kind,
-                "chunk": hit.ord,
-                "score": hit.score,
-                "channels": list(hit.channels),
-                "snippet": hit.snippet,
-            }
-            for hit in hits
-        ]
-        print(json.dumps({"query": query, "ms": round(elapsed_ms, 1), "hits": payload}, ensure_ascii=False, indent=2))
+        payload = {
+            "query": query,
+            "ms": round(elapsed_ms, 1),
+            "total": page.total,
+            "approx": page.approx,
+            "sort": page.sort,
+            "chips": page.chips,
+            "hits": [
+                {
+                    "path": hit.path,
+                    "kind": hit.kind,
+                    "score": hit.score,
+                    "channels": list(hit.channels),
+                    "snippet": hit.snippet,
+                    "mtime": hit.mtime,
+                    "size": hit.size,
+                }
+                for hit in page.hits
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    if not hits:
+    if not page.hits:
         print(f"nothing found for «{query}» ({elapsed_ms:.0f} ms)")
         return 1
 
-    print(f"{len(hits)} results in {elapsed_ms:.0f} ms — «{query}»\n")
+    chips = "  ".join(f"[{chip['label']}]" for chip in page.chips)
+    header = f"{len(page.hits)} of {'≈' if page.approx else ''}{page.total} in {elapsed_ms:.0f} ms — «{query}»"
+    print(header)
+    if chips:
+        print(chips)
+    print()
     if args.files:
-        for position, (path, score) in enumerate(rank_paths(hits), start=1):
-            print(f"{position:2}. {score:.4f}  {path}")
+        for position, hit in enumerate(page.hits, start=1):
+            print(f"{position:2}. {hit.score:.4f}  {hit.path}")
         return 0
 
-    for position, hit in enumerate(hits, start=1):
+    for position, hit in enumerate(page.hits, start=1):
         channels = "+".join(hit.channels)
-        print(f"{position:2}. {hit.score:.4f}  [{channels}]  {hit.name}  ·  chunk {hit.ord}")
+        print(f"{position:2}. {hit.score:.4f}  [{channels}]  {hit.name}")
         print(f"    {hit.path}")
-        print(f"    {hit.snippet}")
+        if hit.snippet:
+            print(f"    {hit.snippet}")
         print()
+    return 0
+
+
+def _cmd_cheat() -> int:
+    from .query import cheat_sheet
+
+    print("грамматика запроса\n")
+    for syntax, meaning in cheat_sheet():
+        print(f"  {syntax:<22} {meaning}")
+    print("\nобычные фразы тоже работают:")
+    for example in (
+        "скриншоты за прошлую неделю",
+        "самые большие файлы",
+        "3 дня назад ошибка",
+        "вчерашние документы",
+        "pdf про индексы",
+    ):
+        print(f"  {example}")
     return 0
 
 

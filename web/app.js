@@ -1,6 +1,13 @@
 const $ = (id) => document.getElementById(id);
-const state = { query: "", kind: "", folder: "", since: "", timer: null, jobTimer: null };
-const KIND_LABEL = { pdf: "pdf", docx: "docx", code: "код", text: "txt", image: "img" };
+const state = {
+  query: "", kind: "", folder: "", since: "", sort: "best",
+  timer: null, jobTimer: null,
+  hits: [], total: 0, nextOffset: null, approx: false, selected: -1, chips: [],
+};
+const KIND_LABEL = {
+  pdf: "pdf", docx: "docx", code: "код", text: "txt", image: "img",
+  pptx: "pptx", xlsx: "xlsx", epub: "epub", odt: "odt", rtf: "rtf",
+};
 
 function esc(text) {
   return String(text ?? "").replace(/[&<>"']/g, (ch) => (
@@ -45,26 +52,50 @@ function scheduleSearch() {
   state.timer = setTimeout(runSearch, 150);
 }
 
-async function runSearch() {
+async function runSearch(options = {}) {
+  const append = Boolean(options.append);
   const query = $("q").value.trim();
   state.query = query;
   if (!query) {
+    state.hits = [];
+    state.total = 0;
+    state.nextOffset = null;
     renderIdle();
     $("meta").textContent = "";
     return;
   }
-  const params = new URLSearchParams({ q: query, limit: "12" });
+  const offset = append ? (state.nextOffset ?? 0) : 0;
+  const params = new URLSearchParams({ q: query, limit: "12", offset: String(offset) });
   if (state.kind) params.set("kind", state.kind);
   if (state.folder) params.set("folder", state.folder);
   if (state.since) params.set("since", state.since);
+  if (state.sort && state.sort !== "best") params.set("sort", state.sort);
 
   try {
     const data = await api(`/api/search?${params}`);
-    renderResults(data);
-    $("meta").textContent = `${data.hits.length} результатов · ${data.ms} мс`;
+    state.hits = append ? state.hits.concat(data.hits) : data.hits;
+    state.total = data.total ?? data.hits.length;
+    state.nextOffset = data.next_offset ?? null;
+    state.approx = Boolean(data.approx);
+    state.chips = data.chips || [];
+    renderResults(data, append);
+    const shown = state.hits.length;
+    const sign = state.approx ? "≈" : "";
+    $("meta").textContent = shown
+      ? `${shown} из ${sign}${state.total} · ${data.ms} мс`
+      : `${data.ms} мс`;
   } catch (error) {
     toast(`Поиск не удался: ${error.message}`);
   }
+}
+
+function clearChip(source) {
+  const input = $("q");
+  if (!source) return;
+  input.value = input.value.replace(source, " ").replace(/\s+/g, " ").trim();
+  clearTimeout(state.timer);
+  runSearch();
+  input.focus();
 }
 
 function renderIdle() {
@@ -104,7 +135,7 @@ async function loadRecent() {
   }
 }
 
-function card(hit, query) {
+function card(hit, query, index) {
   const label = KIND_LABEL[hit.kind] || hit.kind;
   const icon = hit.is_image && hit.thumb
     ? `<div class="icon k-image"><img src="${hit.thumb}" alt="" loading="lazy"></div>`
@@ -115,7 +146,7 @@ function card(hit, query) {
   const similar = hit.is_image
     ? `<button class="act" data-similar="${hit.file_id}">похожие</button>` : "";
   return `
-    <div class="card">
+    <div class="card" data-index="${index}">
       ${icon}
       <div>
         <div class="title-row">
@@ -128,18 +159,43 @@ function card(hit, query) {
         <div class="actions">
           <button class="act" data-open="${hit.file_id}">открыть</button>
           <button class="act" data-reveal="${hit.file_id}">папка</button>
+          <button class="act" data-preview="${hit.file_id}">просмотр</button>
           ${similar}
         </div>
       </div>
     </div>`;
 }
 
-function renderResults(data) {
+/* The chips row is the contract of the natural-language compiler: every filter
+   it inferred is shown with the words that produced it, and one click takes it
+   back. Without this the query language would feel like a guess. */
+function chipRow(chips) {
+  if (!chips.length) return "";
+  const items = chips.map((chip) => `
+    <button class="ichip" data-chip="${esc(chip.source)}" title="убрать «${esc(chip.source)}»">
+      <span>${esc(chip.label)}</span><b>×</b>
+    </button>`).join("");
+  return `<div class="ichips">${items}</div>`;
+}
+
+function renderResults(data, append) {
   const parts = [];
-  if (data.hits.length) {
-    parts.push(`<div class="results">${data.hits.map((hit) => card(hit, data.query)).join("")}</div>`);
+  if (!append) parts.push(chipRow(data.chips || []));
+  if (data.hints && data.hints.length) {
+    parts.push(`<div class="hints">${data.hints.map((hint) => `<span>${esc(hint)}</span>`).join("")}</div>`);
   }
-  if (data.images && data.images.length) {
+
+  if (state.hits.length) {
+    parts.push(`<div class="results">${
+      state.hits.map((hit, index) => card(hit, data.query, index)).join("")
+    }</div>`);
+  }
+
+  if (data.next_offset !== null && data.next_offset !== undefined) {
+    parts.push(`<button class="more" id="more-btn">показать ещё</button>`);
+  }
+
+  if (!append && data.images && data.images.length) {
     parts.push(`<div class="section-title">похожие изображения</div>
       <div class="grid">${data.images.map(shot).join("")}</div>`);
   }
@@ -149,7 +205,66 @@ function renderResults(data) {
         <p>Попробуйте другие слова, снимите фильтр по типу или проиндексируйте папку справа.</p>
       </div></div>`);
   }
-  $("content").innerHTML = parts.join("");
+
+  if (append) {
+    // Appending must not rebuild the list: the browser would drop the scroll
+    // position and re-request every thumbnail already on screen.
+    $("content").insertAdjacentHTML("beforeend", parts.join(""));
+  } else {
+    $("content").innerHTML = parts.join("");
+  }
+  if (!append) state.selected = -1;
+  paintSelection();
+}
+
+function paintSelection() {
+  document.querySelectorAll(".card.sel").forEach((node) => node.classList.remove("sel"));
+  const node = document.querySelector(`.card[data-index="${state.selected}"]`);
+  if (node) {
+    node.classList.add("sel");
+    node.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function moveSelection(delta) {
+  if (!state.hits.length) return;
+  const next = state.selected + delta;
+  state.selected = Math.max(0, Math.min(state.hits.length - 1, next));
+  paintSelection();
+}
+
+/* Quick Look: images get the thumbnail, everything else the indexed text, so a
+   PDF previews without being parsed again. */
+async function openPreview(fileId) {
+  try {
+    const data = await api(`/api/preview?id=${fileId}`);
+    const meta = [
+      `${(data.size / 1024).toFixed(0)} КБ`,
+      new Date(data.mtime * 1000).toLocaleDateString("ru-RU"),
+      data.opens ? `открывали ${data.opens} раз` : "ни разу не открывали",
+      data.exists ? "" : "файла нет на диске",
+    ].filter(Boolean).join(" · ");
+    const body = data.image
+      ? `<img class="preview-img" src="${data.image.thumb}" alt="">
+         ${data.image.ocr ? `<pre class="preview-text">${esc(data.image.ocr)}</pre>` : ""}`
+      : `<pre class="preview-text">${esc(data.text || "текст не извлекался")}</pre>`;
+    $("preview-body").innerHTML = `
+      <div class="preview-head">
+        <div>
+          <div class="preview-name">${esc(data.name)}</div>
+          <div class="preview-path">${esc(data.path)}</div>
+          <div class="preview-meta">${esc(meta)}</div>
+        </div>
+      </div>
+      ${body}
+      <div class="preview-foot">
+        <button class="act" data-open="${data.file_id}">открыть</button>
+        <button class="act" data-reveal="${data.file_id}">показать в папке</button>
+      </div>`;
+    $("preview").classList.add("open");
+  } catch (error) {
+    toast(`Не удалось открыть просмотр: ${error.message}`);
+  }
 }
 
 function shot(image) {
@@ -280,13 +395,28 @@ async function openSimilar(fileId) {
 /* ----------------------------------------------------------------- events */
 
 document.addEventListener("click", async (event) => {
+  const chip = event.target.closest("[data-chip]");
+  if (chip) { clearChip(chip.dataset.chip); return; }
+
+  if (event.target.closest("#more-btn")) { runSearch({ append: true }); return; }
+
+  const preview = event.target.closest("[data-preview]");
+  if (preview) { openPreview(Number(preview.dataset.preview)); return; }
+
   const target = event.target.closest("[data-open],[data-reveal],[data-similar]");
-  if (!target) return;
+  if (!target) {
+    // Clicking anywhere on a card selects it, so the keyboard continues from
+    // the row the user just pointed at.
+    const card = event.target.closest(".card");
+    if (card) { state.selected = Number(card.dataset.index); paintSelection(); }
+    return;
+  }
   if (target.dataset.similar) { openSimilar(target.dataset.similar); return; }
   const id = target.dataset.open || target.dataset.reveal;
   const route = target.dataset.open ? "open" : "reveal";
   try {
     await api(`/api/${route}?id=${id}`);
+    $("preview").classList.remove("open");
   } catch (error) {
     toast(`Не удалось: ${error.message}`);
   }
@@ -305,6 +435,12 @@ $("q").addEventListener("input", scheduleSearch);
 $("q").addEventListener("keydown", (event) => {
   if (event.key === "Enter") { clearTimeout(state.timer); runSearch(); }
   if (event.key === "Escape") { $("q").value = ""; runSearch(); }
+  if (event.key === "ArrowDown") { event.preventDefault(); moveSelection(1); }
+  if (event.key === "ArrowUp") { event.preventDefault(); moveSelection(-1); }
+});
+$("sort").addEventListener("change", () => {
+  state.sort = $("sort").value;
+  if (state.query) runSearch();
 });
 $("folder").addEventListener("change", () => { state.folder = $("folder").value.trim(); if (state.query) runSearch(); });
 $("since").addEventListener("change", () => { state.since = $("since").value; if (state.query) runSearch(); });
@@ -319,12 +455,44 @@ $("watch-btn").addEventListener("click", toggleWatch);
 $("purge-btn").addEventListener("click", purgePrivate);
 $("modal-close").addEventListener("click", () => $("modal").classList.remove("open"));
 $("modal").addEventListener("click", (event) => { if (event.target.id === "modal") $("modal").classList.remove("open"); });
+$("preview-close").addEventListener("click", () => $("preview").classList.remove("open"));
+$("preview").addEventListener("click", (event) => {
+  if (event.target.id === "preview") $("preview").classList.remove("open");
+});
+
+function selectedHit() {
+  return state.selected >= 0 ? state.hits[state.selected] : null;
+}
 
 document.addEventListener("keydown", (event) => {
+  const inField = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+
   if (event.key === "/" && document.activeElement !== $("q")) {
     event.preventDefault();
     $("q").focus();
     $("q").select();
+    return;
+  }
+  if (event.key === "Escape") {
+    if ($("preview").classList.contains("open")) { $("preview").classList.remove("open"); return; }
+    if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }
+  }
+  if (inField && document.activeElement === $("q")) return;
+
+  const hit = selectedHit();
+  if (!hit) return;
+
+  if (event.key === "ArrowDown") { event.preventDefault(); moveSelection(1); }
+  else if (event.key === "ArrowUp") { event.preventDefault(); moveSelection(-1); }
+  else if (event.key === "Enter") {
+    event.preventDefault();
+    api(`/api/${event.shiftKey ? "reveal" : "open"}?id=${hit.file_id}`)
+      .catch((error) => toast(`Не удалось: ${error.message}`));
+  } else if (event.key === " " || (event.key === "Spacebar")) {
+    // Space is a space while the search box has focus; everywhere else it is
+    // Quick Look, the same reflex as in Finder.
+    event.preventDefault();
+    openPreview(hit.file_id);
   }
 });
 
@@ -334,8 +502,13 @@ api("/api/progress").then((job) => {
   if (job.running) { $("index-btn").disabled = true; pollJob(); }
 });
 
-const initial = new URLSearchParams(location.search).get("q");
+const params = new URLSearchParams(location.search);
+const initial = params.get("q");
 if (initial) {
   $("q").value = initial;
   runSearch();
 }
+// Deep link to a file: `?preview=<id>` opens Quick Look straight away, which is
+// what a link pasted into a chat should do.
+const initialPreview = params.get("preview");
+if (initialPreview) openPreview(Number(initialPreview));

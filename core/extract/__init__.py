@@ -5,6 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from .docx import extract_docx
+from .office import (
+    extract_epub,
+    extract_opendocument,
+    extract_pptx,
+    extract_rtf,
+    extract_xlsx,
+)
 from .pdf import extract_pdf
 from .plain import extract_plain
 
@@ -13,7 +20,14 @@ EXTRACTORS = {
     "code": extract_plain,
     "docx": extract_docx,
     "pdf": extract_pdf,
+    "pptx": extract_pptx,
+    "xlsx": extract_xlsx,
+    "epub": extract_epub,
+    "odt": extract_opendocument,
+    "rtf": extract_rtf,
 }
+
+PLAIN_KINDS = ("text", "code")
 
 
 def extract_text(path: str | Path, kind: str, max_bytes: int = 20 * 1024 * 1024) -> str:
@@ -21,11 +35,25 @@ def extract_text(path: str | Path, kind: str, max_bytes: int = 20 * 1024 * 1024)
     if extractor is None:
         return ""
     try:
-        if kind in ("text", "code"):
+        if kind in PLAIN_KINDS:
             return extractor(path, max_bytes)  # type: ignore[call-arg]
         return extractor(path)
-    except (OSError, ValueError):
+    except (OSError, ValueError, KeyError):
+        return ""
+    except Exception:
+        # A malformed package must never abort a whole indexing run.
         return ""
 
 
-__all__ = ["extract_text", "EXTRACTORS", "extract_docx", "extract_pdf", "extract_plain"]
+__all__ = [
+    "extract_text",
+    "EXTRACTORS",
+    "extract_docx",
+    "extract_epub",
+    "extract_opendocument",
+    "extract_pdf",
+    "extract_plain",
+    "extract_pptx",
+    "extract_rtf",
+    "extract_xlsx",
+]

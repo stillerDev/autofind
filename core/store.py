@@ -9,6 +9,7 @@ touching the callers.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 import time
@@ -64,7 +65,26 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+-- Frecency: how often a file was opened and when. One row per file, written on
+-- /api/open; ranking reads it as a bonus, so a file you actually use floats up
+-- without ever outranking an exact name match.
+CREATE TABLE IF NOT EXISTS usage (
+    file_id   INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    opens     INTEGER NOT NULL DEFAULT 0,
+    last_open REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+CREATE INDEX IF NOT EXISTS idx_files_size ON files(size);
 """
+
+# Columns added after the first release. `files.name` and `files.char_mask` are
+# denormalised on purpose: fuzzy name matching scans every file, and computing
+# a basename and a 64-bit bloom per row in Python for 100k files costs more than
+# storing 20 bytes once.
+FILE_COLUMNS = {
+    "name": "TEXT",
+    "char_mask": "INTEGER DEFAULT 0",
+}
 
 IMAGE_COLUMNS = {
     "file_id": "INTEGER",
@@ -75,6 +95,81 @@ IMAGE_COLUMNS = {
     "ocr_text": "TEXT",
     "ocr_engine": "TEXT",
 }
+
+
+def char_mask(text: str) -> int:
+    """64-bit character-presence bloom for the fuzzy prefilter.
+
+    A candidate can only match a subsequence query if it contains every
+    character of that query, so one AND per file rejects most of the corpus
+    before the expensive matcher runs. Collisions are harmless: the mask only
+    produces false positives, never false negatives.
+    """
+    mask = 0
+    for ch in text.lower():
+        if "a" <= ch <= "z":
+            bit = ord(ch) - 97
+        elif "0" <= ch <= "9":
+            bit = 26 + ord(ch) - 48
+        elif ch == "_":
+            bit = 36
+        elif ch == "-":
+            bit = 37
+        elif ch == ".":
+            bit = 38
+        elif ch in "/\\":
+            bit = 39
+        elif ch == " ":
+            bit = 40
+        else:
+            bit = 41 + (ord(ch) % 21)
+        # 63 bits, not 64: SQLite integers are signed, so bit 63 would turn the
+        # value into a REAL and break the bitwise AND.
+        mask |= 1 << (bit % 63)
+    return mask
+
+
+def basename(path: str) -> str:
+    return path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+
+
+def _regexp(pattern: str, value: str | None) -> bool:
+    if value is None:
+        return False
+    try:
+        return re.search(pattern, value) is not None
+    except re.error:
+        return False
+
+
+SCHEMA_VERSION = 2
+
+
+def _add_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> bool:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    added = False
+    for column, sql_type in columns.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+            added = True
+    return added
+
+
+def _migrate_connection(conn: sqlite3.Connection) -> None:
+    """Bring any index up to the current schema. Safe to run repeatedly.
+
+    Indexes built before `name`/`char_mask` existed need one pass over them:
+    eight thousand rows take well under a second, a hundred thousand a few
+    seconds, once, on the first open after the upgrade.
+    """
+    _add_columns(conn, "images", IMAGE_COLUMNS)
+    if _add_columns(conn, "files", FILE_COLUMNS):
+        rows = conn.execute("SELECT id, path FROM files").fetchall()
+        conn.executemany(
+            "UPDATE files SET name = ?, char_mask = ? WHERE id = ?",
+            [(basename(row["path"]), char_mask(basename(row["path"])), row["id"]) for row in rows],
+        )
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 class Store:
@@ -96,6 +191,7 @@ class Store:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.create_function("regexp", 2, _regexp, deterministic=True)
         self._vec_ids: np.ndarray | None = None
         self._vec_matrix: np.ndarray | None = None
         self._vec_key: tuple[int, int] | None = None
@@ -107,15 +203,39 @@ class Store:
             self.conn.executescript(SCHEMA)
             self._migrate()
             self._check_embedder(embedder, dim)
+        elif self._schema_version() < SCHEMA_VERSION:
+            # A reader that opens an index built by an older version still has
+            # to migrate it, otherwise every `usage` or `char_mask` query fails.
+            # It costs one short writable connection, once, after an upgrade.
+            self._migrate_externally()
         self.conn.commit()
 
     # ---------------------------------------------------------------- schema
 
+    def _schema_version(self) -> int:
+        try:
+            return int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return 0
+
+    def _migrate_externally(self) -> None:
+        conn = None
+        try:
+            conn = sqlite3.connect(str(self.path))
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(SCHEMA)
+            _migrate_connection(conn)
+            conn.commit()
+        except sqlite3.Error:
+            pass  # genuinely read-only file: the tolerant queries below cope
+        finally:
+            if conn is not None:
+                conn.close()
+
     def _migrate(self) -> None:
-        existing = {row["name"] for row in self.conn.execute("PRAGMA table_info(images)")}
-        for column, sql_type in IMAGE_COLUMNS.items():
-            if column not in existing:
-                self.conn.execute(f"ALTER TABLE images ADD COLUMN {column} {sql_type}")
+        _migrate_connection(self.conn)
+        self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _check_embedder(self, embedder: str, dim: int) -> None:
         stored = self.get_meta("embedder")
@@ -148,11 +268,14 @@ class Store:
         return self.conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
 
     def upsert_file(self, path: str, size: int, mtime: float, sha256: str, kind: str) -> int:
+        name = basename(path)
         self.conn.execute(
-            "INSERT INTO files(path, size, mtime, sha256, kind, indexed_at) VALUES(?,?,?,?,?,?) "
-            "ON CONFLICT(path) DO UPDATE SET size=excluded.size, mtime=excluded.mtime, "
-            "sha256=excluded.sha256, kind=excluded.kind, indexed_at=excluded.indexed_at",
-            (path, size, mtime, sha256, kind, time.time()),
+            "INSERT INTO files(path, name, char_mask, size, mtime, sha256, kind, indexed_at) "
+            "VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(path) DO UPDATE SET name=excluded.name, char_mask=excluded.char_mask, "
+            "size=excluded.size, mtime=excluded.mtime, sha256=excluded.sha256, "
+            "kind=excluded.kind, indexed_at=excluded.indexed_at",
+            (path, name, char_mask(name), size, mtime, sha256, kind, time.time()),
         )
         row = self.conn.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()
         return int(row["id"])
@@ -332,6 +455,71 @@ class Store:
             ids,
         ).fetchall()
         return {int(row["id"]): row for row in rows}
+
+    # ------------------------------------------------------- fuzzy / listing
+
+    def fuzzy_candidates(self, mask: int, limit: int) -> list[sqlite3.Row]:
+        """Files whose name could contain every character of the query.
+
+        One bitwise AND per row; a full scan of 100k integer columns is a few
+        milliseconds, which is cheaper than maintaining a separate name index.
+        """
+        try:
+            return self.conn.execute(
+                "SELECT id, path, name, kind, size, mtime FROM files "
+                "WHERE (char_mask & ?) = ? ORDER BY mtime DESC LIMIT ?",
+                (mask, mask, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    def all_files(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT id, path, name, kind, size, mtime FROM files"
+        ).fetchall()
+
+    def file_rows_by_ids(self, ids: Iterable[int]) -> list[sqlite3.Row]:
+        ids = list(ids)
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        return self.conn.execute(
+            f"SELECT id, path, name, kind, size, mtime FROM files WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+
+    def regex_chunks(self, pattern: str, limit: int) -> list[sqlite3.Row]:
+        """Bounded regex scan over chunk text.
+
+        SQLite has no REGEXP operator; the callback is registered in __init__.
+        This is a full scan by design — it only runs for an explicit `re:` query,
+        and the limit bounds the damage on a large index.
+        """
+        try:
+            return self.conn.execute(
+                "SELECT c.id, c.ord, c.text, f.id AS file_id, f.path, f.kind, f.size, f.mtime "
+                "FROM chunks c JOIN files f ON f.id = c.file_id "
+                "WHERE c.text REGEXP ? LIMIT ?",
+                (pattern, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    # ---------------------------------------------------------------- usage
+
+    def record_open(self, file_id: int) -> None:
+        self.conn.execute(
+            "INSERT INTO usage(file_id, opens, last_open) VALUES(?, 1, ?) "
+            "ON CONFLICT(file_id) DO UPDATE SET opens = opens + 1, last_open = excluded.last_open",
+            (file_id, time.time()),
+        )
+
+    def usage_map(self) -> dict[int, tuple[int, float]]:
+        try:
+            rows = self.conn.execute("SELECT file_id, opens, last_open FROM usage").fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return {int(row["file_id"]): (int(row["opens"]), float(row["last_open"])) for row in rows}
 
     def stats(self) -> dict[str, int]:
         def scalar(sql: str) -> int:

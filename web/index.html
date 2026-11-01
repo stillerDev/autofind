@@ -50,6 +50,16 @@
       <span>с</span>
       <input id="since" type="date">
     </label>
+    <label class="field">
+      <span>сортировка</span>
+      <select id="sort" aria-label="Сортировка результатов">
+        <option value="best">по совпадению</option>
+        <option value="newest">новые</option>
+        <option value="oldest">старые</option>
+        <option value="largest">крупные</option>
+        <option value="name">по имени</option>
+      </select>
+    </label>
     <div class="meta-line" id="meta"></div>
   </div>
 
@@ -102,13 +112,25 @@
     </div>
 
     <div class="side-foot">
-      <span><kbd>/</kbd> фокус в поиске</span>
-      <span><kbd>esc</kbd> очистить</span>
+      <span><kbd>/</kbd> фокус</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span>
+      <span><kbd>space</kbd> просмотр</span>
+      <span><kbd>enter</kbd> открыть</span>
     </div>
   </aside>
 </div>
 
 <div class="toast" id="toast"></div>
+
+<div class="modal" id="preview">
+  <div class="modal-card preview-card">
+    <div class="modal-head">
+      <h3>Просмотр</h3>
+      <button class="close" id="preview-close">закрыть</button>
+    </div>
+    <div id="preview-body"></div>
+  </div>
+</div>
 
 <div class="modal" id="modal">
   <div class="modal-card">

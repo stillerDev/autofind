@@ -25,13 +25,16 @@ with no model downloads:
 
 | Layer | State | Engine |
 |---|---|---|
-| Text (PDF, DOCX, TXT/MD, code) | works | built-in extractors, no deps |
+| Text (PDF, DOCX, PPTX, XLSX, EPUB, ODT, RTF, TXT/MD, code) | works | built-in extractors, no deps |
 | Screenshots: OCR | works | Windows OCR via WinRT (`ru` + `en` on this machine) |
 | Screenshots: visual similarity | works | 228-dim layout/colour descriptor |
-| Search | works | BM25 + vectors, fused with RRF |
+| Search | works | fuzzy names + BM25 + vectors, fused with RRF |
+| Query language | works | `type:`, `ext:`, `in:`, `modified:`, `size:`, `re:`, … |
+| Natural language | works | deterministic RU/EN intent compiler with removable chips |
+| Agent access | works | MCP server over stdio (`semfind mcp`), read-only |
 | Live updates | works | polling watcher, ~2 s debounce |
 | Quality measurement | works | `eval` with Recall@10, MRR, ablation |
-| Privacy filter | works | path blocklist, `privacy purge` |
+| Privacy filter | works | path blocklist + `.gitignore` parity, `privacy purge` |
 | UI | works | local web app on 127.0.0.1 |
 
 Two upgrades are drop-in and change nothing else: `multilingual-e5-small` for
@@ -62,12 +65,64 @@ python -m core.cli index ~/Documents ~/Downloads ~/Pictures/Screenshots --prune
 python -m core.cli watch ~/Documents ~/Downloads          # keep the index in sync
 python -m core.cli search "неверный пароль при входе"
 python -m core.cli search "cannot find module" --kind image
+python -m core.cli search "скриншоты за прошлую неделю"   # natural language
+python -m core.cli search 're:"TODO|FIXME" ext:py'        # query grammar
+python -m core.cli search "смета" --sort newest -n 20 --offset 20
+python -m core.cli mcp                                     # MCP server for AI agents
+python -m core.cli cheat                                   # print the grammar
 python -m core.cli eval tests/queries/labels_demo.json --ablate --verbose
 python -m core.cli doctor                                  # environment + bundle budget
 python -m core.cli privacy                                 # what the filter would skip
 python -m core.cli privacy purge                           # drop it from the index
 python -m core.cli stats
 ```
+
+## Query language and natural language
+
+Two ways to say the same thing. Explicit grammar is authoritative — if the query
+already contains a `key:value`, the intent compiler leaves it alone.
+
+| Syntax | Meaning |
+|---|---|
+| `type:pdf` | category (`image`, `doc`, `sheet`, `presentation`, `code`, `video`, `archive`) or an extension |
+| `ext:rs` | exact extension |
+| `in:"C:\Docs"` | only inside this folder (Windows paths keep their backslashes) |
+| `path:src` | substring of the path |
+| `modified:<7d` | changed within a window: `1h`, `7d`, `30d`, `7d..30d` |
+| `size:>2mb` | `>`, `<` or `1mb..10mb` |
+| `lang:python` | language family of the extension |
+| `name:config` / `content:timeout` | match the filename / the contents only |
+| `re:"TODO\|FIXME"` | regular expression over content |
+| `-node_modules` | exclude a term or folder |
+| `"exact phrase"` | phrase |
+| `mode:exhaustive` | every match, path-sorted, no ranking |
+| `sort:newest` | `newest`, `oldest`, `largest`, `name` |
+
+Plain phrasing is compiled into the same grammar, locally, with no model:
+
+| You type | It becomes |
+|---|---|
+| `скриншоты за прошлую неделю` | `type:image modified:<7d` |
+| `самые большие файлы` | sort by size |
+| `3 дня назад ошибка` | `ошибка modified:4d..3d` |
+| `вчерашние документы` | `type:doc modified:1d..2d` |
+| `pdf про индексы` | `индексы type:pdf` |
+| `screenshots from last week` | `type:image modified:<7d` |
+
+Every inference comes back as a chip above the results with the words that
+produced it; clicking the chip removes those words and re-runs. Nothing is
+rewritten silently, and an unrecognised phrase is searched literally.
+
+## Agents (MCP)
+
+```bash
+python -m core.cli mcp        # JSON-RPC 2.0 over stdio, read-only
+```
+
+Tools: `search` (with cursor pagination), `read_snippet` (bounded),
+`index_state`, `regex_search`, `similar_images`. Read-only by construction —
+there is no tool that can open, move or modify anything. Point Claude Desktop or
+Cursor at that command and the agent searches the same local index you do.
 
 ## How it works
 
@@ -78,23 +133,35 @@ screenshots ──► OCR ───┘                                ├──�
                                                         │    FTS5 + vectors
 screenshots ──► visual descriptor ──────────────────────┘
                                                              │
-                                            BM25 ─┐          │
-                                                  ├─► RRF ───┘
-                                            KNN  ─┘
+                              fuzzy names ─┐                 │
+                                            ├─► RRF ─────────┘
+                              BM25 ─────────┤
+                              KNN  ─────────┘
 ```
 
 Screenshots land in the same `chunks` table as documents, so one query returns
 a PDF and a screenshot side by side. Each screenshot also gets a thumbnail and
 a visual vector, which powers "similar screenshots" in the UI.
 
+**Three channels, one ranking.** Fuzzy name matching (a 64-bit character bloom
+rejects most of the corpus before the matcher runs, so `rdme` finds `README.md`),
+BM25 over chunk text, and cosine over the chunk vectors. The fused score is
+normalised to `[0, 1]` and then adjusted: exact name +0.20, name prefix +0.15,
+smooth recency `0.10·e^(−age/7d)`, frecency `0.08·log1p(opens)·e^(−last/14d)` from
+files you actually opened, and a depth penalty bounded at −0.10 so a file twelve
+folders deep cannot win on path shape alone. Results are **per file**, not per
+chunk: a document matching three times is one row with its best snippet.
+
 **Storage.** One SQLite file in WAL mode: `files`, `chunks`, `chunks_fts`
-(FTS5), `images`, `vectors`, `meta`. Vectors are float32 blobs searched by
-brute force in numpy — at 50k chunks that is a 77 MB matrix and single-digit
+(FTS5), `images`, `vectors`, `usage`, `meta`. Vectors are float32 blobs searched
+by brute force in numpy — at 50k chunks that is a 77 MB matrix and single-digit
 milliseconds, so an ANN index would be premature. `sqlite-vec` can replace
 `Store.knn()` without touching callers.
 
 **Indexing is incremental.** Unchanged files are skipped by size+mtime, moved
 files by sha256. Screenshots are deduplicated by sha256 before OCR runs.
+`.gitignore`, `.cursorignore` and `.semfindignore` are honoured during the walk,
+so build output a repository already ignores never reaches the index.
 
 **Live updates** (`watch`) poll the roots every 2 s instead of using inotify or
 ReadDirectoryChanges: one stat per file is cheap, and polling survives network
@@ -237,11 +304,13 @@ SQLite file. An app-level blocklist, a pause switch and SQLCipher are open items
 python -m unittest discover -s tests -t .
 ```
 
-28 tests: chunking, kind detection, DOCX/PDF extraction, image preprocessing,
-visual features, thumbnails, real OCR (skipped when no engine), FTS query
-sanitising, the full index→search cycle, kind filters, incremental skips,
-screenshot dedup, similar-image search, the privacy blocklist, watcher diffing
-and startup cleanup, the eval metrics and the bundle estimate.
+83 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
+image preprocessing, visual features, thumbnails, real OCR (skipped when no
+engine), FTS query sanitising, the full index→search cycle, kind filters,
+incremental skips, screenshot dedup, similar-image search, the privacy
+blocklist, `.gitignore` parity, watcher diffing and startup cleanup, the eval
+metrics, the bundle estimate, the query grammar and intent compiler, fuzzy name
+scoring, the ranking bonuses, pagination, and the MCP surface.
 
 `tests/queries/queries.json` holds the fixed 20-query acceptance set from the
 plan. Expected answers are still placeholders — attaching a real corpus is what
@@ -255,6 +324,11 @@ turns Recall@10 from a claim into a number.
 - `sqlite-vec` — brute force is fine at 21 ms warm, but the 2.6 s cold load and
   333 MB matrix are the reason to move.
 - Tauri shell, global hotkey, MSI/DMG/AppImage packaging.
+- No tray icon, no global summon key: it is a browser tab, not a launcher yet.
+- Facet counts are computed for filter-only queries, not for ranked ones — the
+  candidate pool is bounded, so the number would be a lie.
+- Version grouping ("resume_v2", "resume_final") and screenshot burst collapsing
+  are not implemented; near-duplicates still show as separate rows.
 - The document itself still has the inconsistencies listed in the review
   (top-10 table vs figure, p95 vs median, 30 Nov vs 29 Nov).
 

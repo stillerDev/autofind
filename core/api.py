@@ -29,14 +29,15 @@ from .indexer import IndexStats, run_index
 from .ocr import engine_report
 from .privacy import describe as describe_privacy
 from .privacy import indexed_sensitive, purge_indexed
-from .search import hybrid_search, similar_images, visual_text_search
+from .query import Range, understand
+from .search import search_page, similar_images, visual_text_search
 from .store import Store, VectorCache
 from .watch import Watcher
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 KIND_MAP = {
-    "docs": ("text", "code", "pdf", "docx"),
+    "docs": ("text", "code", "pdf", "docx", "pptx", "xlsx", "epub", "odt", "rtf"),
     "text": ("text",),
     "code": ("code",),
     "pdf": ("pdf",),
@@ -190,6 +191,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(JOB.snapshot())
         elif route == "/api/thumb":
             self._thumb(query)
+        elif route == "/api/preview":
+            self._preview(query)
         elif route == "/api/similar":
             self._similar(query)
         elif route == "/api/images":
@@ -209,29 +212,41 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"query": "", "ms": 0, "hits": [], "images": []})
             return
         limit = min(int((query.get("limit") or ["12"])[0]), 50)
+        offset = max(int((query.get("offset") or ["0"])[0]), 0)
         kind_key = (query.get("kind") or [""])[0]
         folder = (query.get("folder") or [""])[0] or None
         since = (query.get("since") or [""])[0]
+        sort = (query.get("sort") or [""])[0] or None
 
+        parsed = understand(text)
         kinds = KIND_MAP.get(kind_key)
+        if kinds:
+            parsed.kinds |= set(kinds)
+        if folder:
+            parsed.in_paths.append(folder)
         since_ts = None
         if since:
             try:
                 since_ts = time.mktime(time.strptime(since, "%Y-%m-%d"))
             except ValueError:
                 since_ts = None
+        if since_ts is not None:
+            parsed.modified = Range(since_ts, None)
 
         embedder = get_embedder("auto", self.config.model_dir)
         store = self._store()
         started = time.perf_counter()
         try:
-            hits = hybrid_search(
-                store, embedder, text, limit=limit, kinds=kinds, folder=folder, since=since_ts
+            page = search_page(
+                store, embedder, text, limit=limit, offset=offset, sort=sort,
+                parsed=parsed, usage=store.usage_map(),
             )
+            # Visual text search only makes sense when the query still has free
+            # text; a pure filter query would send nonsense to the image model.
             visual = get_visual_embedder(self.config.model_dir)
             images = (
-                visual_text_search(store, visual, text, limit=8)
-                if getattr(visual, "supports_text", False)
+                visual_text_search(store, visual, parsed.text or text, limit=8)
+                if getattr(visual, "supports_text", False) and parsed.text
                 else []
             )
         finally:
@@ -242,6 +257,15 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "query": text,
                 "ms": round(elapsed, 1),
+                "total": page.total,
+                "approx": page.approx,
+                "offset": page.offset,
+                "next_offset": page.next_offset,
+                "sort": page.sort,
+                "mode": page.mode,
+                "chips": page.chips,
+                "hints": page.hints,
+                "facets": page.facets,
                 "hits": [
                     {
                         "file_id": hit.file_id,
@@ -252,12 +276,13 @@ class Handler(BaseHTTPRequestHandler):
                         "snippet": hit.snippet,
                         "channels": list(hit.channels),
                         "mtime": hit.mtime,
+                        "size": hit.size,
                         "is_image": hit.is_image,
                         "width": hit.width,
                         "height": hit.height,
                         "thumb": f"/api/thumb?id={hit.file_id}" if hit.is_image else None,
                     }
-                    for hit in hits
+                    for hit in page.hits
                 ],
                 "images": [
                     {
@@ -373,6 +398,55 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
+    def _preview(self, query: dict) -> None:
+        """Quick Look: the first chunks of a file, plus image geometry.
+
+        The index already holds extracted text for every kind, so a PDF or DOCX
+        preview costs one query instead of re-parsing the file. Images get their
+        thumbnail and OCR text instead of a body.
+        """
+        file_id = int((query.get("id") or ["0"])[0])
+        limit = min(int((query.get("chars") or ["1600"])[0]), 8000)
+        store = self._store()
+        try:
+            row = store.file_by_id(file_id)
+            if row is None:
+                self._error("unknown file", 404)
+                return
+            chunks = store.conn.execute(
+                "SELECT text FROM chunks WHERE file_id = ? ORDER BY ord LIMIT 4", (file_id,)
+            ).fetchall()
+            image = store.image_by_file_id(file_id) if row["kind"] == "image" else None
+            usage = store.conn.execute(
+                "SELECT opens FROM usage WHERE file_id = ?", (file_id,)
+            ).fetchone()
+        finally:
+            store.close()
+
+        text = "\n".join(chunk["text"] for chunk in chunks)[:limit]
+        self._json(
+            {
+                "file_id": file_id,
+                "path": row["path"],
+                "name": row["path"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
+                "kind": row["kind"],
+                "size": row["size"],
+                "mtime": row["mtime"],
+                "opens": int(usage["opens"]) if usage else 0,
+                "exists": Path(row["path"]).exists(),
+                "text": text,
+                "truncated": len(text) >= limit,
+                "image": None
+                if image is None
+                else {
+                    "width": image["width"],
+                    "height": image["height"],
+                    "thumb": f"/api/thumb?id={file_id}",
+                    "ocr": (image["ocr_text"] or "")[:limit],
+                },
+            }
+        )
+
     def _open_file(self, query: dict, reveal: bool) -> None:
         file_id = int((query.get("id") or ["0"])[0])
         store = self._store()
@@ -400,6 +474,17 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             self._error(f"cannot open: {exc}", 500)
             return
+        # Frecency is fed by real opens only, so "show in folder" must not count:
+        # a file you reveal to delete it is not a file you care about.
+        if not reveal:
+            store = self._store()
+            try:
+                store.record_open(file_id)
+                store.commit()
+            except Exception:
+                pass  # a read-only index must not fail the open
+            finally:
+                store.close()
         self._json({"ok": True})
 
     def _static(self, route: str) -> None:

@@ -1,19 +1,33 @@
-"""Hybrid search: BM25 and vector candidates fused with reciprocal rank fusion.
+"""Hybrid search: fuzzy names, BM25 and vectors fused with reciprocal rank fusion.
 
-RRF needs no weight training, which is why the plan picks it for week 1: tuning
-can wait until there are benchmarks to tune against.
+Three channels, one ranking:
 
-Filters (kind, folder, date) are applied to the candidate pool before fusion,
-not to the final list, so a restricted search still returns a full page.
+* **fuzzy** — subsequence match over the file name ("rdme" finds README.md),
+  prefiltered by a 64-bit character bloom so most of the corpus is rejected
+  before the matcher runs.
+* **bm25** — SQLite FTS5 over chunk text.
+* **vector** — cosine over the chunk embedding matrix.
+
+RRF needs no weight training, which is why the plan picks it for week 1. The
+fusion score is normalised to `[0, 1]` before the bonuses from kensaku are
+applied — exact/prefix name hits, smooth recency, frecency and a bounded depth
+penalty — so an absolute term can never outrank a genuinely better match.
+
+Results are per **file**, not per chunk: the same document matching three times
+is one row with the best snippet. Filters are applied to the candidate pool
+before fusion, so a restricted search still fills a page.
 """
 
 from __future__ import annotations
 
+import math
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from .store import Store
+from .query import ParsedQuery, understand
+from .store import Store, basename, char_mask
 
 RRF_K = 60
 # Channel weights for the fusion. Equal weights are the textbook default, but
@@ -21,33 +35,46 @@ RRF_K = 60
 # the embedder itself (`rrf_weight`): a semantic model gets 1.0, the hashed
 # fallback 0.3, because it largely duplicates BM25 and ranks worse. Measured
 # with `semfind eval --ablate`; re-measure before trusting it on another corpus.
-RRF_WEIGHTS = {"bm25": 1.0, "vector": 0.3}
+RRF_WEIGHTS = {"bm25": 1.0, "vector": 0.3, "fuzzy": 0.7}
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 SNIPPET_WINDOW = 180
+
+# Bonus weights, lifted from kensaku's `finalize_score`. They are additive on a
+# normalised base, so the sum has to stay well under 1.0 or a strong bonus on a
+# weak match would beat an exact hit.
+NAME_SUBSTRING_BONUS = 0.20
+NAME_PREFIX_BONUS = 0.15
+RECENCY_WEIGHT = 0.10
+RECENCY_TAU_DAYS = 7.0
+FRECENCY_WEIGHT = 0.08
+FRECENCY_TAU_DAYS = 14.0
+DEPTH_PENALTY = 0.10
+DEPTH_SATURATION = 20
+
+SORTS = ("best", "newest", "oldest", "largest", "name")
 
 
 @dataclass(slots=True)
 class Hit:
-    chunk_id: int
+    """One file. `snippet` is the best chunk of that file, not a whole one."""
+
     file_id: int
     path: str
     kind: str
-    ord: int
     score: float
-    text: str
     snippet: str
+    name: str
+    ord: int
+    mtime: float
+    size: int
     channels: tuple[str, ...] = field(default_factory=tuple)
-    mtime: float = 0.0
     width: int = 0
     height: int = 0
+    chunks: int = 1
 
     @property
     def is_image(self) -> bool:
         return self.kind == "image"
-
-    @property
-    def name(self) -> str:
-        return self.path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
 
 
 @dataclass(slots=True)
@@ -63,6 +90,29 @@ class ImageHit:
     @property
     def name(self) -> str:
         return self.path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+
+
+@dataclass(slots=True)
+class SearchPage:
+    """Everything one query returns: rows, counts, chips and the parsed form."""
+
+    hits: list[Hit]
+    total: int
+    facets: dict[str, int]
+    chips: list[dict]
+    hints: list[str]
+    query: str
+    mode: str
+    sort: str
+    offset: int
+    limit: int
+    approx: bool = False
+
+    @property
+    def next_offset(self) -> int | None:
+        if self.offset + len(self.hits) >= self.total:
+            return None
+        return self.offset + len(self.hits)
 
 
 def build_match_query(text: str, max_terms: int = 16) -> str | None:
@@ -87,87 +137,392 @@ def build_match_query(text: str, max_terms: int = 16) -> str | None:
     return " OR ".join(f'"{term}"*' for term in terms)
 
 
+# --------------------------------------------------------------------- fuzzy
+
+def subsequence_score(query: str, name: str) -> float | None:
+    """fzf-style score: None when `query` is not a subsequence of `name`.
+
+    Contiguous runs and word starts are what the eye reads as "the same word",
+    so they score far above scattered characters. A literal substring is the
+    strongest signal and gets its own branch.
+    """
+    needle = query.strip().lower()
+    hay = name.lower()
+    if not needle:
+        return None
+    if needle in hay:
+        score = 120.0
+        position = hay.index(needle)
+        if position == 0:
+            score += 40.0
+        elif hay[position - 1] in " ._-(":
+            score += 20.0
+        # Shorter names mean the match is a bigger share of the name.
+        score += 30.0 * (len(needle) / max(len(hay), 1))
+        return score
+
+    score = 0.0
+    index = 0
+    run = 0
+    for position, ch in enumerate(hay):
+        if index < len(needle) and ch == needle[index]:
+            index += 1
+            run += 1
+            score += 6.0 + 2.0 * run
+            if position == 0 or hay[position - 1] in " ._-(":
+                score += 8.0
+        else:
+            run = 0
+    if index < len(needle):
+        return None
+    # Every skipped character is a small penalty, so "app" prefers App.tsx.
+    return max(score - 0.4 * (len(hay) - len(needle)), 1.0)
+
+
+def fuzzy_files(store: Store, text: str, limit: int) -> list[tuple[int, float]]:
+    """Rank files by name similarity, newest first inside equal scores."""
+    mask = char_mask(text)
+    rows = store.fuzzy_candidates(mask, limit * 8)
+    scored: list[tuple[int, float]] = []
+    for row in rows:
+        score = subsequence_score(text, row["name"] or basename(row["path"]))
+        if score is not None:
+            scored.append((int(row["id"]), score))
+    scored.sort(key=lambda item: -item[1])
+    return scored[:limit]
+
+
+# ------------------------------------------------------------------- ranking
+
+def finalize_score(
+    base: float,
+    name: str,
+    path: str,
+    mtime: float,
+    now: float,
+    usage: tuple[int, float] = (0, 0.0),
+    text: str = "",
+) -> float:
+    """RRF base in [0, 1] plus the bonuses that make a launcher feel right."""
+    score = base
+    lowered = name.lower()
+    needle = text.strip().lower()
+    if needle:
+        if needle in lowered:
+            score += NAME_SUBSTRING_BONUS
+        if lowered.startswith(needle):
+            score += NAME_PREFIX_BONUS
+
+    age_days = max(now - mtime, 0.0) / 86400.0
+    score += RECENCY_WEIGHT * math.exp(-age_days / RECENCY_TAU_DAYS)
+
+    opens, last_open = usage
+    if opens > 0:
+        last_days = max(now - last_open, 0.0) / 86400.0
+        score += FRECENCY_WEIGHT * math.log1p(opens) * math.exp(-last_days / FRECENCY_TAU_DAYS)
+
+    depth = path.count("\\") + path.count("/")
+    score -= DEPTH_PENALTY * min(depth / DEPTH_SATURATION, 1.0)
+    return max(score, 0.0)
+
+
+def _order_key(sort: str):
+    if sort == "newest":
+        return lambda hit: (-hit.mtime, hit.path)
+    if sort == "oldest":
+        return lambda hit: (hit.mtime, hit.path)
+    if sort == "largest":
+        return lambda hit: (-hit.size, hit.path)
+    if sort == "name":
+        return lambda hit: (hit.name.lower(), hit.path)
+    return lambda hit: (-hit.score, hit.path)
+
+
+def _resolve_sort(requested: str | None, parsed: ParsedQuery, listing: bool) -> str:
+    for candidate in (requested, parsed.sort):
+        if candidate in SORTS:
+            return candidate
+    return "newest" if listing else "best"
+
+
+# ------------------------------------------------------------------- listing
+
+def _listing(
+    store: Store,
+    parsed: ParsedQuery,
+    sort: str,
+    since: float | None = None,
+) -> tuple[list[Hit], dict[str, int]]:
+    """Filter-only queries: `type:image`, `modified:<7d`, `mode:exhaustive`."""
+    rows = store.all_files()
+    matched = [
+        row
+        for row in rows
+        if (since is None or float(row["mtime"]) >= since)
+        and parsed.matches(row["path"], row["kind"], int(row["size"]), float(row["mtime"]))
+    ]
+    hits = [
+        Hit(
+            file_id=int(row["id"]),
+            path=row["path"],
+            kind=row["kind"],
+            score=0.0,
+            snippet="",
+            name=row["name"] or basename(row["path"]),
+            ord=0,
+            mtime=float(row["mtime"]),
+            size=int(row["size"]),
+            channels=("filter",),
+        )
+        for row in matched
+    ]
+    hits.sort(key=_order_key(sort))
+    return hits, _facets(matched)
+
+
+def _facets(rows) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        kind = row["kind"]
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+# -------------------------------------------------------------------- search
+
+def _files_from_chunks(store: Store, results: Sequence[tuple[int, float]]):
+    """Collapse a chunk ranking to file ids, keeping the best chunk per file."""
+    rows = store.chunk_rows([chunk_id for chunk_id, _ in results])
+    ordered: list[int] = []
+    seen: set[int] = set()
+    best_chunk: dict[int, object] = {}
+    for chunk_id, _ in results:
+        row = rows.get(chunk_id)
+        if row is None:
+            continue
+        file_id = int(row["file_id"])
+        if file_id in seen:
+            continue
+        seen.add(file_id)
+        ordered.append(file_id)
+        best_chunk[file_id] = row
+    return ordered, best_chunk
+
+
+def _rank(
+    store: Store,
+    embedder,
+    query: str | ParsedQuery,
+    candidates: int = 50,
+    k: int = RRF_K,
+    kinds: Sequence[str] | None = None,
+    folder: str | None = None,
+    since: float | None = None,
+    channels: Sequence[str] = ("bm25", "vector", "fuzzy"),
+    weights: dict[str, float] | None = None,
+    sort: str | None = None,
+    parsed: ParsedQuery | None = None,
+    usage: dict[int, tuple[int, float]] | None = None,
+) -> tuple[list[Hit], dict[str, int]]:
+    """Rank every matching file. Callers slice; `search_page` needs the total."""
+    parsed = parsed or (query if isinstance(query, ParsedQuery) else understand(query))
+    if kinds:
+        parsed.kinds |= set(kinds)
+    if folder:
+        parsed.in_paths.append(folder)
+
+    channel_weights = dict(RRF_WEIGHTS)
+    channel_weights["vector"] = float(getattr(embedder, "rrf_weight", RRF_WEIGHTS["vector"]))
+    if weights:
+        channel_weights.update(weights)
+
+    order = _resolve_sort(sort, parsed, listing=False)
+
+    # No free text at all: the query is a pure filter, so list files directly.
+    if parsed.mode == "exhaustive" or (not parsed.text and not parsed.regexes
+                                       and not parsed.content_text):
+        return _listing(store, parsed, _resolve_sort(sort, parsed, listing=True), since)
+
+    pool = candidates * 4 if parsed.has_filters else candidates
+    bm25_text = " ".join(part for part in (parsed.text, parsed.content_text) if part)
+    fuzzy_text = parsed.text or parsed.name_text
+
+    match = build_match_query(bm25_text) if "bm25" in channels else None
+    lexical = store.bm25(match, pool) if match else []
+    semantic = (
+        store.knn(embedder.encode_query(bm25_text or parsed.text), pool)
+        if "vector" in channels and (bm25_text or parsed.text)
+        else []
+    )
+    fuzzy = fuzzy_files(store, fuzzy_text, pool) if "fuzzy" in channels and fuzzy_text else []
+    regex_rows = []
+    if parsed.regexes:
+        regex_rows = store.regex_chunks("|".join(f"(?:{r})" for r in parsed.regexes), pool * 2)
+
+    # No lexical match, no fuzzy match and a non-semantic embedder means every
+    # vector "hit" is noise: hashed features have no notion of meaning, so a
+    # query like «кофемашина» matches spinner scripts on hash collisions alone.
+    if (
+        "bm25" in channels
+        and not lexical
+        and not fuzzy
+        and not regex_rows
+        and not getattr(embedder, "semantic", False)
+    ):
+        return [], {}
+
+    lexical_files, chunk_rows = _files_from_chunks(store, lexical)
+    semantic_files, semantic_rows = _files_from_chunks(store, semantic)
+    chunk_rows.update(semantic_rows)
+    regex_files, regex_chunk_rows = _files_from_chunks(
+        store, [(int(row["id"]), 0.0) for row in regex_rows]
+    )
+    chunk_rows.update(regex_chunk_rows)
+
+    # File metadata for every candidate, including fuzzy-only files that have no
+    # chunk in the pool.
+    file_rows = {int(row["file_id"]): row for row in chunk_rows.values()}
+    missing = {
+        file_id
+        for file_id in (*lexical_files, *semantic_files, *fuzzy_files_ids(fuzzy), *regex_files)
+        if file_id not in file_rows
+    }
+    for row in store.file_rows_by_ids(missing):
+        file_rows[int(row["id"])] = {
+            "path": row["path"], "kind": row["kind"], "size": row["size"],
+            "mtime": row["mtime"], "file_id": row["id"],
+        }
+
+    def allowed(file_id: int) -> bool:
+        row = file_rows.get(file_id)
+        if row is None:
+            return False
+        if since is not None and float(row["mtime"]) < since:
+            return False
+        return parsed.matches(row["path"], row["kind"], int(row["size"]), float(row["mtime"]))
+
+    ranked = {
+        "bm25": lexical_files,
+        "vector": semantic_files,
+        "fuzzy": fuzzy_files_ids(fuzzy),
+        "regex": regex_files,
+    }
+    fused: dict[int, float] = {}
+    matched_channels: dict[int, list[str]] = {}
+    for name, files in ranked.items():
+        if not files:
+            continue
+        weight = channel_weights.get(name, 1.0)
+        rank = 0
+        for file_id in files:
+            if not allowed(file_id):
+                continue
+            rank += 1
+            fused[file_id] = fused.get(file_id, 0.0) + weight / (k + rank)
+            matched_channels.setdefault(file_id, []).append(name)
+
+    max_rrf = sum(
+        channel_weights.get(name, 1.0) / (k + 1) for name, files in ranked.items() if files
+    ) or 1.0
+
+    now = time.time()
+    usage = usage if usage is not None else {}
+    hits: list[Hit] = []
+    for file_id, score in fused.items():
+        row = file_rows[file_id]
+        name = basename(row["path"])
+        base = score / max_rrf
+        hits.append(
+            Hit(
+                file_id=file_id,
+                path=row["path"],
+                kind=row["kind"],
+                score=round(finalize_score(
+                    base, name, row["path"], float(row["mtime"]), now,
+                    usage.get(file_id, (0, 0.0)), parsed.text or parsed.name_text,
+                ), 6),
+                snippet=make_snippet(chunk_rows[file_id]["text"], bm25_text or parsed.text)
+                if file_id in chunk_rows else "",
+                name=name,
+                ord=int(chunk_rows[file_id]["ord"]) if file_id in chunk_rows else 0,
+                mtime=float(row["mtime"]),
+                size=int(row["size"]),
+                channels=tuple(matched_channels.get(file_id, [])),
+            )
+        )
+
+    for hit in hits:
+        if hit.is_image:
+            image = store.image_by_file_id(hit.file_id)
+            if image is not None:
+                hit.width = int(image["width"] or 0)
+                hit.height = int(image["height"] or 0)
+
+    hits.sort(key=_order_key(order))
+    return hits, {}
+
+
+def fuzzy_files_ids(results: Sequence[tuple[int, float]]) -> list[int]:
+    return [file_id for file_id, _ in results]
+
+
 def hybrid_search(
     store: Store,
     embedder,
-    query: str,
+    query: str | ParsedQuery,
     limit: int = 10,
     candidates: int = 50,
     k: int = RRF_K,
     kinds: Sequence[str] | None = None,
     folder: str | None = None,
     since: float | None = None,
-    channels: Sequence[str] = ("bm25", "vector"),
+    channels: Sequence[str] = ("bm25", "vector", "fuzzy"),
     weights: dict[str, float] | None = None,
+    offset: int = 0,
+    sort: str | None = None,
+    parsed: ParsedQuery | None = None,
+    usage: dict[int, tuple[int, float]] | None = None,
 ) -> list[Hit]:
-    filtered = bool(kinds or folder or since)
-    pool = candidates * 4 if filtered else candidates
-    channel_weights = dict(RRF_WEIGHTS)
-    channel_weights["vector"] = float(getattr(embedder, "rrf_weight", RRF_WEIGHTS["vector"]))
-    if weights:
-        channel_weights.update(weights)
+    """One page of ranked files. `_rank` does the work; this slices the page."""
+    hits, _ = _rank(
+        store, embedder, query, candidates=candidates, k=k, kinds=kinds, folder=folder,
+        since=since, channels=channels, weights=weights, sort=sort, parsed=parsed, usage=usage,
+    )
+    return hits[offset:offset + limit]
 
-    match = build_match_query(query) if "bm25" in channels else None
-    lexical = store.bm25(match, pool) if match else []
-    # No lexical match plus a non-semantic fallback embedder means every vector
-    # "hit" is noise: hashed features have no notion of meaning, so a query like
-    # «кофемашина» matches spinner scripts on hash collisions alone. Returning
-    # nothing is the honest answer.
-    if "bm25" in channels and not lexical and not getattr(embedder, "semantic", False):
-        return []
-    semantic = store.knn(embedder.encode_query(query), pool) if "vector" in channels else []
 
-    candidate_ids = {chunk_id for chunk_id, _ in lexical} | {chunk_id for chunk_id, _ in semantic}
-    rows = store.chunk_rows(candidate_ids)
+def search_page(
+    store: Store,
+    embedder,
+    query: str,
+    limit: int = 12,
+    offset: int = 0,
+    sort: str | None = None,
+    parsed: ParsedQuery | None = None,
+    usage: dict[int, tuple[int, float]] | None = None,
+) -> SearchPage:
+    """One query, with the counts and chips the UI needs to explain itself."""
+    parsed = parsed or understand(query)
+    listing = parsed.mode == "exhaustive" or (
+        not parsed.text and not parsed.regexes and not parsed.content_text
+    )
+    resolved = _resolve_sort(sort, parsed, listing=listing)
+    hits, facets = _rank(store, embedder, parsed, sort=resolved, parsed=parsed, usage=usage)
+    total = len(hits)
 
-    def allowed(chunk_id: int) -> bool:
-        row = rows.get(chunk_id)
-        if row is None:
-            return False
-        if kinds and row["kind"] not in kinds:
-            return False
-        if folder and not str(row["path"]).lower().startswith(folder.lower()):
-            return False
-        if since is not None and float(row["mtime"]) < since:
-            return False
-        return True
-
-    fused: dict[int, float] = {}
-    channels: dict[int, list[str]] = {}
-    for channel, results in (("bm25", lexical), ("vector", semantic)):
-        rank = 0
-        weight = channel_weights.get(channel, 1.0)
-        for chunk_id, _ in results:
-            if not allowed(chunk_id):
-                continue
-            rank += 1
-            fused[chunk_id] = fused.get(chunk_id, 0.0) + weight / (k + rank)
-            channels.setdefault(chunk_id, []).append(channel)
-
-    ordered = sorted(fused.items(), key=lambda item: -item[1])[:limit]
-    hits: list[Hit] = []
-    for chunk_id, score in ordered:
-        row = rows[chunk_id]
-        text = row["text"]
-        hit = Hit(
-            chunk_id=chunk_id,
-            file_id=int(row["file_id"]),
-            path=row["path"],
-            kind=row["kind"],
-            ord=int(row["ord"]),
-            score=round(score, 6),
-            text=text,
-            snippet=make_snippet(text, query),
-            channels=tuple(channels.get(chunk_id, [])),
-            mtime=float(row["mtime"]),
-        )
-        if hit.is_image:
-            image = store.image_by_file_id(hit.file_id)
-            if image is not None:
-                hit.width = int(image["width"] or 0)
-                hit.height = int(image["height"] or 0)
-        hits.append(hit)
-    return hits
+    return SearchPage(
+        hits=hits[offset:offset + limit],
+        total=total,
+        facets=facets,
+        chips=[chip.as_dict() for chip in parsed.chips],
+        hints=parsed.hints,
+        query=query,
+        mode=parsed.mode,
+        sort=resolved,
+        offset=offset,
+        limit=limit,
+        approx=not listing,
+    )
 
 
 def similar_images(store: Store, visual, file_id: int, limit: int = 12) -> list[ImageHit]:
@@ -263,7 +618,7 @@ def make_snippet(text: str, query: str) -> str:
 
 
 def rank_paths(hits: Sequence[Hit]) -> list[tuple[str, float]]:
-    """Collapse chunk hits into a per-file ranking, keeping the best chunk score."""
+    """Collapse hits into a per-file ranking, keeping the best score."""
     best: dict[str, float] = {}
     for hit in hits:
         best[hit.path] = max(best.get(hit.path, 0.0), hit.score)

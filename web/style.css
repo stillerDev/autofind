@@ -302,7 +302,19 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   font-size: 12.5px;
 }
 
-.field input[type="date"] { width: 128px; color-scheme: dark; }
+.field input[type="date"] { width: 172px; color-scheme: dark; }
+
+.field select {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 12.5px;
+  padding: 1px 0;
+  cursor: pointer;
+}
+
+.field select option { background: #16181b; color: var(--text); }
 
 .meta-line {
   margin-left: auto;
@@ -350,6 +362,102 @@ main {
 
 .card:hover { border-color: rgba(255, 255, 255, 0.16); background: rgba(28, 31, 35, 0.9); }
 
+/* Keyboard selection gets the accent rail instead of a full highlight: the row
+   has to stay readable, and the eye finds the rail faster than a border. */
+.card.sel {
+  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(31, 34, 39, 0.94);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* ------------------------------------------------------- interpreted chips */
+
+.ichips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.ichip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px 4px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.ichip:hover { background: rgba(255, 255, 255, 0.15); border-color: rgba(255, 255, 255, 0.3); }
+.ichip b { font-weight: 400; opacity: 0.55; font-size: 13px; line-height: 1; }
+.ichip:hover b { opacity: 1; }
+
+.hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.hints span::before { content: "· "; opacity: 0.5; }
+
+.more {
+  align-self: center;
+  margin: 14px auto 0;
+  padding: 8px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(22, 24, 27, 0.8);
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.more:hover { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.3); }
+
+/* ------------------------------------------------------------ quick look */
+
+.preview-card { width: min(760px, 100%); }
+
+.preview-name { font-size: 15px; font-weight: 600; color: var(--text); }
+.preview-path { font-size: 11.5px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.preview-meta { font-size: 11.5px; color: var(--muted); margin-top: 4px; opacity: 0.8; }
+
+.preview-img {
+  display: block;
+  max-width: 100%;
+  max-height: 52vh;
+  margin: 14px auto 0;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+}
+
+.preview-text {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  max-height: 46vh;
+  overflow: auto;
+  background: rgba(10, 11, 13, 0.7);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #cfd3d8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.preview-foot { display: flex; gap: 8px; margin-top: 14px; }
+
 .icon {
   width: 40px;
   height: 40px;
@@ -369,6 +477,11 @@ main {
 
 .icon.k-pdf { background: #3a2222; color: #f09595; }
 .icon.k-docx { background: #22303f; color: #85b7eb; }
+.icon.k-pptx { background: #3a2c1c; color: #e2a866; }
+.icon.k-xlsx { background: #1f3327; color: #7fca9b; }
+.icon.k-epub { background: #2d2740; color: #b9a6ea; }
+.icon.k-odt { background: #2b3138; color: #a9b6c4; }
+.icon.k-rtf { background: #322b26; color: #c9b099; }
 .icon.k-code { background: #24301f; color: #97c459; }
 .icon.k-text { background: #2a2a24; color: #d3c68a; }
 .icon.k-image { background: #302430; color: #e0a0d0; padding: 0; }
