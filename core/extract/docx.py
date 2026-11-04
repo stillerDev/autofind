@@ -20,7 +20,13 @@ def extract_docx(path: str | Path) -> str:
     except ImportError:
         return _extract_via_zip(path)
 
-    document = docx.Document(str(path))
+    try:
+        document = docx.Document(str(path))
+    except Exception:
+        # python-docx insists on a full OPC package; a minimal or damaged file
+        # that still has word/document.xml is readable by the fallback.
+        return _extract_via_zip(path)
+
     parts: list[str] = []
     for paragraph in document.paragraphs:
         text = paragraph.text.strip()

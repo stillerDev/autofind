@@ -503,9 +503,13 @@ def cjk_engines(rec_model: str | None = None, rec_keys: str | None = None) -> li
 
 def coverage() -> dict:
     """What can be read on this machine, and by what."""
-    models = downloaded_models()
+    models = set(downloaded_models())
     packs = windows_language_tags()
     readable = languages.greeting_pool(models)
+    # greeting_pool falls back to English when nothing is installed so the boot
+    # screen always has a greeting; make coverage agree with that list instead
+    # of reporting a language whose model is missing.
+    models.update(language.model for language in readable)
     return {
         "windows": packs,
         "models": sorted(models),
