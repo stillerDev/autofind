@@ -460,8 +460,29 @@ class _App:
         try:
             self.window.hide()
             self.hidden = True
+            self._trim_memory()
         except Exception:
             pass
+
+    @staticmethod
+    def _trim_memory() -> None:
+        """Hand the working set back while hidden, the way kensaku does.
+
+        Hiding the window means the index caches (vector pack, name index) are
+        the only thing keeping hundreds of megabytes resident. EmptyWorkingSet
+        does not free anything — it just lets Windows page the cold pages out,
+        so the tray-idle footprint drops and the next show faults them back in
+        at memory speed.
+        """
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            ctypes.windll.psapi.EmptyWorkingSet(handle)
+        except Exception:
+            pass  # cosmetic; never worth breaking the hide over
 
     def toggle(self) -> None:
         if self.hidden:

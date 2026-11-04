@@ -19,6 +19,7 @@ from .embed import get_embedder, get_visual_embedder
 from .ocr import engine_report
 from .privacy import describe as describe_privacy
 from .store import Store
+from .vectors import pack_path as vector_pack_path
 
 BUDGET_MB = 150
 
@@ -133,7 +134,7 @@ def collect(config: IndexConfig, db_path: Path | None = None) -> dict:
             finally:
                 store.close()
             index.update({key: stats[key] for key in ("files", "chunks", "images", "ocr_images", "vectors")})
-            pack = Path(str(db_path) + ".vec")
+            pack = vector_pack_path(db_path)
             if pack.exists():
                 index["pack_bytes"] = pack.stat().st_size
         except Exception as exc:  # a broken db must not crash doctor

@@ -19,11 +19,24 @@
         wallRoot.setProperty("--wall", savedWall.wall);
         wallRoot.setProperty("--hue", String(Math.round(savedWall.hue)));
         wallRoot.setProperty("--sat", (savedWall.sat || 9) + "%");
+        // The position is a free focus point (fx, fy) now; older saves carry a
+        // "top"/"center"/"bottom" string, which is still a valid paint value
+        // until app.js loads and migrates it.
+        if (typeof savedWall.fx === "number" && typeof savedWall.fy === "number") {
+          wallRoot.setProperty("--wall-pos", `${savedWall.fx * 100}% ${savedWall.fy * 100}%`);
+        } else if (savedWall.pos) {
+          wallRoot.setProperty("--wall-pos", savedWall.pos);
+        }
+        if (savedWall.scale) wallRoot.setProperty("--wall-scale", String(savedWall.scale));
       }
     } catch (error) { /* storage blocked: the default background is fine */ }
   </script>
 </head>
 <body>
+<!-- The single photo layer. It lives behind everything (z-index: -1) so the
+     hero and the results below are the same image instead of two crops with a
+     seam. Position and zoom are driven by --wall-pos / --wall-scale. -->
+<div id="wall"></div>
 <!-- Painted before any script runs, so the window never shows a white flash or
      an empty grid while the vector pack is being faulted in. The greeting is
      filled in by app.js from the languages this machine can actually read. -->
@@ -292,6 +305,19 @@
           </button>
           <input type="file" id="wall-file" accept="image/*" hidden>
         </div>
+        <!-- Framing lives in its own editor, not under the tiles: dragging a
+             picture and a zoom slider need room no settings row can give. -->
+        <button class="wall-edit" id="wall-edit" type="button" hidden
+                data-i18n="settings.wallEdit" data-i18n-aria="settings.wallEdit">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+               aria-hidden="true">
+            <path d="M4 8h10M18 8h2M4 16h2M10 16h10"></path>
+            <circle cx="16" cy="8" r="2"></circle>
+            <circle cx="8" cy="16" r="2"></circle>
+          </svg>
+          <span data-i18n="settings.wallEdit">Framing…</span>
+        </button>
         <p class="settings-note" data-i18n="settings.wallNote"></p>
       </section>
       <section class="settings-section">
@@ -318,6 +344,27 @@
         <h4 data-i18n="settings.about">About</h4>
         <dl class="about-grid" id="about"></dl>
       </section>    </div>
+  </div>
+</div>
+
+<!-- The wallpaper editor: a preview painted with the exact same variables the
+     real layer uses, so what is framed here is what the window will show. -->
+<div class="modal" id="wall-editor" role="dialog" aria-modal="true">
+  <div class="modal-card wall-editor-card" tabindex="-1">
+    <div class="modal-head">
+      <h3 data-i18n="settings.wallEditor">Framing</h3>
+      <button class="close" id="wall-editor-close" data-i18n="preview.close">close</button>
+    </div>
+    <div class="wall-stage" id="wall-stage">
+      <div class="wall-canvas" id="wall-canvas"></div>
+    </div>
+    <div class="wall-editor-foot">
+      <input type="range" id="wall-zoom" min="1" max="2.5" step="0.01"
+             data-i18n-aria="settings.zoom">
+      <button class="btn mini" id="wall-editor-reset" type="button"
+              data-i18n="settings.wallReset">reset</button>
+    </div>
+    <p class="settings-note" data-i18n="settings.wallEditorNote"></p>
   </div>
 </div>
 

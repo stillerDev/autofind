@@ -42,7 +42,9 @@ def main(argv: list[str] | None = None) -> int:
     index_cmd = sub.add_parser("index", help="scan folders and build the index")
     index_cmd.add_argument("roots", nargs="+", type=Path, help="folders or files to index")
     index_cmd.add_argument("--prune", action="store_true", help="drop files that disappeared from disk")
-    index_cmd.add_argument("--embedder", default="auto", choices=["auto", "e5", "hashing"])
+    index_cmd.add_argument("--embedder", default="auto", choices=["auto", "e5", "static", "hashing"])
+    index_cmd.add_argument("--workers", type=int, default=None,
+                           help="extraction worker processes (0 = auto, 1 = single process)")
     index_cmd.add_argument("--no-ocr", action="store_true", help="skip screenshot OCR")
     index_cmd.add_argument(
         "--allow-sensitive", action="store_true", help="index password stores and key material too"
@@ -88,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     search_cmd.add_argument("--sort", default=None, choices=["best", "newest", "oldest", "largest", "name"])
     search_cmd.add_argument("--files", action="store_true", help="collapse results to one row per file")
     search_cmd.add_argument("--json", action="store_true", help="machine readable output")
-    search_cmd.add_argument("--embedder", default="auto", choices=["auto", "e5", "hashing"])
+    search_cmd.add_argument("--embedder", default="auto", choices=["auto", "e5", "static", "hashing"])
 
     serve_cmd = sub.add_parser("serve", help="start the local web UI in a browser")
     serve_cmd.add_argument("--port", type=int, default=8765)
@@ -347,6 +349,7 @@ def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
             visual,
             prune=args.prune,
             progress=None if args.quiet else _progress,
+            workers=args.workers,
         )
         elapsed = time.perf_counter() - started
     finally:

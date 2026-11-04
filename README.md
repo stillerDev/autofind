@@ -323,6 +323,15 @@ behind it. Here the picture *is* the palette: every surface is
 borders, chips and hover states follow. Pick the brown wall and the borders go
 warm; pick the ocean and they go teal.
 
+Once a picture is yours, you rarely want the whole of it. The custom tile opens
+two more controls, hidden for the gradients: **Position** (top / center / bottom)
+anchors the edge the crop pins to, and **Zoom** (±) pushes in or pulls back.
+Both are CSS only — `background-position` and a `transform: scale()` on the wall
+layer — so the change is instant and survives reload. The hue is still read from
+the whole image, not the cropped slice.
+
+![The same window with a chosen picture, cropped to the top and zoomed in](docs/ui-appearance-crop.png)
+
 That means a picture you supply has to answer one question: what colour is it?
 An RGB average cannot answer it — the mean of a sunset is grey, because the
 orange and the blue cancel out. The measurement is a **circular mean of hues**,
@@ -349,10 +358,11 @@ reader picking whichever extension it happened to try first.
 **The first frame is already the right colour.** `app.js` runs at the end of the
 body, which is one paint too late: the window would flash the default forest
 background and then jump to yours. A twelve-line script in `<head>` reads the
-stored choice and sets `--wall`, `--hue` and `--sat` on the root element before
-anything is rendered. `tests/test_theme.py` checks that the script is in the
-head, that it reads the same storage key `app.js` writes, and that every surface
-in the stylesheet is derived from the hue rather than pinned to a hex value.
+stored choice and sets `--wall`, `--hue`, `--sat`, `--wall-pos` and `--wall-scale`
+on the root element before anything is rendered. `tests/test_theme.py` checks
+that the script is in the head, that it reads the same storage key `app.js` writes,
+and that every surface in the stylesheet is derived from the hue rather than
+pinned to a hex value.
 
 ## What you bring with you
 
@@ -477,7 +487,7 @@ over 100k.
 
 `core/vectors.py`. The 333 MB float32 matrix used to be read from SQLite and
 copied into a numpy array at startup. It is now a packed side file
-(`index.db.vec`) mapped into the process: no copy, no anonymous 333 MB, and the
+(`index.db.v4.vec`) mapped into the process: no copy, no anonymous 333 MB, and the
 pages stay in the OS cache across restarts.
 
 | Backend | Cold start | Query, 217k chunks | Extra disk |
@@ -490,6 +500,14 @@ pages stay in the OS cache across restarts.
 not the default: its exact KNN walks shadow rows one at a time and costs 4–12x
 more per query than one matmul. The pack is a pure cache — `vectors` in SQLite
 stays the source of truth, so deleting the file costs a rebuild, never data.
+
+The version in the name is load-bearing. Bumping the format while an older
+process still had the old file mapped meant Windows refused the rename, the
+build was thrown away, and every text query fell back to reading all vectors
+out of SQLite: **2 860 ms against 12 ms**, measured twice in a row on the real
+index before this was understood. Two versions now never share a file, and a
+build that still cannot land is served from its temp name instead of being
+dropped. `docs/decisions.md` §49.
 
 ### Near-duplicates collapse
 

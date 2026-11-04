@@ -20,6 +20,7 @@ before fusion, so a restricted search still fills a page.
 
 from __future__ import annotations
 
+import difflib
 import math
 import re
 import time
@@ -27,10 +28,12 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 from . import nameindex
+from . import cjk
+from .cjk import cjk_query_phrase
 from .group import group_hits
 from .nameindex import subsequence_score
 from .personal import expand_aliases
-from .query import ParsedQuery, understand
+from .query import Hint, ParsedQuery, understand
 from .store import Store, basename
 
 RRF_K = 60
@@ -39,8 +42,12 @@ RRF_K = 60
 # the embedder itself (`rrf_weight`): a semantic model gets 1.0, the hashed
 # fallback 0.3, because it largely duplicates BM25 and ranks worse. Measured
 # with `semfind eval --ablate`; re-measure before trusting it on another corpus.
-RRF_WEIGHTS = {"bm25": 1.0, "vector": 0.3, "fuzzy": 0.7}
+# `cjk` is a real lexical index (of bigrams), so it earns an equal share; `tri`
+# is the deliberately fuzzy typo tier — kensaku damps its folded tier to ~0.55
+# of the lexical weight for the same reason.
+RRF_WEIGHTS = {"bm25": 1.0, "vector": 0.3, "fuzzy": 0.7, "cjk": 1.0, "tri": 0.55}
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+CJK_RE = cjk.CJK_RE
 SNIPPET_WINDOW = 180
 
 # Bonus weights, lifted from kensaku's `finalize_score`. They are additive on a
@@ -142,19 +149,136 @@ def build_match_query(text: str, max_terms: int = 16) -> str | None:
     «схеме». For words long enough to be unambiguous the term is also added as a
     shortened prefix, which is a cheap stand-in for stemming. Short words are
     left alone: «база» -> «ба» would match half the corpus.
+
+    CJK runs become phrases of the same bigrams the index stored
+    (see core/cjk.py): `数据库` arrives as `"数据 据库"`, which matches the
+    chunks_cjk table and enforces the original character order.
     """
     terms: list[str] = []
     for token in TOKEN_RE.findall(text):
         token = token.lower()
-        if len(token) < 2:
-            continue
-        terms.append(token)
-        if len(token) >= 6:
-            terms.append(token[:-2])
+        # Split into alternating CJK / non-CJK pieces, keeping both: a mixed
+        # token like `CUDA数据` is a normal term plus a CJK phrase.
+        for segment in re.split(f"({CJK_RE.pattern})", token):
+            if not segment:
+                continue
+            if CJK_RE.fullmatch(segment):
+                if len(segment) == 1:
+                    terms.append(f'"{segment}"')  # an exact char, a star is noise
+                    continue
+                phrase = cjk_query_phrase(segment)
+                if phrase:
+                    terms.append(f'"{phrase}"')
+                continue
+            if len(segment) < 2:
+                continue
+            terms.append(segment)
+            if len(segment) >= 6:
+                terms.append(segment[:-2])
     terms = list(dict.fromkeys(terms))[:max_terms]
     if not terms:
         return None
-    return " OR ".join(f'"{term}"*' for term in terms)
+    # CJK phrases carry their own quotes; plain terms get quoting plus the
+    # prefix star.
+    return " OR ".join(
+        term if term.startswith('"') else f'"{term}"*' for term in terms
+    )
+
+
+def build_tri_query(text: str, max_terms: int = 8) -> str | None:
+    """The typo tier's query: every long term broken into OR-ed 3-grams.
+
+    A mis-typed `invoive` still shares inv, nvo, voi and ive with `invoice`,
+    and bm25 inside the trigram table ranks the documents that share more
+    grams higher. Far too permissive to be a primary channel, which is why it
+    only runs when the exact tiers came back thin — and only at weight 0.55.
+    """
+    grams: list[str] = []
+    for token in TOKEN_RE.findall(text):
+        token = token.lower()
+        if CJK_RE.search(token) or len(token) < 4:
+            continue
+        for start in range(len(token) - 2):
+            grams.append(token[start : start + 3])
+    grams = list(dict.fromkeys(grams))[: 8]
+    if not grams:
+        return None
+    return " OR ".join(f'"{gram}"' for gram in grams)
+
+
+def scoped_file_ids(store: Store, prefixes: list[str]) -> set[int]:
+    """Every file id under any `in:` prefix, from the in-memory path index.
+
+    Vectorised over the lowered path blob — one byte comparison per prefix
+    byte — instead of the per-path Python `startswith` loop it replaced.
+    Buys fusion slots that matches() would otherwise waste on out-of-scope
+    candidates.
+    """
+    index = nameindex.load(store)
+    wanted = [prefix.lower().rstrip(r"\/") for prefix in prefixes]
+    positions = index.scope_positions(wanted)
+    return {int(fid) for fid in index.ids[positions].tolist()}
+
+
+def _verify_tri(
+    files: Sequence[int], best_chunk_by_file: dict, query_text: str
+) -> list[int]:
+    """Trigram candidates verified against the raw chunk text.
+
+    The OR over 3-grams reaches for anything sharing three letters with the
+    query; before those candidates earn rank positions their chunk has to show
+    real evidence: the term itself, or at least two of that term's grams as
+    substrings. The folded tier in kensaku verifies the same way.
+    """
+    terms = [
+        token.lower()
+        for token in TOKEN_RE.findall(query_text)
+        if len(token) >= 4 and not CJK_RE.search(token)
+    ]
+    grams = {term: {term[i : i + 3] for i in range(len(term) - 2)} for term in terms}
+    if not grams:
+        return list(files)
+    kept: list[int] = []
+    for fid in files:
+        row = best_chunk_by_file.get(fid)
+        text = row["text"].lower() if row is not None else ""
+        for term, gram_set in grams.items():
+            if term in text or sum(1 for gram in gram_set if gram in text) >= 2:
+                kept.append(fid)
+                break
+    return kept
+
+
+def _suggest_term(query_text: str, best_chunk_by_file: dict) -> str | None:
+    """A corrected spelling from the chunks the typo tier reached.
+
+    The candidates are rank-ordered, so the first close spelling of a query
+    term wins — the same document the user is probably looking for.
+    """
+    terms = [
+        token.lower()
+        for token in TOKEN_RE.findall(query_text)
+        if len(token) >= 4 and not CJK_RE.search(token)
+    ]
+    if not terms:
+        return None
+    best: tuple[float, str] | None = None
+    examined = 0
+    for row in best_chunk_by_file.values():
+        text = row["text"].lower()
+        for word in set(TOKEN_RE.findall(text)):
+            if len(word) < 4 or CJK_RE.search(word):
+                continue
+            for term in terms:
+                if word == term:
+                    continue
+                ratio = difflib.SequenceMatcher(None, term, word).ratio()
+                if ratio >= 0.78 and (best is None or ratio > best[0]):
+                    best = (ratio, word)
+        examined += 1
+        if examined >= 30:
+            break
+    return best[1] if best else None
 
 
 # --------------------------------------------------------------------- fuzzy
@@ -244,8 +368,8 @@ def _listing(
     hits: list[Hit] = []
     kinds: list[str] = []
     for position in range(len(index)):
-        path = index.paths[position]
-        kind = index.kinds[position]
+        path = index.path(position)
+        kind = index.kind(position)
         size = int(index.sizes[position])
         mtime = float(index.mtimes[position])
         if since is not None and mtime < since:
@@ -260,7 +384,7 @@ def _listing(
                 kind=kind,
                 score=0.0,
                 snippet="",
-                name=index.names[position],
+                name=index.name(position),
                 ord=0,
                 mtime=mtime,
                 size=size,
@@ -375,6 +499,21 @@ def _rank(
     pinned = store.pinned_ids()
     match = build_match_query(bm25_text) if "bm25" in channels else None
     lexical = store.bm25(match, pool) if match else []
+    # The CJK bigram table is queried with the same match query: CJK runs in
+    # it arrive as bigram phrases, everything else simply matches nothing.
+    cjk_lexical = store.bm25_cjk(match, pool) if match else []
+    # The typo tier only pays its way when the exact tiers came back nearly
+    # empty — an OR over common 3-grams on a large index costs ~100 ms, so a
+    # threshold any looser would tax ordinary queries to reproduce hits bm25
+    # already has. Its pool is small for the same reason.
+    tri = []
+    if (
+        "bm25" in channels
+        and store.has_trigram
+        and len(lexical) < 3
+        and (tri_match := build_tri_query(bm25_text)) is not None
+    ):
+        tri = store.bm25_tri(tri_match, min(pool, 25))
     semantic = (
         store.knn(embedder.encode_query(bm25_text or parsed.text), pool)
         if "vector" in channels and (bm25_text or parsed.text)
@@ -391,6 +530,8 @@ def _rank(
     if (
         "bm25" in channels
         and not lexical
+        and not cjk_lexical
+        and not tri
         and not fuzzy
         and not regex_rows
         and not symbol_files
@@ -399,6 +540,11 @@ def _rank(
         return [], {}
 
     lexical_files, chunk_rows = _files_from_chunks(store, lexical)
+    cjk_files, cjk_chunk_rows = _files_from_chunks(store, cjk_lexical)
+    chunk_rows.update(cjk_chunk_rows)
+    tri_files, tri_chunk_rows = _files_from_chunks(store, tri)
+    tri_files = _verify_tri(tri_files, tri_chunk_rows, bm25_text)
+    chunk_rows.update(tri_chunk_rows)
     semantic_files, semantic_rows = _files_from_chunks(store, semantic)
     chunk_rows.update(semantic_rows)
     regex_files, regex_chunk_rows = _files_from_chunks(
@@ -412,7 +558,7 @@ def _rank(
     missing = {
         file_id
         for file_id in (
-            *lexical_files, *semantic_files, *fuzzy_files_ids(fuzzy),
+            *lexical_files, *cjk_files, *tri_files, *semantic_files, *fuzzy_files_ids(fuzzy),
             *regex_files, *symbol_files,
         )
         if file_id not in file_rows
@@ -423,6 +569,28 @@ def _rank(
             "mtime": row["mtime"], "file_id": row["id"],
         }
 
+    # `in:` pushdown: the scope is resolved against the in-memory path index
+    # (one C-level byte scan) and out-of-scope files are dropped before fusion.
+    # Without this a narrow folder burns pool slots on files `matches()` would
+    # reject anyway, and a `type:`-only query inside a deep scope could miss
+    # everything below rank 50.
+    scope_ids: set[int] | None = None
+    if parsed.in_paths:
+        scope_ids = scoped_file_ids(store, parsed.in_paths)
+        if not scope_ids:
+            scope_ids = set()
+        ranked_scope = {
+            "bm25": lexical_files, "cjk": cjk_files, "tri": tri_files,
+            "vector": semantic_files, "fuzzy": fuzzy_files_ids(fuzzy),
+            "regex": regex_files, "symbol": symbol_files,
+        }
+        for name, files in ranked_scope.items():
+            ranked_scope[name] = [fid for fid in files if fid in scope_ids]
+        lexical_files = ranked_scope["bm25"]
+        cjk_files = ranked_scope["cjk"]
+        tri_files = ranked_scope["tri"]
+        semantic_files = ranked_scope["vector"]
+
     def allowed(file_id: int) -> bool:
         row = file_rows.get(file_id)
         if row is None:
@@ -431,8 +599,28 @@ def _rank(
             return False
         return parsed.matches(row["path"], row["kind"], int(row["size"]), float(row["mtime"]))
 
+    # Facets over every candidate that survives the filters — not just the
+    # sliced page — so `type:` tabs can show real counts, the way kensaku
+    # counts its matched set.
+    allowed_ids = {fid for fid in file_rows if allowed(fid)}
+    kind_facets: dict[str, int] = {}
+    for fid in allowed_ids:
+        kind = file_rows[fid]["kind"]
+        kind_facets[kind] = kind_facets.get(kind, 0) + 1
+
+    # Did-you-mean: the trigram tier found files for a query the exact tiers
+    # could not read — one of its chunks probably spells the word right.
+    if not cjk_lexical and tri and bm25_text:
+        # The typo tier only runs on thin-lexical queries, so a suggestion
+        # here is a correction of a degraded query, not noise on a good one.
+        suggestion = _suggest_term(bm25_text, tri_chunk_rows)
+        if suggestion:
+            parsed.hints.append(Hint("did_you_mean", suggestion))
+
     ranked = {
         "bm25": lexical_files,
+        "cjk": cjk_files,
+        "tri": tri_files,
         "vector": semantic_files,
         "fuzzy": fuzzy_files_ids(fuzzy),
         "regex": regex_files,
@@ -446,7 +634,7 @@ def _rank(
         weight = channel_weights.get(name, 1.0)
         rank = 0
         for file_id in files:
-            if not allowed(file_id):
+            if file_id not in allowed_ids:
                 continue
             rank += 1
             fused[file_id] = fused.get(file_id, 0.0) + weight / (k + rank)
@@ -499,7 +687,7 @@ def _rank(
                 hit.phash = int(image["phash"] or 0)
 
     hits.sort(key=_order_key(order))
-    return hits, {}
+    return hits, kind_facets
 
 
 def symbol_snippet(symbol: dict | None) -> str:

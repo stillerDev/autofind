@@ -248,14 +248,36 @@ const WALLS = [
   { id: "ocean", wall: "linear-gradient(155deg,#0f3a44 0%,#0a1b20 52%,#050b0d 100%)", hue: 191, sat: 12 },
 ];
 
+// A chosen picture is framed after upload in its own editor: drag puts the
+// focus point where the eye should land, the slider (or the wheel) pushes in.
+// The focus is a fraction of the picture (fx, fy) that always sits at the same
+// fraction of the screen, so zooming never drags the subject off its spot. The
+// presets are gradients, so the editor means nothing for them and its button is
+// hidden. Scale starts at 1: anything below lets the layer shrink away from the
+// screen edges and show the void behind it.
+const WALL_ZOOM_MIN = 1;
+const WALL_ZOOM_MAX = 2.5;
+
+const clamp01 = (value) => Math.min(1, Math.max(0, Number(value) || 0));
+
+function clampScale(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 1;
+  return Math.min(WALL_ZOOM_MAX, Math.max(WALL_ZOOM_MIN, Math.round(number * 100) / 100));
+}
+
 let theme = WALLS[0];
 
 function applyTheme(next) {
   theme = next;
+  const fx = clamp01(next.fx ?? 0.5);
+  const fy = clamp01(next.fy ?? 0.5);
   const root = document.documentElement;
   root.style.setProperty("--wall", next.wall);
   root.style.setProperty("--hue", String(Math.round(next.hue)));
   root.style.setProperty("--sat", `${next.sat}%`);
+  root.style.setProperty("--wall-pos", `${fx * 100}% ${fy * 100}%`);
+  root.style.setProperty("--wall-scale", String(clampScale(next.scale)));
 }
 
 function saveTheme(next) {
@@ -274,11 +296,17 @@ function loadTheme() {
     saved = null;
   }
   if (saved && typeof saved.wall === "string" && Number.isFinite(saved.hue)) {
+    // Saves from the three-button era carry `pos` as a word; it maps onto the
+    // vertical focus and keeps the picture where the user last put it.
+    const legacyY = { top: 0, center: 0.5, bottom: 1 }[saved.pos];
     applyTheme({
       id: saved.id || "custom",
       wall: saved.wall,
       hue: saved.hue,
       sat: Number.isFinite(saved.sat) ? saved.sat : 9,
+      fx: saved.fx ?? 0.5,
+      fy: saved.fy ?? legacyY ?? 0.5,
+      scale: clampScale(saved.scale),
     });
     return;
   }
@@ -303,6 +331,88 @@ function renderWalls() {
   const active = theme.id === "custom";
   custom.classList.toggle("on", active);
   custom.style.backgroundImage = active ? theme.wall : "";
+  renderWallEdit();
+}
+
+function renderWallEdit() {
+  const edit = $("wall-edit");
+  // The controls only make sense for a picture the user chose, not a gradient.
+  if (edit) edit.hidden = theme.id !== "custom";
+}
+
+/* ------------------------------------------------------------ wall editor */
+
+/* The editor preview is painted by the same four variables as the real layer
+   (`--wall`, `--wall-pos`, `--wall-scale`), so there is no second way to draw a
+   wallpaper that could drift from the first. Math for the drag: the composite
+   of `background-position: fx fy` and a `scale(s)` about the same point is
+   identical to a picture drawn at `cover * s` with the focus fraction (fx, fy)
+   of the image hidden off the left/top by fx/fy of the slack — so dragging the
+   picture by dx pixels simply moves fx by dx over that slack. */
+const editor = {
+  open: false,
+  image: null, // natural size of the current picture, for the slack math
+  url: null,
+};
+
+function wallImageUrl() {
+  const match = theme.wall.match(/^url\("(.*)"\)$/);
+  return match ? match[1] : null;
+}
+
+async function openWallEditor() {
+  if (theme.id !== "custom") return;
+  const url = wallImageUrl();
+  if (!url) return;
+  editor.open = true;
+  $("wall-editor").classList.add("open");
+  syncWallZoom();
+  if (editor.url === url && editor.image) return;
+  editor.url = url;
+  editor.image = null;
+  try {
+    editor.image = await loadImage(url);
+  } catch (error) {
+    editor.image = null; // the drag needs the natural size; without it, no drag
+  }
+}
+
+function closeWallEditor() {
+  editor.open = false;
+  $("wall-editor").classList.remove("open");
+}
+
+function syncWallZoom() {
+  $("wall-zoom").value = String(clampScale(theme.scale));
+}
+
+function editWall(next) {
+  applyTheme({ ...theme, ...next });
+  saveTheme(theme);
+  renderWalls();
+}
+
+function stageCover(stage, image) {
+  // The drawn size of the picture before the zoom slider: `cover` on the stage.
+  const factor = Math.max(stage.clientWidth / image.naturalWidth,
+                          stage.clientHeight / image.naturalHeight);
+  return {
+    width: image.naturalWidth * factor,
+    height: image.naturalHeight * factor,
+  };
+}
+
+function setWallFocus(fx, fy) {
+  editWall({ fx: clamp01(fx), fy: clamp01(fy) });
+}
+
+function setWallZoom(scale) {
+  editWall({ scale: clampScale(scale) });
+}
+
+function resetWallFrame() {
+  editWall({ fx: 0.5, fy: 0.5, scale: 1 });
+  syncWallZoom();
 }
 
 function chooseWall(id) {
@@ -406,7 +516,7 @@ async function useWallFile(file) {
     } catch (error) {
       hue = 205; // the picture is fine, only the measuring failed
     }
-    const next = { id: "custom", wall: `url("${saved.url}")`, hue, sat: 9 };
+    const next = { id: "custom", wall: `url("${saved.url}")`, hue, sat: 9, fx: 0.5, fy: 0.5, scale: 1 };
     applyTheme(next);
     saveTheme(next);
     renderWalls();
@@ -741,6 +851,37 @@ function chipRow(chips) {
   return `<div class="ichips">${items}</div>`;
 }
 
+/* Facet counts on the kind tabs: numbers over every candidate that survived
+   the filters, not just the twelve on the page. A tab without matches fades —
+   the same honesty the results list has. */
+function paintFacets(facets) {
+  const counts = facets || {};
+  // Mirrors KIND_MAP.docs on the server: which internal kinds a tab covers.
+  const DOCS_KINDS = ["text", "code", "pdf", "docx", "pptx", "xlsx", "epub", "odt", "rtf"];
+  document.querySelectorAll(".menu .chip").forEach((chip) => {
+    const kind = chip.dataset.kind;
+    let count = 0;
+    if (kind === "") {
+      count = Object.values(counts).reduce((a, b) => a + b, 0);
+    } else if (kind === "docs") {
+      count = DOCS_KINDS.reduce((a, k) => a + (counts[k] || 0), 0);
+    } else {
+      count = counts[kind] || 0;
+    }
+    let badge = chip.querySelector(".count");
+    if (!count) {
+      if (badge) badge.remove();
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement("b");
+      badge.className = "count";
+      chip.appendChild(badge);
+    }
+    badge.textContent = count > 999 ? "999+" : String(count);
+  });
+}
+
 function renderResults(data, append) {
   const parts = [];
   if (!append) parts.push(chipRow(data.chips || []));
@@ -748,9 +889,16 @@ function renderResults(data, append) {
     parts.push(`<div class="hints">${data.hints.map((hint) => {
       const key = `hint.${hint.kind}`;
       const text = t(key, { value: hint.value ?? "" });
-      return `<span>${esc(text === key ? (hint.text || hint.kind) : text)}</span>`;
+      const shown = esc(text === key ? (hint.text || hint.kind) : text);
+      // A spelling suggestion is an action, not a remark: click it and the
+      // search reruns on the corrected word.
+      const clickable = hint.kind === "did_you_mean" && hint.value
+        ? `<button class="hint-link" data-suggest="${esc(hint.value)}">${shown}</button>`
+        : `<span>${shown}</span>`;
+      return clickable;
     }).join("")}</div>`);
   }
+  paintFacets(data.facets);
 
   if (state.hits.length) {
     parts.push(`<div class="results">${
@@ -1082,6 +1230,14 @@ document.addEventListener("click", async (event) => {
   const unalias = event.target.closest("[data-unalias]");
   if (unalias) { removeAlias(unalias.dataset.unalias); return; }
 
+  const suggest = event.target.closest("[data-suggest]");
+  if (suggest) {
+    $("q").value = suggest.dataset.suggest;
+    runSearch();
+    $("q").focus();
+    return;
+  }
+
   const group = event.target.closest("[data-group]");
   if (group) { toggleGroup(group); return; }
 
@@ -1149,6 +1305,49 @@ $("calendar").addEventListener("click", (event) => {
   const day = event.target.closest("[data-day]");
   if (day) setSince(day.dataset.day);
 });
+/* Right-click on a result: open, show in folder, copy path — the three
+   things kensaku's context menu does, drawn as our own card so it follows the
+   theme instead of the browser's. */
+let ctxMenu = null;
+
+document.addEventListener("contextmenu", (event) => {
+  const card = event.target.closest(".card");
+  if (!card || !state.hits[Number(card.dataset.index)]) return;
+  event.preventDefault();
+  closeCtxMenu();
+  const hit = state.hits[Number(card.dataset.index)];
+  ctxMenu = document.createElement("div");
+  ctxMenu.className = "ctx-menu";
+  ctxMenu.innerHTML = `
+    <button data-act="open">${esc(t("ctx.open"))}</button>
+    <button data-act="reveal">${esc(t("ctx.reveal"))}</button>
+    <button data-act="copy">${esc(t("ctx.copy"))}</button>`;
+  ctxMenu.style.left = `${Math.min(event.clientX, window.innerWidth - 190)}px`;
+  ctxMenu.style.top = `${Math.min(event.clientY, window.innerHeight - 120)}px`;
+  document.body.appendChild(ctxMenu);
+  ctxMenu.addEventListener("click", async (menuEvent) => {
+    const button = menuEvent.target.closest("[data-act]");
+    if (!button) return;
+    closeCtxMenu();
+    if (button.dataset.act === "copy") {
+      try { await navigator.clipboard.writeText(hit.path); toast(t("ctx.copied")); }
+      catch { toast(t("search.failed", { error: "clipboard" })); }
+      return;
+    }
+    api(`/api/${button.dataset.act === "open" ? "open" : "reveal"}?id=${hit.file_id}`)
+      .catch((error) => toast(t("toast.failed", { error: error.message })));
+  });
+});
+
+function closeCtxMenu() {
+  if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
+}
+
+document.addEventListener("click", (event) => {
+  if (ctxMenu && !event.target.closest(".ctx-menu")) closeCtxMenu();
+});
+document.addEventListener("scroll", closeCtxMenu, true);
+
 // A click anywhere else closes the popup, the way a menu behaves.
 document.addEventListener("click", (event) => {
   if (!CAL.open) return;
@@ -1175,6 +1374,55 @@ $("wall-file").addEventListener("change", () => {
   $("wall-file").value = "";
   useWallFile(file);
 });
+$("wall-edit").addEventListener("click", openWallEditor);
+$("wall-editor-close").addEventListener("click", closeWallEditor);
+$("wall-editor").addEventListener("click", (event) => {
+  if (event.target.id === "wall-editor") closeWallEditor();
+});
+$("wall-editor-reset").addEventListener("click", resetWallFrame);
+$("wall-zoom").addEventListener("input", () => setWallZoom(Number($("wall-zoom").value)));
+
+/* Drag-to-pan: the picture follows the pointer, clamped so it always covers the
+   stage. Pointer capture keeps the drag alive when the pointer leaves the
+   preview, which is where a mouse-based crop usually falls apart. */
+(() => {
+  const stage = $("wall-stage");
+  let drag = null;
+
+  stage.addEventListener("pointerdown", (event) => {
+    if (!editor.open || !editor.image || event.button !== 0) return;
+    const cover = stageCover(stage, editor.image);
+    const slackX = cover.width * clampScale(theme.scale) - stage.clientWidth;
+    const slackY = cover.height * clampScale(theme.scale) - stage.clientHeight;
+    drag = { x: event.clientX, y: event.clientY, fx: clamp01(theme.fx ?? 0.5), fy: clamp01(theme.fy ?? 0.5), slackX, slackY };
+    stage.setPointerCapture(event.pointerId);
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    setWallFocus(
+      drag.slackX > 0 ? drag.fx - (event.clientX - drag.x) / drag.slackX : drag.fx,
+      drag.slackY > 0 ? drag.fy - (event.clientY - drag.y) / drag.slackY : drag.fy,
+    );
+  });
+  const stop = (event) => {
+    if (!drag) return;
+    drag = null;
+    if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+  };
+  stage.addEventListener("pointerup", stop);
+  stage.addEventListener("pointercancel", stop);
+
+  // The wheel zooms around the focus point, which by construction never moves
+  // on screen — the subject stays put while the world grows around it.
+  stage.addEventListener("wheel", (event) => {
+    if (!editor.open || !editor.image) return;
+    event.preventDefault();
+    const current = clampScale(theme.scale);
+    const next = event.deltaY < 0 ? current * 1.08 : current / 1.08;
+    setWallZoom(next);
+    syncWallZoom();
+  }, { passive: false });
+})();
 // Enter in either dictionary field adds the entry: a two-field form with no
 // keyboard path is a form people fill in with the mouse or not at all.
 ["alias-word", "alias-means"].forEach((id) => {
@@ -1234,6 +1482,7 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape") {
     if (CAL.open) { openCalendar(false); return; }
+    if (editor.open) { closeWallEditor(); return; }
     if ($("preview").classList.contains("open")) { $("preview").classList.remove("open"); return; }
     if ($("settings").classList.contains("open")) { setSettings(false); return; }
     if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }

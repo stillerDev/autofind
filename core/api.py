@@ -160,6 +160,8 @@ READY: dict = {
 # token is read once at startup rather than per request.
 MCP = None
 MCP_TOKEN = ""
+# The resident read-only Store kept open by `_prewarm`; see there for why.
+_READER = None
 
 
 def _mcp_token_ok(header: str | None) -> bool:
@@ -203,7 +205,9 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _json(self, payload, status: int = 200) -> None:
-        self._send(status, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        # Compact separators: the search payload is tens of KB of JSON and
+        # the browser never re-formats it anyway.
+        self._send(status, json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
     def _error(self, message: str, status: int = 400) -> None:
         self._json({"error": message}, status)
@@ -1088,23 +1092,29 @@ def _prewarm(db_path: Path, config: IndexConfig) -> None:
 
     With the pack backend this is an mmap plus one warm-up scan, not a 2.6 s
     matrix build: the point is to fault the pages in on a background thread
-    instead of on the first keystroke.
+    instead of on the first keystroke. The Store then stays open for the life
+    of the server: every UI request opens a short-lived Store, and without one
+    live reader the pack cache would unmap the matrix between requests and the
+    next query would fault the pages in again.
     """
+    global _READER
     started = time.perf_counter()
     READY["stage"] = "vectors"
     try:
         embedder = get_embedder("auto", config.model_dir)
         store = Store(db_path, embedder.name, embedder.dim, readonly=True,
                       cache=CACHE, vector_backend=config.vector_backend)
-        try:
-            if store.vector_backend == "pack":
-                pack = store.pack()
-                if pack is not None:
-                    pack.search(np.zeros(store.dim, dtype=np.float32), 1)
-            else:
-                store.vector_index()
-        finally:
-            store.close()
+        if store.vector_backend == "pack":
+            pack = store.pack()
+            if pack is not None:
+                pack.search(np.zeros(store.dim, dtype=np.float32), 1)
+        else:
+            store.vector_index()
+        # Warm pages faulted in; the checkout goes back so a future rebuild can
+        # replace the file. The pack itself stays cached and warm — the checkout
+        # only protected it from being closed mid-search.
+        store.release_pack()
+        _READER = store  # held, never closed: the resident reader
     except Exception as exc:
         READY["error"] = str(exc)[:200]
     finally:

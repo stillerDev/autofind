@@ -16,7 +16,10 @@ no extra pass over the files: versions come from the path, bursts from the
 
 from __future__ import annotations
 
+import bisect
 import re
+from functools import lru_cache
+from itertools import count
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
@@ -81,7 +84,13 @@ def version_key(name: str) -> str:
 
 
 def folder(path: str) -> str:
+    # lru_cache: the burst matcher asks for the same few folders hundreds of
+    # thousands of times on screenshot-heavy queries (profiled at 1.8M rsplit
+    # calls for one "screenshot" search) — a cache turns that into dict hits.
     return path.rsplit("\\", 1)[0] if "\\" in path else path.rsplit("/", 1)[0]
+
+
+folder = lru_cache(maxsize=8192)(folder)
 
 
 # ------------------------------------------------------------------ perceptual
@@ -169,11 +178,23 @@ def group_hits(hits: Sequence, bursts: bool = True, hashes: dict[int, str] | Non
     result: list[Group] = []
     by_version: dict[tuple, Group] = {}
     by_copy: dict[tuple, Group] = {}
-    anchors: list[Group] = []   # image groups that can absorb a burst
+    # Burst anchors bucketed by (folder, width, height) — the three things a
+    # burst match demands to be identical — and each bucket sorted by mtime so
+    # the 15-minute window is a bisect, not a scan. The flat list this replaced
+    # made a screenshot-heavy query O(anchors) per hit: one "screenshot" search
+    # on this corpus profiled at 3.3k hits x ~550 anchors, 1.8M rsplit calls.
+    anchors: dict[tuple, list] = {}
+    seq = count()
 
     for hit in hits:
-        if bursts and hit.kind == "image" and getattr(hit, "phash", 0):
-            anchor = _match_burst(hit, anchors)
+        width = getattr(hit, "width", 0)
+        height = getattr(hit, "height", 0)
+        burstable = (
+            bursts and hit.kind == "image" and getattr(hit, "phash", 0)
+            and width >= BURST_MIN_SIDE and height >= BURST_MIN_SIDE
+        )
+        if burstable:
+            anchor = _match_burst(hit, anchors.get((folder(hit.path), width, height)))
             if anchor is not None:
                 anchor.members.append(hit)
                 anchor.reason = "burst"
@@ -199,31 +220,29 @@ def group_hits(hits: Sequence, bursts: bool = True, hashes: dict[int, str] | Non
         if copy_key is not None:
             by_copy[copy_key] = group
         result.append(group)
-        if hit.kind == "image" and getattr(hit, "phash", 0):
-            anchors.append(group)
+        if burstable:
+            # (mtime, seq, group): the counter keeps the tuple comparable when
+            # two screenshots share a timestamp.
+            entry = (hit.mtime, next(seq), group)
+            bisect.insort(anchors.setdefault((folder(hit.path), width, height), []), entry)
     return result
 
 
-def _match_burst(hit, anchors: Sequence[Group]) -> Group | None:
-    """First image group this screenshot is a repeat of, if any."""
+def _match_burst(hit, bucket: Sequence[tuple] | None) -> Group | None:
+    """First image group this screenshot is a repeat of, if any.
+
+    The bucket is (folder, width, height) and sorted by mtime, so every entry
+    in the bisected slice already shares the pixel grid and sits inside the
+    time window; the remaining checks — dHash distance and OCR overlap — run
+    only on those.
+    """
+    if not bucket:
+        return None
     phash = getattr(hit, "phash", 0)
-    where = folder(hit.path)
-    for group in anchors:
+    lo = bisect.bisect_left(bucket, (hit.mtime - BURST_WINDOW_SECONDS,))
+    hi = bisect.bisect_right(bucket, (hit.mtime + BURST_WINDOW_SECONDS + 1,))
+    for _, _, group in bucket[lo:hi]:
         other = group.representative
-        if folder(other.path) != where:
-            continue
-        if abs(other.mtime - hit.mtime) > BURST_WINDOW_SECONDS:
-            continue
-        # Same screen means same pixel grid. Without this an icon set — one
-        # artwork exported at 30, 44, 71, 512 px — collapses into a single row:
-        # dHash resizes to 9x8 first, so it is blind to scale and scores those
-        # as identical.
-        width = getattr(hit, "width", 0)
-        height = getattr(hit, "height", 0)
-        if width < BURST_MIN_SIDE or height < BURST_MIN_SIDE:
-            continue
-        if getattr(other, "width", 0) != width or getattr(other, "height", 0) != height:
-            continue
         distance = hamming(phash, getattr(other, "phash", 0))
         if distance > BURST_MAX_DISTANCE:
             continue

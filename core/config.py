@@ -70,6 +70,8 @@ class IndexConfig:
     allow_sensitive: bool = False
     watch_interval: float = 2.0
     watch_settle: float = 1.0
+    # 0 = auto (min(4, cpu cores)); 1 = the old single-process pipeline.
+    extract_workers: int = 0
     # "pack" (memory-mapped side file, default), "sqlite-vec" (vec0 tables,
     # needs the extension, ~7x slower per query here) or "blob" (the old
     # in-process numpy matrix, 2.6 s cold start).

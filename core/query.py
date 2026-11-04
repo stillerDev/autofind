@@ -190,6 +190,7 @@ HINT_TEMPLATES: dict[str, str] = {
     "folders_not_indexed": "folders are not indexed — search for files",
     "bad_modified": "did not understand “modified:{value}” — use <7d, >30d or 7d..30d",
     "bad_size": "did not understand “size:{value}” — use >2mb, <100kb or 1mb..10mb",
+    "did_you_mean": 'did you mean “{value}”?',
 }
 
 

@@ -19,6 +19,7 @@ from typing import Iterable, Sequence
 import numpy as np
 
 from . import vectors as vecstore
+from .cjk import cjk_bigrams, has_cjk
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -37,7 +38,15 @@ CREATE TABLE IF NOT EXISTS chunks (
     text    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
+-- External content (`content='chunks'`): the FTS table stores only the
+-- inverted index and reads the text back from `chunks` — the old self-content
+-- table kept a second copy of the whole corpus (~240 MB here). `prefix='2 3'
+-- pre-builds the prefix indexes our `"term"*` queries hit on every keystroke;
+-- without it FTS5 scans the whole vocabulary for each one.
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
+    USING fts5(text, prefix='2 3', tokenize="unicode61 remove_diacritics 2",
+               content='chunks', content_rowid='id');
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_cjk
     USING fts5(text, tokenize="unicode61 remove_diacritics 2");
 CREATE TABLE IF NOT EXISTS images (
     id         INTEGER PRIMARY KEY,
@@ -208,7 +217,7 @@ def _regexp(pattern: str, value: str | None) -> bool:
         return False
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 
 def _meta(conn: sqlite3.Connection, key: str) -> str | None:
@@ -271,6 +280,11 @@ def _migrate_connection(conn: sqlite3.Connection) -> None:
     eight thousand rows take well under a second, a hundred thousand a few
     seconds, once, on the first open after the upgrade.
     """
+    version = 0
+    try:
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    except sqlite3.Error:
+        pass
     _add_columns(conn, "images", IMAGE_COLUMNS)
     if _add_columns(conn, "files", FILE_COLUMNS):
         rows = conn.execute("SELECT id, path FROM files").fetchall()
@@ -278,7 +292,99 @@ def _migrate_connection(conn: sqlite3.Connection) -> None:
             "UPDATE files SET name = ?, char_mask = ? WHERE id = ?",
             [(basename(row["path"]), char_mask(basename(row["path"])), row["id"]) for row in rows],
         )
+    _ensure_trigram(conn)
+    _backfill_aux_fts(conn)
+    if version < 6:
+        _rebuild_fts_external(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _fts_is_external(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = ?", (table,)
+    ).fetchone()
+    return bool(row) and "content=" in (row["sql"] or "")
+
+
+def _rebuild_fts_external(conn: sqlite3.Connection) -> None:
+    """Schema v6: FTS tables move to external content + prefix indexes.
+
+    The self-content tables carried a second copy of the whole corpus in the
+    database file (chunk text in `chunks`, the same text again in every FTS
+    table — ~480 MB here). Rebuilding means: drop, recreate with the new
+    definition, refill from `chunks` — one pass, no file re-extraction. The
+    CJK table keeps its own content: its text is the bigram transform, which
+    the external-content reader (that re-reads `chunks.text` verbatim) could
+    not reconstruct, and DELETE would silently unindex the wrong words.
+    """
+    from .cjk import cjk_bigrams
+
+    if not _fts_is_external(conn, "chunks_fts"):
+        conn.execute("DROP TABLE IF EXISTS chunks_fts")
+        conn.execute(
+            "CREATE VIRTUAL TABLE chunks_fts USING fts5(text, prefix='2 3', "
+            'tokenize="unicode61 remove_diacritics 2", '
+            "content='chunks', content_rowid='id')"
+        )
+        conn.execute("INSERT INTO chunks_fts(rowid, text) SELECT id, text FROM chunks")
+    if not _fts_is_external(conn, "chunks_tri"):
+        try:
+            conn.execute("DROP TABLE IF EXISTS chunks_tri")
+            conn.execute(
+                'CREATE VIRTUAL TABLE chunks_tri USING fts5(text, tokenize="trigram", '
+                "content='chunks', content_rowid='id')"
+            )
+            conn.execute("INSERT INTO chunks_tri(rowid, text) SELECT id, text FROM chunks")
+        except sqlite3.Error:
+            pass  # pre-3.34 SQLite: the tier is off, as before
+
+
+def _ensure_trigram(conn: sqlite3.Connection) -> None:
+    """The trigram tier needs SQLite 3.34+; without it the typo channel is
+    simply absent and search carries on with the other four. External content:
+    a self-content trigram table would store the whole corpus a second time."""
+    try:
+        conn.execute(
+            'CREATE VIRTUAL TABLE IF NOT EXISTS chunks_tri USING fts5(text, tokenize="trigram", '
+            "content='chunks', content_rowid='id')"
+        )
+        conn.execute("INSERT INTO meta(key, value) VALUES('trigram','1') "
+                     "ON CONFLICT(key) DO UPDATE SET value='1'")
+    except sqlite3.Error:
+        conn.execute("INSERT INTO meta(key, value) VALUES('trigram','0') "
+                     "ON CONFLICT(key) DO UPDATE SET value='0'")
+
+
+def _backfill_aux_fts(conn: sqlite3.Connection) -> None:
+    """Populate chunks_cjk / chunks_tri from the chunk text, once.
+
+    The CJK bigram table and the trigram tier index text that is already in
+    `chunks`, so an upgrade rebuilds them without re-extracting a single file.
+    The meta flag is the guard: FTS5 tables have no unique constraint, and a
+    half-run backfill retried from the top would double-count every row.
+    """
+    done = conn.execute("SELECT value FROM meta WHERE key='aux_fts_backfill'").fetchone()
+    if done is not None:
+        return
+    from .cjk import cjk_bigrams, has_cjk
+
+    cjk_rows: list[tuple[int, str]] = []
+    tri_rows: list[tuple[int, str]] = []
+    for row in conn.execute("SELECT id, text FROM chunks"):
+        chunk_id, text = int(row["id"]), row["text"]
+        transformed = cjk_bigrams(text)
+        if has_cjk(text):
+            cjk_rows.append((chunk_id, transformed))
+        tri_rows.append((chunk_id, text))
+    if cjk_rows:
+        conn.executemany("INSERT INTO chunks_cjk(rowid, text) VALUES(?,?)", cjk_rows)
+    trigram = conn.execute("SELECT value FROM meta WHERE key='trigram'").fetchone()
+    if trigram is not None and trigram["value"] == "1" and tri_rows:
+        conn.executemany("INSERT INTO chunks_tri(rowid, text) VALUES(?,?)", tri_rows)
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('aux_fts_backfill','1') "
+        "ON CONFLICT(key) DO UPDATE SET value='1'"
+    )
 
 
 class Store:
@@ -307,11 +413,19 @@ class Store:
         self._vec_matrix: np.ndarray | None = None
         self._vec_key: tuple[int, int] | None = None
         self._file_key: tuple[int, int] | None = None
-        self._pack = None
-        self._pack_key: tuple[int, int] | None = None
-        self._pack_lock = threading.Lock()
+        self._checkout = None  # the pack this Store currently holds from PACKS
         self.dim = dim
+        self._trigram = False  # set by _migrate/_ensure_trigram below
+        vecstore.PACKS.ref(self.path)
         self._vec_backend = "blob"
+        # Read-heavy tuning, measured against the forums' standard set: mmap
+        # lets SQLite read pages without a read() syscall (the FTS index and
+        # vector blobs are exactly such cold reads), and a real page cache
+        # keeps the hot vocabulary resident. busy_timeout softens the watcher
+        # racing a manual index run for the write lock.
+        self.conn.execute("PRAGMA mmap_size=1073741824")   # 1 GB address space
+        self.conn.execute("PRAGMA cache_size=-32000")      # 32 MB page cache
+        self.conn.execute("PRAGMA busy_timeout=5000")
         if not readonly:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -327,6 +441,7 @@ class Store:
                 # It costs one short writable connection, once, after an upgrade.
                 self._migrate_externally()
             self._vec_backend = self._setup_vectors(dim, writable=False)
+        self._trigram = self._read_trigram_flag()
         self.conn.commit()
 
     def _setup_vectors(self, dim: int, writable: bool) -> str:
@@ -344,6 +459,18 @@ class Store:
         return "pack"
 
     # ---------------------------------------------------------------- schema
+
+    def _read_trigram_flag(self) -> bool:
+        try:
+            row = self.conn.execute("SELECT value FROM meta WHERE key='trigram'").fetchone()
+        except sqlite3.Error:
+            return False
+        return bool(row and row["value"] == "1")
+
+    @property
+    def has_trigram(self) -> bool:
+        """The trigram typo tier exists (SQLite 3.34+ created its table)."""
+        return self._trigram
 
     def _schema_version(self) -> int:
         try:
@@ -426,6 +553,14 @@ class Store:
             )
             chunk_id = int(cursor.lastrowid)
             self.conn.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?,?)", (chunk_id, text))
+            # The CJK bigram table only sees runs that have something to
+            # bigram: a chunk without CJK characters would just duplicate the
+            # main index at full size for nothing.
+            transformed = cjk_bigrams(text)
+            if has_cjk(text):
+                self.conn.execute("INSERT INTO chunks_cjk(rowid, text) VALUES(?,?)", (chunk_id, transformed))
+            if self._trigram:
+                self.conn.execute("INSERT INTO chunks_tri(rowid, text) VALUES(?,?)", (chunk_id, text))
             if vectors is not None and len(vectors) > order:
                 pending.append((chunk_id, vectors[order].astype(np.float32)))
         if pending:
@@ -448,6 +583,9 @@ class Store:
         if not old_ids:
             return
         self.conn.executemany("DELETE FROM chunks_fts WHERE rowid = ?", [(i,) for i in old_ids])
+        self.conn.executemany("DELETE FROM chunks_cjk WHERE rowid = ?", [(i,) for i in old_ids])
+        if self._trigram:
+            self.conn.executemany("DELETE FROM chunks_tri WHERE rowid = ?", [(i,) for i in old_ids])
         if self._vec_backend == "sqlite-vec":
             vecstore.delete_chunks(self.conn, old_ids)
         self.conn.execute(
@@ -603,6 +741,35 @@ class Store:
             return []
         return [(int(row["id"]), float(row["score"])) for row in rows]
 
+    def bm25_cjk(self, match_query: str, limit: int) -> list[tuple[int, float]]:
+        """The CJK bigram table: same query shape, its own index. Empty for
+        every query that never contained CJK characters."""
+        try:
+            rows = self.conn.execute(
+                "SELECT rowid AS id, bm25(chunks_cjk) AS score FROM chunks_cjk "
+                "WHERE chunks_cjk MATCH ? ORDER BY score LIMIT ?",
+                (match_query, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [(int(row["id"]), float(row["score"])) for row in rows]
+
+    def bm25_tri(self, match_query: str, limit: int) -> list[tuple[int, float]]:
+        """The trigram typo tier. Wildly permissive by design — the OR over
+        3-grams is what lets a mis-typed word still reach its target — so the
+        caller keeps the pool small and the fusion weight low."""
+        if not self._trigram:
+            return []
+        try:
+            rows = self.conn.execute(
+                "SELECT rowid AS id, bm25(chunks_tri) AS score FROM chunks_tri "
+                "WHERE chunks_tri MATCH ? ORDER BY score LIMIT ?",
+                (match_query, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [(int(row["id"]), float(row["score"])) for row in rows]
+
     def vector_index(self) -> tuple[np.ndarray, np.ndarray]:
         if self.cache is not None:
             return self.cache.get(self)
@@ -647,46 +814,54 @@ class Store:
         return _top_k(*self.vector_index(), query_vector, limit)
 
     def pack(self):
-        """The memory-mapped matrix, rebuilt when the `vectors` table moved on.
+        """The memory-mapped matrix, shared process-wide and kept open.
 
-        Opening a pack is a stat header read plus an mmap: no copy, so the first
-        query after a restart costs the same as the second. A rebuild happens
-        only when the (rows, max id) key disagrees, which after an index run is
-        once — not once per process.
+        Freshness is decided by file stamps in the pack cache; the (rows, max
+        id) key is only counted when a stamp actually moved. Before the cache
+        every query paid a `SELECT COUNT(*)` over the vectors table plus an
+        mmap teardown in `close()` — profiled at ~70 ms of a 110 ms query. The
+        returned pack is checked out: `close()` releases it, and until then the
+        cache will not unmap it under us.
+
+        The previous checkout is released before the acquire: if this very pack
+        has to be rebuilt right now, a mapping we still hold would block the
+        file rewrite on Windows and the rebuild would silently serve the stale
+        file.
         """
-        key = vecstore.pack_key(self.conn)
-        if not key[0]:
-            return None
-        with self._pack_lock:
-            if self._pack is not None and self._pack_key == key:
-                return self._pack
-            pack = vecstore.Pack.open(vecstore.pack_path(self.path), self.dim)
-            if pack is None or (pack.count, int(pack.ids[pack.count - 1])) != key:
-                # Windows cannot replace a file that is still mapped, so both the
-                # cached pack and the one just opened have to go before the new
-                # one is written.
-                if pack is not None:
-                    pack.close()
-                self._close_pack()
-                pack = vecstore.build_pack(self.conn, self.path, self.dim)
-            else:
-                self._close_pack()
-            self._pack, self._pack_key = pack, key
-            return pack
+        if self._checkout is not None:
+            vecstore.PACKS.release(self.path, self._checkout)
+            self._checkout = None
+        pack = vecstore.PACKS.acquire(self.path, self.dim, self.conn)
+        self._checkout = pack
+        return pack
+
+    def release_pack(self) -> None:
+        """Give the pack checkout back early.
+
+        A resident reader keeps its checkout only while it is actively
+        searching; holding it forever would turn the pack into an unclosable
+        zombie at rebuild time and block the file replacement on Windows.
+        """
+        if self._checkout is not None:
+            vecstore.PACKS.release(self.path, self._checkout)
+            self._checkout = None
 
     def _close_pack(self) -> None:
-        if self._pack is not None:
-            self._pack.close()
-            self._pack = None
+        # The pack is shared by every Store on this database, so nothing is
+        # unmapped here; dropping the cache entry just forces the next `pack()`
+        # to revalidate against the table.
+        vecstore.PACKS.drop(self.path)
+        if self._checkout is not None:
+            vecstore.PACKS.release(self.path, self._checkout)
+            self._checkout = None
 
     def rebuild_pack(self):
         """Force a rebuild. Called at the end of an index run so the first
-        search does not pay for it."""
-        with self._pack_lock:
-            self._close_pack()
-            self._pack = vecstore.build_pack(self.conn, self.path, self.dim)
-            self._pack_key = vecstore.pack_key(self.conn)
-            return self._pack
+        search does not pay for it. The Store's own checkout comes through the
+        standard `acquire` path — `release` must never see a pack that no
+        `acquire` balanced."""
+        vecstore.PACKS.build(self.path, self.conn, self.dim)
+        return self.pack()
 
     def image_index(self, dim: int | None = None) -> tuple[np.ndarray, np.ndarray]:
         sql = "SELECT owner_id AS id, vec FROM vectors WHERE owner_type='image'"
@@ -987,12 +1162,14 @@ class Store:
             self._invalidate_vectors()
 
     def close(self) -> None:
-        try:
-            if self._pack is not None:
-                self._pack.close()
-                self._pack = None
-        finally:
-            self.conn.close()
+        # The pack, if one was checked out, goes back to the process-wide cache
+        # (and closes only when this Store was its last user): unmapping it
+        # here re-created it on the next request, ~55 ms on Windows per query.
+        if self._checkout is not None:
+            vecstore.PACKS.release(self.path, self._checkout)
+            self._checkout = None
+        vecstore.PACKS.unref(self.path)
+        self.conn.close()
 
     def __enter__(self) -> "Store":
         return self

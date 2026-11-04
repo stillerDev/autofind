@@ -5,12 +5,20 @@ why it answers in ~1.3 ms over 100k files. We used to run one `SELECT` with a
 bitwise AND and then build 8 000 Python row objects per query: 35 ms at 8k
 files, and it gets worse linearly.
 
-This is the same idea in numpy. Names, paths, kinds and the character bloom are
-loaded once into flat arrays; the bloom prefilter runs vectorised over the whole
-corpus in well under a millisecond; only the survivors reach the Python scorer.
-At 100k files the index costs ~13 MB, which is the same order as kensaku's
-12 MB and two orders below the vector matrix it replaces as the main memory
-consumer.
+This is the same idea in numpy, taken one step further: the whole fzf-style
+subsequence scorer is vectorised. Names, paths and kinds live in flat arrays
+(two joined UTF-8 blobs for names and paths, a uint8 code for kinds), the
+character bloom prunes the corpus in one AND, and the survivors are matched
+greedily — left to right, earliest occurrence first, exactly the strategy the
+Python scorer used — with one `searchsorted` per query byte over a precomputed
+position table. The scores that fall out of those match positions are the same
+numbers `_score` produces, so results are identical, but no Python loop sees
+more than the top hits. The worst case stopped being a worst case: a query
+that matches nothing over 100k names costs the same couple of milliseconds as
+one that fills the page.
+
+Non-ASCII queries keep the Python scorer (byte-level greedy is only
+equivalent to character-level greedy for ASCII needles), capped as before.
 
 The index is rebuilt when the database file (or its WAL) changes, so a running
 UI server picks up an index run without a restart.
@@ -22,16 +30,16 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 
 from .store import char_mask
 
-# Beyond this many survivors the Python scorer, not the prefilter, sets the
-# latency. The cap keeps the subsequence tier **bounded** rather than linear in
-# corpus size: 20k names is ~9 ms whether the index holds 100k files or 1M. The
-# survivors are the newest ones, which is the tie-break the ranking wants anyway.
+# Beyond this many survivors the Python scorer (non-ASCII fallback) sets the
+# latency. The survivors are the newest ones, which is the tie-break the
+# ranking wants anyway. The vectorised path never caps: its cost is a
+# searchsorted per query byte over the survivors, linear and small.
 HARD_CAP = 20_000
 
 # Guards against a pathological index (a whole drive at depth 20). Above this we
@@ -40,6 +48,11 @@ MAX_ENTRIES = 1_500_000
 
 # Bytes that make the character after them read as a word start.
 BOUNDARY_BYTES = np.frombuffer(b" ._-(", dtype=np.uint8)
+
+# Byte values the match-position table covers: lowercase ASCII letters and
+# digits. A query byte outside it (punctuation, non-ASCII) sends the whole
+# query to the Python scorer.
+ALPHABET = np.frombuffer(b"abcdefghijklmnopqrstuvwxyz0123456789", dtype=np.uint8)
 
 
 def subsequence_score(query: str, name: str) -> float | None:
@@ -88,49 +101,185 @@ def _score(needle: str, hay: str) -> float | None:
 
 
 class NameIndex:
-    """Parallel arrays over every file: ids, blooms, names and metadata."""
+    """Parallel arrays over every file: ids, blooms, blobs and metadata.
+
+    Strings are not kept as Python objects. Three joined UTF-8 blobs (lowered
+    names, original-case names, full paths — plus a lowered copy of the paths
+    for scope queries) with int64 offset tables replace the string lists the
+    index used to hold; decoding happens per answer, not per entry. Kinds are
+    a uint8 code over a tiny vocabulary. The `names` / `lowered` / `paths` /
+    `kinds` attributes are lazy decoded views kept so older call sites keep
+    working — touching one materialises it for the lifetime of the index, so
+    hot loops use the `name(i)` / `lower(i)` / `path(i)` / `kind(i)` accessors.
+
+    For the vectorised scorer the index also carries, per alphabet byte, the
+    sorted positions of that byte in the lowered-name blob. That table is what
+    turns a subsequence match into one `searchsorted` per query byte.
+    """
 
     __slots__ = (
-        "ids", "masks", "names", "lowered", "paths", "kinds",
-        "sizes", "mtimes", "build_seconds", "blob", "blob_array", "offsets", "name_len",
+        "ids", "masks", "sizes", "mtimes", "build_seconds",
+        "blob", "blob_array", "offsets", "name_len", "name_chars",
+        "name_blob", "name_blob_array", "name_offsets",
+        "path_blob", "path_blob_array", "path_offsets",
+        "path_lower_blob", "path_lower_array", "path_lower_offsets",
+        "kind_codes", "kind_vocab",
+        "alpha_starts", "alpha_positions",
+        "_names_view", "_lowered_view", "_paths_view", "_kinds_view",
     )
 
     def __init__(
         self,
         ids: np.ndarray,
         masks: np.ndarray,
-        names: list[str],
-        lowered: list[str],
-        paths: list[str],
-        kinds: list[str],
+        names: Sequence[str],
+        lowered: Sequence[str],
+        paths: Sequence[str],
+        kinds: Sequence[str],
         sizes: np.ndarray,
         mtimes: np.ndarray,
         build_seconds: float = 0.0,
     ) -> None:
         self.ids = ids
         self.masks = masks
-        self.names = names
-        self.lowered = lowered
-        self.paths = paths
-        self.kinds = kinds
         self.sizes = sizes
         self.mtimes = mtimes
         self.build_seconds = build_seconds
-        # One byte buffer with NUL separators, so a literal-substring query is
-        # a single C-level scan over contiguous memory instead of 100k `in`
-        # tests in Python. Byte offsets let numpy index the buffer directly,
-        # which is what keeps the scoring vectorised as well.
-        encoded = [name.encode("utf-8", "surrogatepass") for name in lowered]
-        self.blob = b"\x00".join(encoded)
+        self._names_view = None
+        self._lowered_view = None
+        self._paths_view = None
+        self._kinds_view = None
+
+        count = len(ids)
+
+        def joined_offsets(lengths: list[int]) -> np.ndarray:
+            """Offsets into a NUL-joined blob: offsets[i] is where item i
+            starts (every item is followed by one separator), so a slice to
+            offsets[i+1] ends on the separator and the accessors strip it.
+            This keeps `_literal`'s original offset math untouched."""
+            starts = np.zeros(count + 1, dtype=np.int64)
+            if count:
+                np.cumsum(
+                    np.array([length + 1 for length in lengths], dtype=np.int64),
+                    out=starts[1:],
+                )
+            return starts
+
+        # Lowered names: one byte buffer with NUL separators, so a literal-
+        # substring query is a single C-level scan over contiguous memory
+        # instead of 100k `in` tests in Python.
+        encoded_lower = [name.encode("utf-8", "surrogatepass") for name in lowered]
+        self.blob = b"\x00".join(encoded_lower)
         self.blob_array = np.frombuffer(self.blob, dtype=np.uint8)
-        self.name_len = np.array([len(item) for item in encoded], dtype=np.int32)
-        starts = np.zeros(len(encoded) + 1, dtype=np.int64)
-        if encoded:
-            np.cumsum(self.name_len + 1, out=starts[1:])
-        self.offsets = starts
+        self.name_len = np.array([len(item) for item in encoded_lower], dtype=np.int32)
+        # Char count for the skip penalty: the Python scorer measured len() in
+        # characters, which differs from bytes once Cyrillic shows up.
+        self.name_chars = np.array([len(item) for item in lowered], dtype=np.int32)
+        self.offsets = joined_offsets([len(item) for item in encoded_lower])
+
+        # Original-case names, own blob (lower() can change byte lengths, so
+        # the lowered offsets are not reusable).
+        encoded_names = [name.encode("utf-8", "surrogatepass") for name in names]
+        self.name_blob = b"\x00".join(encoded_names)
+        self.name_blob_array = np.frombuffer(self.name_blob, dtype=np.uint8)
+        self.name_offsets = joined_offsets([len(item) for item in encoded_names])
+
+        # Full paths, same treatment, plus a lowered copy for scope queries
+        # (`in:`): the vectorised prefix check must see exactly what the old
+        # per-path `path.lower().startswith()` loop saw. Paths are the largest
+        # string in the index — the reason the flat layout matters at 500k+.
+        encoded_paths = [path.encode("utf-8", "surrogatepass") for path in paths]
+        self.path_blob = b"\x00".join(encoded_paths)
+        self.path_blob_array = np.frombuffer(self.path_blob, dtype=np.uint8)
+        self.path_offsets = joined_offsets([len(item) for item in encoded_paths])
+
+        encoded_paths_lower = [
+            path.lower().encode("utf-8", "surrogatepass") for path in paths
+        ]
+        self.path_lower_blob = b"\x00".join(encoded_paths_lower)
+        self.path_lower_array = np.frombuffer(self.path_lower_blob, dtype=np.uint8)
+        self.path_lower_offsets = joined_offsets(
+            [len(item) for item in encoded_paths_lower]
+        )
+
+        # Kinds repeat to a handful of values: a uint8 code over a tiny
+        # vocabulary costs 100k bytes where a string list cost pointers.
+        self.kind_vocab: list[str] = []
+        self.kind_codes = np.zeros(count, dtype=np.uint8)
+        seen: dict[str, int] = {}
+        for position, kind in enumerate(kinds):
+            code = seen.get(kind)
+            if code is None:
+                code = len(self.kind_vocab)
+                seen[kind] = code
+                self.kind_vocab.append(kind)
+            self.kind_codes[position] = code
+
+        # Sorted positions of every alphabet byte inside the lowered-name
+        # blob — the backbone of the vectorised subsequence match. One
+        # C-level scan per byte value at build, ~4 ms at 100k names; the
+        # table is roughly the size of the blob itself, int32.
+        chunks: list[np.ndarray] = []
+        alpha_starts = np.zeros(len(ALPHABET) + 1, dtype=np.int64)
+        for column, byte in enumerate(ALPHABET):
+            hits = np.flatnonzero(self.blob_array == byte)
+            chunks.append(hits.astype(np.int32, copy=False))
+            alpha_starts[column + 1] = alpha_starts[column] + len(hits)
+        self.alpha_starts = alpha_starts
+        self.alpha_positions = (
+            np.concatenate(chunks).astype(np.int32, copy=False)
+            if chunks else np.empty(0, dtype=np.int32)
+        )
 
     def __len__(self) -> int:
         return int(self.ids.shape[0])
+
+    # -------------------------------------------------------------- accessors
+
+    def name(self, position: int) -> str:
+        return self.name_blob[
+            self.name_offsets[position]:self.name_offsets[position + 1]
+        ].rstrip(b"\x00").decode("utf-8", "surrogatepass")
+
+    def lower(self, position: int) -> str:
+        return self.blob[
+            self.offsets[position]:self.offsets[position + 1]
+        ].rstrip(b"\x00").decode("utf-8", "surrogatepass")
+
+    def path(self, position: int) -> str:
+        return self.path_blob[
+            self.path_offsets[position]:self.path_offsets[position + 1]
+        ].rstrip(b"\x00").decode("utf-8", "surrogatepass")
+
+    def kind(self, position: int) -> str:
+        return self.kind_vocab[self.kind_codes[position]]
+
+    # Lazy decoded views: compatibility for call sites that iterate a column.
+    @property
+    def names(self) -> list[str]:
+        if self._names_view is None:
+            self._names_view = [self.name(i) for i in range(len(self))]
+        return self._names_view
+
+    @property
+    def lowered(self) -> list[str]:
+        if self._lowered_view is None:
+            self._lowered_view = [self.lower(i) for i in range(len(self))]
+        return self._lowered_view
+
+    @property
+    def paths(self) -> list[str]:
+        if self._paths_view is None:
+            self._paths_view = [self.path(i) for i in range(len(self))]
+        return self._paths_view
+
+    @property
+    def kinds(self) -> list[str]:
+        if self._kinds_view is None:
+            self._kinds_view = [
+                self.kind_vocab[code] for code in self.kind_codes.tolist()
+            ]
+        return self._kinds_view
 
     @classmethod
     def from_rows(cls, rows: Sequence, build_seconds: float = 0.0) -> "NameIndex":
@@ -167,7 +316,8 @@ class NameIndex:
            C-level regex scan over the joined blob, which is what makes the
            common case (typing a word you can see) cheap at any corpus size.
         2. **subsequence** — `rdme` for README.md. Only runs when the literal
-           tier cannot fill the page, and only over bloom survivors.
+           tier cannot fill the page, and only over bloom survivors, scored
+           vectorised for ASCII queries.
         """
         needle = text.strip().lower()
         if not needle or not len(self):
@@ -210,7 +360,10 @@ class NameIndex:
         # up in the same buffer instead of slicing strings one at a time.
         previous = self.blob_array[np.maximum(starts - 1, 0)]
         score += np.where(np.isin(previous, BOUNDARY_BYTES) & (starts > 0), 20.0, 0.0)
-        score += 30.0 * (len(encoded) / np.maximum(self.name_len[positions], 1))
+        # The Python scorer measured both the query and the name in
+        # characters, not bytes — the two differ the moment Cyrillic shows
+        # up, and the tiers must agree with it.
+        score += 30.0 * (len(needle) / np.maximum(self.name_chars[positions], 1))
 
         keep = max(limit * 4, 40)
         if len(score) > keep:
@@ -228,13 +381,32 @@ class NameIndex:
         candidates = self._candidates(needle)
         if not len(candidates):
             return []
-        skip = skip or set()
-        scored: list[tuple[int, float]] = []
+        if skip:
+            keep = np.fromiter(
+                (position not in skip for position in candidates.tolist()),
+                dtype=bool,
+                count=len(candidates),
+            )
+            candidates = candidates[keep]
+            if not len(candidates):
+                return []
+
+        if needle.isascii():
+            positions, scores = self._vectorised_scores(needle, candidates)
+            if not len(positions):
+                return []
+            order = np.argsort(-scores, kind="stable")[:limit]
+            return [
+                (int(self.ids[positions[i]]), float(scores[i])) for i in order
+            ]
+
+        # Byte-level greedy is only equivalent to character-level greedy for
+        # ASCII needles, so anything else goes back to the Python scorer, over
+        # the capped candidate set.
         lowered = self.lowered
         ids = self.ids
+        scored: list[tuple[int, float]] = []
         for position in candidates.tolist():
-            if position in skip:
-                continue
             score = _score(needle, lowered[position])
             if score is not None:
                 scored.append((int(ids[position]), score))
@@ -249,21 +421,140 @@ class NameIndex:
             # One vectorised AND over the whole corpus. This is the line that
             # replaced a full table scan with a Python row object per file.
             positions = np.nonzero((self.masks & mask) == mask)[0]
-        if len(positions) > HARD_CAP:
+        if len(positions) > HARD_CAP and not needle.isascii():
             # Keep the newest: an old build artifact is a worse answer than the
-            # file you downloaded yesterday, and this only runs on 1-char queries.
+            # file you downloaded yesterday. Only the Python fallback needs the
+            # cap — the vectorised path stays exact and uncapped.
             keep = np.argpartition(-self.mtimes[positions], HARD_CAP)[:HARD_CAP]
             positions = positions[keep]
         return positions
+
+    def _vectorised_scores(
+        self, needle: str, candidates: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Greedy subsequence match + fzf score, all in numpy, all exact.
+
+        The Python scorer walks the name once, taking the earliest occurrence
+        of each successive query character — and taking the earliest occurrence
+        is the optimal strategy for subsequence existence, so the greedy walk
+        both decides the match and yields the very positions the score is
+        computed from. The same walk vectorises over candidates: for query
+        byte b, the next match of every candidate is one `searchsorted` into
+        the sorted table of b's positions in the blob, and a found position
+        belongs to the candidate whenever it is still inside the candidate's
+        byte range. Run bonuses, word-start bonuses and the skip penalty read
+        off those positions; the numbers are identical to `_score`'s.
+        """
+        encoded = needle.encode("ascii", "surrogatepass")
+        starts = self.offsets[candidates].astype(np.int32)
+        ends = starts + self.name_len[candidates]
+        cursor = starts.copy()
+        alive = np.ones(len(candidates), dtype=bool)
+
+        match_positions = np.empty((len(encoded), len(candidates)), dtype=np.int32)
+        for step, byte in enumerate(encoded):
+            column = int(np.nonzero(ALPHABET == byte)[0][0])
+            table = self.alpha_positions[
+                self.alpha_starts[column]:self.alpha_starts[column + 1]
+            ]
+            if not len(table):
+                alive[:] = False
+                break
+            index = np.searchsorted(table, cursor, side="left")
+            over = index >= len(table)
+            found = table[np.minimum(index, len(table) - 1)]
+            ok = alive & ~over & (found < ends)
+            match_positions[step] = np.where(ok, found, -1)
+            cursor = np.where(ok, found + 1, cursor).astype(np.int32)
+            alive = ok
+            if not alive.any():
+                break
+
+        survivors = alive.nonzero()[0]
+        if not len(survivors):
+            return candidates[:0], np.empty(0, dtype=np.float64)
+
+        picked = match_positions[:, survivors]
+        if len(encoded) == 1:
+            # A one-byte query never reaches the literal tier (`_literal`
+            # starts at two bytes), but the Python scorer still gave its
+            # literal branch to every name containing the character — and for
+            # one byte, "contains" and "subsequence" are the same set. So the
+            # literal formula is the score here, skip penalty included-not.
+            position = picked[0]
+            offset_in_name = position - starts[survivors]
+            score = np.full(len(survivors), 120.0)
+            score += np.where(offset_in_name == 0, 40.0, 0.0)
+            previous = self.blob_array[np.maximum(position.astype(np.int64) - 1, 0)]
+            score += np.where(
+                (offset_in_name != 0) & np.isin(previous, BOUNDARY_BYTES), 20.0, 0.0
+            )
+            score += 30.0 / np.maximum(
+                self.name_chars[candidates[survivors]], 1
+            ).astype(np.float64)
+            return candidates[survivors], score
+
+        score = np.zeros(len(survivors), dtype=np.float64)
+        run = np.ones(len(survivors), dtype=np.int64)
+        for step in range(len(encoded)):
+            position = picked[step]
+            score += 6.0 + 2.0 * run
+            at_start = position == starts[survivors]
+            previous = self.blob_array[np.maximum(position.astype(np.int64) - 1, 0)]
+            score += np.where(at_start | np.isin(previous, BOUNDARY_BYTES), 8.0, 0.0)
+            if step + 1 < len(encoded):
+                run = np.where(picked[step + 1] == position + 1, run + 1, 1)
+        # Every skipped character is a small penalty, so "app" prefers App.tsx.
+        score -= 0.4 * (self.name_chars[candidates[survivors]] - len(encoded))
+        score = np.maximum(score, 1.0)
+        return candidates[survivors], score
+
+    # ------------------------------------------------------------ path scopes
+
+    def scope_positions(self, prefixes: Sequence[str]) -> np.ndarray:
+        """Positions whose path is `prefix` itself or inside it.
+
+        The vectorised replacement for the per-path `startswith` loop that
+        `_scope_ids` used to run: one byte comparison per prefix byte over the
+        lowered path blob, plus a directory-boundary check, all in C.
+        """
+        count = len(self)
+        if not prefixes or not count:
+            return np.empty(0, dtype=np.int64)
+        mask = np.zeros(count, dtype=bool)
+        separators = np.frombuffer(b"/\\", dtype=np.uint8)
+        lengths = self.path_lower_offsets[1:] - self.path_lower_offsets[:-1] - 1
+        for prefix in prefixes:
+            encoded = prefix.encode("utf-8", "surrogatepass")
+            if not encoded:
+                mask[:] = True
+                continue
+            length = len(encoded)
+            ok = lengths >= length
+            for offset, byte in enumerate(encoded):
+                ok &= (
+                    self.path_lower_array[self.path_lower_offsets[:-1] + offset]
+                    == byte
+                )
+            if not ok.any():
+                continue
+            has_next = lengths > length
+            next_byte = np.zeros(count, dtype=np.uint8)
+            if has_next.any():
+                index = self.path_lower_offsets[:-1] + length
+                next_byte[has_next] = self.path_lower_array[index[has_next]]
+            ok &= (lengths == length) | np.isin(next_byte, separators)
+            mask |= ok
+        return np.nonzero(mask)[0]
 
     # ------------------------------------------------------------- accessors
 
     def row(self, position: int) -> dict:
         return {
             "id": int(self.ids[position]),
-            "path": self.paths[position],
-            "name": self.names[position],
-            "kind": self.kinds[position],
+            "path": self.path(position),
+            "name": self.name(position),
+            "kind": self.kind(position),
             "size": int(self.sizes[position]),
             "mtime": float(self.mtimes[position]),
         }
@@ -271,25 +562,35 @@ class NameIndex:
     def prefix(self, text: str, limit: int = 20) -> list[tuple[int, float]]:
         """Names that start with `text`, newest first.
 
-        Kept separate from `search` because the UI completion popup wants a
-        different ordering from the ranked results.
+        Vectorised over the lowered blob: one byte comparison per query byte,
+        no Python loop over names. Kept separate from `search` because the UI
+        completion popup wants a different ordering from the ranked results.
         """
         needle = text.strip().lower()
         if not needle:
             return []
-        out: list[tuple[int, float]] = []
-        for position, name in enumerate(self.lowered):
-            if name.startswith(needle):
-                out.append((int(self.ids[position]), float(self.mtimes[position])))
-        out.sort(key=lambda item: -item[1])
-        return out[:limit]
+        try:
+            encoded = needle.encode("utf-8", "surrogatepass")
+        except UnicodeEncodeError:
+            return []
+        ok = self.name_len >= len(encoded)
+        for offset, byte in enumerate(encoded):
+            ok &= self.blob_array[self.offsets[:-1] + offset] == byte
+            if not ok.any():
+                return []
+        positions = np.nonzero(ok)[0]
+        order = positions[np.argsort(-self.mtimes[positions], kind="stable")][:limit]
+        return [(int(self.ids[i]), float(self.mtimes[i])) for i in order]
 
     def stats(self) -> dict[str, int | float]:
-        name_bytes = sum(len(name) for name in self.names) + sum(len(path) for path in self.paths)
         return {
             "entries": len(self),
-            "name_bytes": name_bytes,
-            "array_bytes": int(self.ids.nbytes + self.masks.nbytes + self.sizes.nbytes + self.mtimes.nbytes),
+            "name_bytes": int(len(self.name_blob) + len(self.path_blob)),
+            "array_bytes": int(
+                self.ids.nbytes + self.masks.nbytes + self.sizes.nbytes
+                + self.mtimes.nbytes + len(self.blob) + len(self.path_lower_blob)
+                + self.alpha_positions.nbytes
+            ),
             "build_ms": round(self.build_seconds * 1000.0, 1),
         }
 

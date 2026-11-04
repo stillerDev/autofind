@@ -100,9 +100,9 @@ class NoFlashTests(unittest.TestCase):
         key = re.search(r'const WALL_KEY = "([^"]+)"', APP.read_text(encoding="utf-8")).group(1)
         self.assertIn(f'localStorage.getItem("{key}")', self.head())
 
-    def test_it_sets_all_three_variables(self):
+    def test_it_sets_all_the_variables(self):
         head = self.head()
-        for variable in ("--wall", "--hue", "--sat"):
+        for variable in ("--wall", "--hue", "--sat", "--wall-pos", "--wall-scale"):
             self.assertIn(f'"{variable}"', head)
 
     def test_a_blocked_storage_does_not_break_the_page(self):
@@ -118,12 +118,18 @@ class PaletteTests(unittest.TestCase):
             self.assertIsNotNone(line, f"{name} is not declared")
             self.assertIn("hsl(var(--hue)", line.group(1), f"{name} ignores the hue")
 
-    def test_the_body_paints_the_wall_over_a_solid_fallback(self):
+    def test_the_wall_lives_on_its_own_layer_over_a_solid_fallback(self):
         css = STYLE.read_text(encoding="utf-8")
-        rule = re.search(r"\nbody \{(.*?)\}", css, re.S).group(1)
+        # The photo is its own fixed layer so preset gradients and a chosen
+        # picture can share the position/zoom controls without the image being
+        # painted twice.
+        rule = re.search(r"\n#wall \{(.*?)\}", css, re.S).group(1)
         self.assertIn("var(--wall)", rule)
+        self.assertIn("--wall-pos", rule)
+        self.assertIn("--wall-scale", rule)
         # A colour first, so a failed image load is a dark window and not white.
-        self.assertRegex(rule, r"background:\s*#[0-9a-f]{3,6}\s+var\(--wall\)")
+        body = re.search(r"\nbody \{(.*?)\}", css, re.S).group(1)
+        self.assertRegex(body, r"background:\s*#[0-9a-f]{3,6}\s*;")
 
     def test_the_client_cap_does_not_exceed_the_server_cap(self):
         client = int(re.search(r"const WALL_MAX_MB = (\d+)", APP.read_text(encoding="utf-8")).group(1))
@@ -168,6 +174,61 @@ class PickerTests(unittest.TestCase):
         body = re.search(r"function hueOfImage\((.*?)\n\}", source, re.S).group(1)
         self.assertIn("Math.sin", body)
         self.assertIn("Math.atan2", body)
+
+
+class WallFitTests(unittest.TestCase):
+    """The custom photo is framed in its own editor modal: a drag sets the free
+    focus point (fx, fy) and a slider or the wheel sets the zoom. The controls
+    are meaningless for the preset gradients, so the button that opens the
+    editor is hidden unless the custom tile is the active one. These checks pin
+    the contract between the markup, the names `app.js` writes, and the
+    variables the stylesheet reads."""
+
+    def test_the_editor_is_in_the_markup(self):
+        page = PAGE.read_text(encoding="utf-8")
+        self.assertIn('id="wall-edit"', page)          # the button in settings
+        self.assertIn('id="wall-editor"', page)        # the modal
+        self.assertIn('id="wall-stage"', page)         # the drag surface
+        self.assertIn('id="wall-canvas"', page)        # the preview layer
+        self.assertIn('id="wall-zoom"', page)          # the slider
+        self.assertIn('id="wall-editor-reset"', page)  # reset
+
+    def test_the_editor_button_defaults_to_hidden(self):
+        page = PAGE.read_text(encoding="utf-8")
+        button = re.search(r'<button class="wall-edit"[^>]*>', page).group(0)
+        self.assertIn("hidden", button)
+
+    def test_the_app_writes_the_position_and_scale_variables(self):
+        source = APP.read_text(encoding="utf-8")
+        body = re.search(r"function applyTheme\(next\) \{(.*?)\n\}", source, re.S).group(1)
+        self.assertIn("setProperty(\"--wall-pos\"", body)
+        self.assertIn("setProperty(\"--wall-scale\"", body)
+
+    def test_framing_is_only_for_the_custom_picture(self):
+        source = APP.read_text(encoding="utf-8")
+        edit = re.search(r"function renderWallEdit\(\) \{(.*?)\n\}", source, re.S).group(1)
+        self.assertIn('edit.hidden = theme.id !== "custom"', edit)
+        self.assertIn("openWallEditor", source)
+        self.assertIn("closeWallEditor", source)
+
+    def test_a_new_picture_starts_centred_and_unscaled(self):
+        source = APP.read_text(encoding="utf-8")
+        # useWallFile builds the custom theme; it must seed fx/fy/scale so the
+        # editor has a defined state the first time it opens.
+        line = re.search(r"const next = \{ id: \"custom\".*?\}\;", source).group(0)
+        self.assertIn("fx: 0.5", line)
+        self.assertIn("fy: 0.5", line)
+        self.assertIn("scale: 1", line)
+
+    def test_zoom_is_clamped_to_a_sane_range(self):
+        source = APP.read_text(encoding="utf-8")
+        # The minimum is 1: anything below lets the layer shrink away from the
+        # screen edges and show the void behind it.
+        self.assertIn("WALL_ZOOM_MIN = 1", source)
+        self.assertIn("WALL_ZOOM_MAX = 2.5", source)
+        body = re.search(r"function clampScale\(value\) \{(.*?)\n\}", source, re.S).group(1)
+        self.assertIn("WALL_ZOOM_MIN", body)
+        self.assertIn("WALL_ZOOM_MAX", body)
 
 
 if __name__ == "__main__":

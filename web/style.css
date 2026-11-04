@@ -114,11 +114,27 @@ html, body {
   overflow-x: hidden;
 }
 
-/* One photo for the whole window, fixed, so the hero and the content below it
-   are the same image instead of two crops with a seam between them. `--wall` is
-   whichever one was chosen in Settings. */
 body {
-  background: #0a0b0d var(--wall) center top / cover no-repeat fixed;
+  background: #0a0b0d;
+}
+
+/* One photo for the whole window, on its own fixed layer so a preset gradient
+   and a chosen picture can share the same position/zoom controls without the
+   image being painted twice (once by <body> and once by the layer). `--wall-pos`
+   and `--wall-scale` are meaningless for the gradients but harmless, and they
+   let the custom picker move the same picture the way the user points without a
+   round trip to the server. */
+#wall {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-color: #0a0b0d;
+  background-image: var(--wall);
+  background-repeat: no-repeat;
+  background-position: var(--wall-pos, center);
+  background-size: cover;
+  transform: scale(var(--wall-scale, 1));
+  transform-origin: var(--wall-pos, center);
 }
 
 /* A single veil over the photo for the whole page. Without it the bright fog
@@ -1691,6 +1707,68 @@ body.in-app .side-foot .only-app { display: inline-flex; }
 
 .wall-pick.on { color: var(--text); border-style: solid; }
 
+/* Position and zoom live in the wall editor modal now; the button below only
+   opens it, and is hidden until a chosen picture (not a gradient) is active.
+   Author `display` would otherwise fight the `hidden` attribute on the button,
+   hence the explicit rule. */
+.wall-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  padding: 5px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.wall-edit[hidden] { display: none; }
+.wall-edit:hover { color: var(--text); border-color: var(--faint); }
+.wall-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.wall-editor-card { width: min(600px, 100%); }
+
+.wall-stage {
+  position: relative;
+  height: 300px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.wall-stage:active { cursor: grabbing; }
+
+/* Painted by the same variables as the real #wall layer: a preview that cannot
+   drift from the thing it previews. */
+.wall-canvas {
+  position: absolute;
+  inset: 0;
+  background-color: #0a0b0d;
+  background-image: var(--wall);
+  background-repeat: no-repeat;
+  background-position: var(--wall-pos, center);
+  background-size: cover;
+  transform: scale(var(--wall-scale, 1));
+  transform-origin: var(--wall-pos, center);
+}
+
+.wall-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.wall-editor-foot input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+  cursor: ew-resize;
+}
+
 /* The dictionary: rows of `word → meaning`, plus a two-field form. The arrow is
    the same glyph the chip row uses, so the settings row and the search chip
    read as the same fact stated twice. */
@@ -1785,4 +1863,51 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   .field input[type="date"] { width: 100%; min-width: 0; }
   .meta-line { flex-basis: 100%; margin-left: 0; }
   main { padding: 14px 16px 40px; }
+}
+
+
+/* Right-click menu on results: our own card, not the browser's default. */
+.ctx-menu {
+  position: fixed;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.ctx-menu button {
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-menu button:hover { background: rgba(255, 255, 255, 0.07); }
+
+/* Spelling suggestion: an action, so it looks like one. */
+.hint-link {
+  padding: 1px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+.hint-link:hover { background: var(--accent-soft); }
+
+/* Facet counts on the kind tabs. */
+.menu .chip { position: relative; }
+.menu .chip .count {
+  margin-left: 5px;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
 }
