@@ -1,9 +1,9 @@
+**English** | [Русский](README.ru.md)
+
 # SemFind / AutoFind
 
 Local search over your files and screenshots. One SQLite file, no account, no
 network calls at runtime.
-
-![AutoFind UI](docs/ui-hero.png)
 
 The window is branded **AutoFind** — the folder the project lives in. The Python
 package, the CLI and the index directory are still `semfind`; renaming those
@@ -225,8 +225,6 @@ would stay searchable forever.
 
 ## The app
 
-![The AutoFind window](docs/shot-app.png)
-
 `core/app.py`. pywebview hosts the same HTML in a WebView2 window — the system's
 own Chromium, so nothing is bundled and the CSS renders exactly as it does in a
 browser. The server runs in the same process on loopback: one process, one
@@ -263,8 +261,6 @@ icon is reproducible instead of a binary nobody can regenerate.
 
 ## The interface
 
-![The index panel as a drawer](docs/ui-panel.png)
-
 Two things about the layout are decisions rather than taste.
 
 **The index is a drawer, not a column.** It used to be a permanent 320 px column
@@ -296,8 +292,6 @@ does not exist.
 Russian needs three plural forms and English two; the rule lives next to the
 strings. `3 snapshots` and `3 снимка` come from the same call.
 
-![The same idle screen after switching to Russian](docs/ui-ru.png)
-
 The date filter is the same story in a smaller box. A native `<input type="date">`
 draws its ghost text and opens its picker in the *OS* locale and cannot be told
 otherwise from script: an English interface on a Russian Windows still said
@@ -305,10 +299,6 @@ otherwise from script: an English interface on a Russian Windows still said
 grey, Monday-first, with today as a ring and the chosen day as a filled cell,
 and its month and weekday names come out of the same dictionary as everything
 else.
-
-![The date filter, drawn by the app rather than by the OS](docs/ui-calendar.png)
-
-![Settings: the walls, the language switch, and the build's own numbers](docs/ui-appearance.png)
 
 The gear opens the same dialog in both languages: the wall picker at the top,
 the segmented switch, and an About list that reports what this install actually
@@ -330,8 +320,6 @@ Both are CSS only — `background-position` and a `transform: scale()` on the wa
 layer — so the change is instant and survives reload. The hue is still read from
 the whole image, not the cropped slice.
 
-![The same window with a chosen picture, cropped to the top and zoomed in](docs/ui-appearance-crop.png)
-
 That means a picture you supply has to answer one question: what colour is it?
 An RGB average cannot answer it — the mean of a sunset is grey, because the
 orange and the blue cancel out. The measurement is a **circular mean of hues**,
@@ -342,8 +330,6 @@ sum += saturation * sin(hue);   // hues are angles, so they add as vectors
 cos += saturation * cos(hue);
 hue = atan2(sum, cos);
 ```
-
-![The same window on the dusk wall: the panels are purple because the background is](docs/ui-dusk.png)
 
 Two smaller decisions come out of the same idea.
 
@@ -373,8 +359,6 @@ them behind is the reason a better search engine loses to a worse one.
 
 So they are part of the product, not an afterthought:
 
-![Pinned files and saved searches on the empty screen](docs/ui-personal.png)
-
 **Pins.** One star on any result, and the file sits on the empty screen from
 then on. A pin is a bonus in the ranking, not a filter: it lifts a file by 0.12
 — more than recency (0.10), less than a name match (0.15) — so pinning a
@@ -392,8 +376,6 @@ bound. What fired is shown as a chip above the results, next to the ones the
 intent compiler produced, and removing the chip re-runs the query without it.
 The words live in Settings, above About, with an `×` per row:
 
-![The dictionary in Settings](docs/ui-dictionary.png)
-
 **Definitions.** `sym:parse_query` answers with the definition rather than the
 file: exact name first, then prefix, then substring, and the row says `function
 parse_query · line 214` with the source line under it. Nine language families
@@ -401,8 +383,6 @@ are recognised by pattern — Python, JS/TS, Rust, Go, Java/Kotlin, Ruby, PHP,
 shell, SQL — because a dependency-free extractor that is right about 95% of
 definitions beats a tree-sitter build that costs 40 MB and a compile step on
 Windows. Comments are skipped, so `# def not_real():` is not a hit.
-
-![A definition, found by name rather than by file](docs/ui-symbols.png)
 
 All three live in the same SQLite file as the index, in `pins`, `saved` and
 `aliases`. That means they travel with a backup, any SQLite client can read
@@ -640,8 +620,6 @@ lukewarm file cache. The median of several runs is the number to quote.
 
 ## The boot screen
 
-![The boot screen greeting in Japanese](docs/shot-boot.png)
-
 Because the window paints ~190 ms after the index is already warm, the splash is
 not covering a slow load — it exists so the first thing on screen is not an
 empty grid. It shows one greeting, changing every 700 ms, drawn from the
@@ -653,7 +631,6 @@ It is bounded at both ends — minimum 900 ms so it never flashes, maximum 8 s o
 polling so it can never hang — and Escape or a click dismisses it. A deep link
 (`?q=` or `?preview=`) skips it: a link to a file is not a request for a
 greeting.
-
 
 ## Embedders
 
@@ -724,7 +701,11 @@ SQLite file. An app-level blocklist, a pause switch and SQLCipher are open items
 python -m unittest discover -s tests -t .
 ```
 
-260 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
+CI (`.github/workflows/tests.yml`) runs the same suite on Windows for Python
+3.11–3.13, plus a Linux smoke job that compiles the package and imports the core
+modules.
+
+312 tests: chunking, kind detection, DOCX/PDF/PPTX/XLSX/EPUB/ODT/RTF extraction,
 image preprocessing, visual features, thumbnails, real OCR including Japanese
 (skipped when no engine), the language table and the boot screen's greeting
 pool, `/api/ready`, FTS query sanitising, the full index→search cycle, kind filters,
