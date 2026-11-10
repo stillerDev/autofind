@@ -28,7 +28,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 
-from .config import IndexConfig
+from . import autostart, migrate
+from .config import (
+    IndexConfig,
+    mark_onboarding_done,
+    onboarding_done,
+    reset_onboarding,
+    save_privacy_prefs,
+)
 from .connect import token as mcp_token
 from .embed import get_embedder, get_visual_embedder
 from .indexer import IndexStats, run_index
@@ -175,8 +182,43 @@ def _mcp_token_ok(header: str | None) -> bool:
     return secrets.compare_digest(value.strip(), expected)
 
 
+def _trash_path(path: Path) -> None:
+    """Move a file to the recycle bin on Windows; unlink it elsewhere.
+
+    A screenshot you delete by mistake is still recoverable where the OS has a
+    recycle bin, which is the whole point of putting a bin icon on the button.
+    """
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class _SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wintypes.HWND),
+                ("wFunc", wintypes.UINT),
+                ("pFrom", wintypes.LPCWSTR),
+                ("pTo", wintypes.LPCWSTR),
+                ("fFlags", ctypes.c_uint16),
+                ("fAnyOperationsAborted", wintypes.BOOL),
+                ("hNameMappings", ctypes.c_void_p),
+                ("lpszProgressTitle", wintypes.LPCWSTR),
+            ]
+
+        op = _SHFILEOPSTRUCTW()
+        op.wFunc = 3  # FO_DELETE
+        op.pFrom = str(path) + "\0\0"
+        op.fFlags = 0x40 | 0x10 | 0x4 | 0x400  # ALLOWUNDO, no prompts
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        if result != 0:
+            raise OSError(f"cannot move to the recycle bin: {result}")
+        if op.fAnyOperationsAborted:
+            raise OSError("recycle bin operation was aborted")
+        return
+    path.unlink()
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "SemFind/0.1"
+    server_version = "AutoFind/0.1"
     config: IndexConfig
     db_path: Path
     # Set by the desktop app so a second launch can raise the existing window
@@ -260,6 +302,10 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif route == "/api/ocr":
             self._json(engine_report(self.config.ocr_languages))
+        elif route == "/api/onboarding":
+            self._onboarding()
+        elif route == "/api/import/kensaku":
+            self._kensaku_scan()
         elif route == "/api/thumb":
             self._thumb(query)
         elif route == "/api/preview":
@@ -286,8 +332,23 @@ class Handler(BaseHTTPRequestHandler):
             self._symbols(query)
         elif route in ("/api/open", "/api/reveal"):
             self._open_file(query, reveal=route.endswith("reveal"))
+        elif route == "/api/duplicates":
+            self._duplicates()
         else:
             self._error("unknown route", 404)
+
+    def _duplicates(self) -> None:
+        """Exact copies from the index: same name, size and bytes.
+
+        The perceptual hash is not used here; sharing a phash means two screens
+        look alike, not that they are copies. The report is meant for files a
+        person can safely delete.
+        """
+        store = self._store()
+        try:
+            self._json({"groups": store.duplicate_images()})
+        finally:
+            store.close()
 
     def _search(self, query: dict) -> None:
         text = (query.get("q") or [""])[0].strip()
@@ -299,6 +360,7 @@ class Handler(BaseHTTPRequestHandler):
         kind_key = (query.get("kind") or [""])[0]
         folder = (query.get("folder") or [""])[0] or None
         since = (query.get("since") or [""])[0]
+        docdate = (query.get("docdate") or ["0"])[0] == "1"
         sort = (query.get("sort") or [""])[0] or None
 
         parsed = understand(text)
@@ -334,6 +396,7 @@ class Handler(BaseHTTPRequestHandler):
             page = search_page(
                 store, embedder, expanded, limit=limit, offset=offset, sort=sort,
                 parsed=parsed, usage=store.usage_map(), applied=applied,
+                doc_dates=docdate,
             )
             # Visual text search only makes sense when the query still has free
             # text; a pure filter query would send nonsense to the image model.
@@ -423,6 +486,94 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
+    # ------------------------------------------------------------- onboarding
+
+    def _onboarding(self) -> None:
+        """State for the first-run screen: what it may offer, and whether to show it."""
+        self._json(
+            {
+                "first_run": not onboarding_done(self.config.home),
+                "autostart": autostart.status(),
+                "roots": _default_roots(),
+                "indexed": self.db_path.exists(),
+            }
+        )
+
+    def _kensaku_scan(self) -> None:
+        """Report what a kensaku config would give us, without writing anything."""
+        try:
+            sources = migrate.find_sources()
+        except Exception as exc:  # a broken foreign config must not break setup
+            self._error(f"{type(exc).__name__}: {exc}", 500)
+            return
+        pins = {path for source in sources for path in source.pins}
+        saved = [item for source in sources for item in source.saved]
+        aliases = {key: value for source in sources for key, value in source.aliases.items()}
+        self._json(
+            {
+                "found": bool(sources),
+                "sources": [source.as_dict() for source in sources],
+                "pins": len(pins),
+                "saved": len(saved),
+                "aliases": len(aliases),
+            }
+        )
+
+    def _kensaku_import(self) -> None:
+        """Copy pins, saved searches and dictionary words from a kensaku install."""
+        if JOB.running:
+            self._error("indexing is running; try again when it finishes", 409)
+            return
+        try:
+            sources = migrate.find_sources()
+        except Exception as exc:
+            self._error(f"{type(exc).__name__}: {exc}", 500)
+            return
+        if not sources:
+            self._json({"found": False, "pins": 0, "saved": 0, "aliases": 0, "missing": []})
+            return
+        embedder = get_embedder("auto", self.config.model_dir)
+        store = Store(
+            self.db_path, embedder.name, embedder.dim,
+            readonly=False, vector_backend=self.config.vector_backend,
+        )
+        try:
+            report = migrate.apply(store, sources, write=True)
+        finally:
+            store.close()
+        missing = report.get("missing") or []
+        self._json({
+            "found": True,
+            **report,
+            "missing_count": len(missing),
+            # A six-thousand-file config must not send a six-thousand-line list
+            # into the setup screen; the count is the useful part.
+            "missing": missing[:20],
+        })
+
+    def _onboarding_done(self) -> None:
+        mark_onboarding_done(self.config.home)
+        self._json({"done": True})
+
+    def _onboarding_reset(self) -> None:
+        reset_onboarding(self.config.home)
+        self._json({"done": False})
+
+    def _autostart(self, payload: dict) -> None:
+        enabled = bool(payload.get("enabled"))
+        if not autostart.supported():
+            self._error("autostart is not supported on this system", 400)
+            return
+        try:
+            if enabled:
+                autostart.enable()
+            else:
+                autostart.disable()
+        except Exception as exc:
+            self._error(f"{type(exc).__name__}: {exc}", 500)
+            return
+        self._json(autostart.status())
+
     # ------------------------------------------------------------- background
 
     def _background_file(self) -> Path | None:
@@ -437,7 +588,7 @@ class Handler(BaseHTTPRequestHandler):
 
         It lives next to the index rather than in the browser's storage: a 4 MB
         photo in `localStorage` is a quota error waiting to happen, and the file
-        then travels with a backup of `~/.semfind` instead of dying with a cache
+        then travels with a backup of `~/.autofind` instead of dying with a cache
         clear.
         """
         path = self._background_file()
@@ -720,17 +871,44 @@ class Handler(BaseHTTPRequestHandler):
     def _privacy(self) -> None:
         store = self._store()
         try:
-            found = indexed_sensitive(store, limit=50)
+            found = indexed_sensitive(
+                store, limit=50, categories=self.config.privacy_categories
+            )
         finally:
             store.close()
+        active = self.config.privacy_categories
+        catalog = describe_privacy()["categories"]
         self._json(
             {
                 "enabled": self.config.privacy,
                 "patterns": len(describe_privacy()["sensitive_dirs"]),
                 "count": len(found),
                 "files": found,
+                "categories": [
+                    {"id": item["id"], "enabled": item["id"] in active}
+                    for item in catalog
+                ],
             }
         )
+
+    def _set_privacy(self, payload: dict) -> None:
+        """Save the master switch and the selected groups of the guard.
+
+        The change applies to the next scan; files already in the index are
+        listed (and removable) through the same response, because silently
+        keeping a password store searchable after "turn it on" would be the
+        worst possible reading of this setting.
+        """
+        if isinstance(payload.get("enabled"), bool):
+            self.config.privacy = payload["enabled"]
+        if isinstance(payload.get("categories"), list):
+            known = {item["id"] for item in describe_privacy()["categories"]}
+            self.config.privacy_categories = frozenset(
+                name for name in (str(item) for item in payload["categories"])
+                if name in known
+            )
+        save_privacy_prefs(self.config)
+        self._privacy()
 
     def _preview(self, query: dict) -> None:
         """Quick Look: the first chunks of a file, plus image geometry.
@@ -859,6 +1037,10 @@ class Handler(BaseHTTPRequestHandler):
             self._reindex()
         elif parsed.path == "/api/watch":
             self._watch(payload)
+        elif parsed.path == "/api/delete":
+            self._delete_files(payload)
+        elif parsed.path == "/api/privacy":
+            self._set_privacy(payload)
         elif parsed.path == "/api/privacy/purge":
             self._purge()
         elif parsed.path == "/api/pin":
@@ -873,6 +1055,14 @@ class Handler(BaseHTTPRequestHandler):
             self._drop_alias(payload)
         elif parsed.path == "/api/background":
             self._set_background(payload)
+        elif parsed.path == "/api/onboarding/done":
+            self._onboarding_done()
+        elif parsed.path == "/api/onboarding/reset":
+            self._onboarding_reset()
+        elif parsed.path == "/api/autostart":
+            self._autostart(payload)
+        elif parsed.path == "/api/import/kensaku":
+            self._kensaku_import()
         elif parsed.path == "/api/focus":
             # A second launch asks the running app to come forward instead of
             # starting a rival instance with its own port and its own index.
@@ -889,7 +1079,7 @@ class Handler(BaseHTTPRequestHandler):
     def _mcp(self, payload) -> None:
         """Streamable-HTTP transport for the MCP server.
 
-        The same JSON-RPC handler as `semfind mcp`, served on the port the app
+        The same JSON-RPC handler as `autofind mcp`, served on the port the app
         already listens on. A bearer token is required because binding to
         127.0.0.1 is not a security boundary on a machine with a browser: any
         page can POST to localhost, and the index is the user's whole disk.
@@ -970,11 +1160,52 @@ class Handler(BaseHTTPRequestHandler):
             snapshot = WATCHER.state.as_dict()
         self._json(snapshot)
 
+    def _delete_files(self, payload: dict) -> None:
+        """Permanently delete checked files and drop them from the index.
+
+        The UI sends index ids, never paths: a page cannot ask the app to delete
+        something the user never scanned. A file already gone from disk is still
+        removed from the index, so the duplicate report converges on reality.
+        """
+        raw = payload.get("ids") or []
+        try:
+            ids = sorted({int(item) for item in raw})
+        except (TypeError, ValueError):
+            self._error("ids must be integers")
+            return
+        if not ids:
+            self._error("ids required")
+            return
+
+        deleted = 0
+        missing = 0
+        failed = []
+        store = self._store(readonly=False)
+        try:
+            for file_id in ids:
+                row = store.file_by_id(file_id)
+                if row is None:
+                    missing += 1
+                    continue
+                path = Path(row["path"])
+                try:
+                    if path.exists():
+                        _trash_path(path)
+                except OSError as exc:
+                    failed.append({"id": file_id, "error": str(exc)})
+                    continue
+                store.drop_file(file_id)
+                deleted += 1
+            store.commit()
+        finally:
+            store.close()
+        self._json({"deleted": deleted, "missing": missing, "failed": failed})
+
     def _purge(self) -> None:
         embedder = get_embedder("auto", self.config.model_dir)
         store = Store(self.db_path, embedder.name, embedder.dim, vector_backend=self.config.vector_backend)
         try:
-            result = purge_indexed(store)
+            result = purge_indexed(store, categories=self.config.privacy_categories)
         finally:
             store.close()
         self._json(result)
@@ -1052,7 +1283,7 @@ def start_server(
 def prewarm(db_path: Path, config: IndexConfig) -> None:
     """Touch the index in the background so the first search is not the slow one."""
     threading.Thread(
-        target=_prewarm, args=(db_path, config), name="semfind-prewarm", daemon=True
+        target=_prewarm, args=(db_path, config), name="autofind-prewarm", daemon=True
     ).start()
 
 
@@ -1067,7 +1298,7 @@ def serve(
     # flush: when stdout is a log file or a pipe, block buffering would hide
     # the address until the process exits — which is exactly when nobody needs
     # to know it any more.
-    print(f"SemFind UI  ->  {url}", flush=True)
+    print(f"AutoFind UI  ->  {url}", flush=True)
     print(f"index       ->  {db_path}", flush=True)
     print(
         f"mcp (http)  ->  {url}mcp  "

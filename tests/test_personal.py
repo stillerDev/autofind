@@ -407,7 +407,7 @@ class PathNormalisationTests(unittest.TestCase):
 
 
 class ImportTests(PersonalBase):
-    """`semfind import kensaku` — the reason nobody has to retype anything."""
+    """`autofind import kensaku` — the reason nobody has to retype anything."""
 
     def write_config(self, payload: dict) -> Path:
         path = Path(self.tmp.name) / "kensaku" / "config.json"

@@ -18,7 +18,10 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
+
+from .config import mark_onboarding_done, onboarding_done
 
 APP_TITLE = "AutoFind"
 # The UI has three columns; below ~1280 the right one starts clipping its own
@@ -26,6 +29,15 @@ APP_TITLE = "AutoFind"
 # screen with the taskbar showing.
 DEFAULT_SIZE = (1360, 860)
 MIN_SIZE = (1000, 640)
+# First run opens as a small, centred card rather than a full work area: the
+# welcome screen is a conversation, and a conversation in a maximised window
+# feels like a dialog box that swallowed the desktop. 820x820 is the smallest
+# square that still holds the split setup screen without scrolling the greeting.
+FIRST_RUN_SIZE = (820, 820)
+FIRST_RUN_MIN = (700, 600)
+# The split setup screen stops growing here: past ~1120 px the two columns turn
+# into empty margins, and the window is supposed to move aside, not take over.
+SPLIT_SIZE = (1120, 780)
 DEFAULT_HOTKEY = "ctrl+alt+space"
 GEOMETRY_FILE = "window.json"
 LOCK_FILE = "app.lock"
@@ -187,6 +199,101 @@ def fit_work_area(title: str) -> None:
         pass
 
 
+def find_window(title: str = APP_TITLE, tries: int = 20) -> int | None:
+    """The HWND behind pywebview's title, or None while it is still being built."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        for _ in range(tries):
+            hwnd = user32.FindWindowW(None, title)
+            if hwnd:
+                return int(hwnd)
+            time.sleep(0.1)
+    except Exception:
+        pass
+    return None
+
+
+def dpi_scale(hwnd: int | None) -> float:
+    """Physical pixels per logical pixel for this window.
+
+    pywebview creates windows in logical pixels and then multiplies by this
+    factor, while `SetWindowPos` and `SystemParametersInfo` speak physical
+    pixels. A 820x820 card on a 125% display is 1025x1025 physical, and a
+    window that forgets this opens visibly smaller than requested.
+    """
+    if sys.platform != "win32" or not hwnd:
+        return 1.0
+    try:
+        import ctypes
+
+        dpi = int(ctypes.windll.user32.GetDpiForWindow(hwnd))
+        return dpi / 96.0 if dpi > 0 else 1.0
+    except Exception:
+        return 1.0
+
+
+def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        rect = wintypes.RECT()
+        if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+        return (
+            int(rect.left),
+            int(rect.top),
+            int(rect.right) - int(rect.left),
+            int(rect.bottom) - int(rect.top),
+        )
+    except Exception:
+        return None
+
+
+def place_window(hwnd: int, rect: tuple[int, int, int, int]) -> None:
+    """Move and resize without stealing focus from the webview."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        SWP_NOZORDER = 0x0004
+        SWP_NOACTIVATE = 0x0010
+        x, y, width, height = rect
+        ctypes.windll.user32.SetWindowPos(
+            hwnd, 0, int(x), int(y), int(width), int(height),
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    except Exception:
+        pass
+
+
+def center_window(hwnd: int, width: int, height: int) -> None:
+    """Centre a logical size inside the work area, in physical pixels."""
+    area = work_area()
+    if area is None:
+        return
+    left, top, area_width, area_height = area
+    scale = dpi_scale(hwnd)
+    phys_width = min(int(width * scale), area_width)
+    phys_height = min(int(height * scale), area_height)
+    place_window(
+        hwnd,
+        (
+            left + (area_width - phys_width) // 2,
+            top + (area_height - phys_height) // 2,
+            phys_width,
+            phys_height,
+        ),
+    )
+
+
 def window_geometry(window) -> dict:
     """Read back size and position, ignoring anything the GUI refuses to say."""
     out: dict = {}
@@ -337,6 +444,20 @@ class _WindowApi:
         self._app.toggle()
         return True
 
+    # The first-run screen is two layouts in one window. The page knows when
+    # to switch; only the host can resize the actual window, so it asks here.
+    def onboarding_split(self) -> bool:
+        self._app.onboarding_split()
+        return True
+
+    def onboarding_finish(self) -> bool:
+        self._app.finish_onboarding()
+        return True
+
+    def onboarding_reopen(self) -> bool:
+        self._app.reopen_onboarding()
+        return True
+
 
 # ------------------------------------------------------------------ the app
 
@@ -357,7 +478,12 @@ class _App:
         self.listener = None
         self.quitting = False
         self.hidden = start_hidden
+        # A hidden first launch (login entry) is not a welcome screen: nobody is
+        # looking at it. The welcome is shown the first time a window is seen.
+        self.first_run = not onboarding_done(home) and not start_hidden
         self._geometry = load_geometry(home)
+        self._anim_token = 0
+        self._anim_lock = threading.Lock()
 
     # -- window ------------------------------------------------------------
 
@@ -370,12 +496,21 @@ class _App:
         x = geometry.get("x")
         y = geometry.get("y")
 
+        min_size = MIN_SIZE
+        if self.first_run and self.borderless:
+            # pywebview takes logical pixels; WinForms centres a window with no
+            # explicit x/y itself, and `_on_loaded` then pins the exact work-area
+            # centre in physical pixels once the DPI is known.
+            width, height = FIRST_RUN_SIZE
+            x = y = None
+            min_size = FIRST_RUN_MIN
+
         # Borderless is the default: this is a search box, not a document
         # window, and the Windows title bar is four buttons the app already
         # replaces with its own. It stops at the work area instead of covering
         # the screen, so the taskbar stays visible and clickable — the tray icon
         # this app lives in is down there. `--windowed` brings the frame back.
-        area = work_area() if self.borderless else None
+        area = work_area() if self.borderless and not self.first_run else None
         if area is not None:
             x, y, width, height = area
         else:
@@ -395,7 +530,7 @@ class _App:
             height=height,
             x=x if isinstance(x, int) else None,
             y=y if isinstance(y, int) else None,
-            min_size=MIN_SIZE,
+            min_size=min_size,
             maximized=bool(geometry.get("maximized")) and not self.start_hidden
             and not self.borderless,
             frameless=self.borderless,
@@ -415,10 +550,15 @@ class _App:
     def _on_loaded(self) -> None:
         def polish() -> None:
             if self.borderless:
-                fit_work_area(APP_TITLE)
+                if self.first_run:
+                    hwnd = find_window()
+                    if hwnd:
+                        center_window(hwnd, *FIRST_RUN_SIZE)
+                else:
+                    fit_work_area(APP_TITLE)
             polish_window(APP_TITLE, icon_path())
 
-        threading.Thread(target=polish, name="semfind-polish", daemon=True).start()
+        threading.Thread(target=polish, name="autofind-polish", daemon=True).start()
 
     def _on_closing(self) -> bool:
         # Closing the window means "get out of my way", not "stop searching":
@@ -484,6 +624,86 @@ class _App:
         except Exception:
             pass  # cosmetic; never worth breaking the hide over
 
+    # -- first-run layout --------------------------------------------------
+
+    def onboarding_split(self) -> None:
+        """Grow the welcome card into two columns without leaving the centre.
+
+        The card starts centred and the settings column unfolds beside the
+        greeting, so the window only grows around its own middle: the greeting
+        stays exactly where the eye left it. The move is done on the host
+        window, not with CSS: a page can animate its own contents but it
+        cannot resize the frame it lives in. One eased `SetWindowPos` per
+        frame at 60 Hz reads as the window opening up, whereas a single jump
+        is exactly the "it opened another window" feeling the setup screen is
+        trying to avoid.
+        """
+        if not self.first_run or not self.borderless:
+            return
+        area = work_area()
+        hwnd = find_window(tries=3)
+        if area is None or not hwnd:
+            return
+        left, top, area_width, area_height = area
+        scale = dpi_scale(hwnd)
+        width = min(int(SPLIT_SIZE[0] * scale), int(area_width * 0.82))
+        height = min(int(SPLIT_SIZE[1] * scale), int(area_height * 0.86))
+        x = left + max(0, (area_width - width) // 2)
+        y = top + max(0, (area_height - height) // 2)
+        self._animate_window((x, y, width, height), duration=0.55)
+
+    def finish_onboarding(self) -> None:
+        """Mark the setup complete and grow back into the search window."""
+        self.first_run = False
+        mark_onboarding_done(self.home)
+        if self.borderless:
+            area = work_area()
+            if area is not None:
+                self._animate_window(area, duration=0.6)
+
+    def reopen_onboarding(self) -> None:
+        """Shrink back to the welcome card; the page reloads into it next."""
+        self.first_run = True
+        if not self.borderless:
+            return
+        hwnd = find_window(tries=3)
+        if hwnd:
+            center_window(hwnd, *FIRST_RUN_SIZE)
+
+    def _animate_window(self, target: tuple[int, int, int, int], duration: float = 0.5) -> None:
+        if sys.platform != "win32":
+            return
+        hwnd = find_window(tries=3)
+        if not hwnd:
+            return
+        with self._anim_lock:
+            self._anim_token += 1
+            token = self._anim_token
+        threading.Thread(
+            target=self._run_animation,
+            args=(hwnd, target, duration, token),
+            name="autofind-window-anim",
+            daemon=True,
+        ).start()
+
+    def _run_animation(self, hwnd: int, target, duration: float, token: int) -> None:
+        start = window_rect(hwnd)
+        if start is None:
+            return
+        steps = max(12, int(duration * 60))
+        for step in range(1, steps + 1):
+            with self._anim_lock:
+                if token != self._anim_token:
+                    return  # a newer layout superseded this one
+            progress = step / steps
+            eased = 1 - (1 - progress) ** 3
+            rect = tuple(
+                int(round(begin + (end - begin) * eased))
+                for begin, end in zip(start, target)
+            )
+            place_window(hwnd, rect)  # type: ignore[arg-type]
+            time.sleep(duration / steps)
+
     def toggle(self) -> None:
         if self.hidden:
             self.show()
@@ -540,8 +760,8 @@ class _App:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выход", lambda *_: self.quit()),
         )
-        self.tray = pystray.Icon("semfind", image, APP_TITLE, menu)
-        threading.Thread(target=self._run_tray, name="semfind-tray", daemon=True).start()
+        self.tray = pystray.Icon("autofind", image, APP_TITLE, menu)
+        threading.Thread(target=self._run_tray, name="autofind-tray", daemon=True).start()
 
     def _run_tray(self) -> None:
         try:
@@ -599,7 +819,7 @@ def run_app(
     set_app_user_model_id()
     server, url = start_server(db_path, config, port=port)
     threading.Thread(
-        target=server.serve_forever, name="semfind-http", daemon=True
+        target=server.serve_forever, name="autofind-http", daemon=True
     ).start()
     prewarm(db_path, config)
     write_port(config.home, server.server_address[1])

@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const state = {
-  query: "", kind: "", folder: "", since: "", sort: "best",
+  query: "", kind: "", folder: "", since: "", sort: "best", docdate: false,
   timer: null, jobTimer: null,
   hits: [], total: 0, nextOffset: null, approx: false, selected: -1, chips: [],
   stats: null, status: null,
@@ -177,6 +177,7 @@ async function runSearch(options = {}) {
   if (state.kind) params.set("kind", state.kind);
   if (state.folder) params.set("folder", state.folder);
   if (state.since) params.set("since", state.since);
+  if (state.docdate) params.set("docdate", "1");
   if (state.sort && state.sort !== "best") params.set("sort", state.sort);
 
   try {
@@ -186,6 +187,7 @@ async function runSearch(options = {}) {
     state.nextOffset = data.next_offset ?? null;
     state.approx = Boolean(data.approx);
     state.chips = data.chips || [];
+    if (!append) rememberQuery(query);
     renderResults(data, append);
     const shown = state.hits.length;
     $("meta").textContent = shown
@@ -208,6 +210,10 @@ function clearChip(source) {
 }
 
 function renderIdle() {
+  // The kind tabs live outside #content, so replacing the page does not touch
+  // them: without this the last search's facet numbers stay glued to the tabs
+  // after the query is cleared.
+  paintFacets({});
   $("content").innerHTML = `
     <div class="empty">
       <div class="empty-body">
@@ -235,7 +241,7 @@ function renderIdle() {
    always grey).
 
    The choice lives in `localStorage`, the picture itself on the server: a 4 MB
-   photo does not belong in a 5 MB storage quota, and `~/.semfind` travels with
+   photo does not belong in a 5 MB storage quota, and `~/.autofind` travels with
    a backup while a cache clear would take the wallpaper with it. */
 const WALL_KEY = "autofind.wall";
 const WALL_MAX_MB = 12;
@@ -531,7 +537,7 @@ async function useWallFile(file) {
 /* Pins, saved searches and the dictionary are the three things a person brings
    with them from another search app, so they get the prime screen: the empty
    screen is where you decide whether an app is worth keeping. They live in the
-   same database as the index, which is what makes `semfind import kensaku` a
+   same database as the index, which is what makes `autofind import kensaku` a
    copy rather than a retyping.
 
    The list is fetched once and cached. Every mutation refetches it, because a
@@ -1013,9 +1019,7 @@ async function loadStats() {
       : t("status.empty");
     $("status-dot").style.background = stats.files ? "var(--teal)" : "var(--accent)";
 
-    $("p-enabled").textContent = privacy.enabled ? t("panel.on") : t("panel.off");
-    $("p-count").textContent = privacy.count ?? 0;
-    $("purge-btn").disabled = !privacy.count;
+    renderPrivacy(privacy);
     renderWatch(watch);
 
     const engines = status.ocr?.available || [];
@@ -1032,6 +1036,59 @@ async function loadStats() {
   } catch (error) {
     $("status-text").textContent = t("status.down");
     $("status-dot").style.background = "var(--red, #e24b4a)";
+  }
+}
+
+/* The privacy guard is a set of switches, not one bit: SSH keys and browser
+   sessions are different risks, and the panel lets each group be turned off
+   on its own. The list comes from the server so a new group needs no HTML. */
+const PRIVACY_KEY = "privacy.";
+
+function privacyLabel(id) {
+  return t(PRIVACY_KEY + id);
+}
+
+function renderPrivacy(privacy) {
+  const catalog = privacy.categories || [];
+  const host = $("privacy-filters-list");
+  const signature = catalog.map((item) => item.id).join(",");
+  if (host.dataset.signature !== signature) {
+    host.innerHTML = catalog.map((item, index) => `
+      <label class="privacy-filter" style="--i:${index}">
+        <input type="checkbox" data-privacy="${esc(item.id)}">
+        <span>${esc(privacyLabel(item.id))}</span>
+      </label>`).join("");
+    host.dataset.signature = signature;
+  }
+  for (const box of host.querySelectorAll("[data-privacy]")) {
+    const item = catalog.find((entry) => entry.id === box.dataset.privacy);
+    box.checked = Boolean(item && item.enabled);
+    box.disabled = !privacy.enabled;
+  }
+  $("privacy-enabled").checked = Boolean(privacy.enabled);
+  $("p-enabled").textContent = privacy.enabled ? t("panel.on") : t("panel.off");
+  $("p-count").textContent = privacy.count ?? 0;
+  $("purge-btn").disabled = !privacy.count;
+
+  const chosen = catalog.filter((item) => item.enabled).length;
+  $("privacy-summary").textContent = !privacy.enabled
+    ? t("panel.privacyOff")
+    : chosen === catalog.length
+      ? t("panel.privacyAll")
+      : t("panel.privacySome", { n: chosen, total: catalog.length });
+}
+
+async function savePrivacy(patch) {
+  try {
+    const privacy = await api("/api/privacy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    renderPrivacy(privacy);
+    toast(t("toast.privacySaved"));
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
   }
 }
 
@@ -1272,12 +1329,127 @@ document.querySelectorAll(".menu .chip").forEach((chip) => {
   });
 });
 
-$("q").addEventListener("input", scheduleSearch);
+/* ------------------------------------------------------------ suggestions */
+
+/* Recent queries live in localStorage, saved searches in the personal layer;
+   both are closer than retyping. The dropdown opens under the box while you
+   type, follows the typed text, and ↑↓ + Enter run a row without the mouse. */
+const RECENT_KEY = "af.recent-queries";
+const SUGGEST = { items: [], index: -1 };
+
+function recentQueries() {
+  try {
+    const list = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    return Array.isArray(list) ? list.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberQuery(query) {
+  const clean = String(query || "").trim();
+  if (!clean) return;
+  const list = recentQueries().filter((item) => item !== clean);
+  list.unshift(clean);
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8)));
+  } catch {
+    /* private mode loses the memory, nothing else breaks */
+  }
+}
+
+function suggestItems(text) {
+  const needle = text.trim().toLowerCase();
+  const saved = ((personal && personal.saved) || [])
+    .map((item) => ({ label: item.query, kind: "saved" }));
+  const recent = recentQueries().map((label) => ({ label, kind: "recent" }));
+  const seen = new Set();
+  const rows = [];
+  for (const item of [...saved, ...recent]) {
+    if (!item.label || seen.has(item.label)) continue;
+    if (needle && !item.label.toLowerCase().includes(needle)) continue;
+    seen.add(item.label);
+    rows.push(item);
+  }
+  return rows.slice(0, 8);
+}
+
+function paintSuggest() {
+  $("suggest").innerHTML = SUGGEST.items.map((item, index) => `
+    <button type="button" class="suggest-item${index === SUGGEST.index ? " active" : ""}"
+            data-suggest="${index}">
+      <span class="suggest-kind">${esc(t(item.kind === "saved" ? "suggest.saved" : "suggest.recent"))}</span>
+      <span class="suggest-label">${esc(item.label)}</span>
+    </button>`).join("");
+}
+
+function openSuggest() {
+  SUGGEST.items = suggestItems($("q").value);
+  SUGGEST.index = -1;
+  if (!SUGGEST.items.length) { closeSuggest(); return; }
+  paintSuggest();
+  $("suggest").hidden = false;
+}
+
+function closeSuggest() {
+  SUGGEST.items = [];
+  SUGGEST.index = -1;
+  $("suggest").hidden = true;
+}
+
+function moveSuggest(delta) {
+  if (!SUGGEST.items.length) return;
+  const next = SUGGEST.index + delta;
+  SUGGEST.index = next >= SUGGEST.items.length ? 0
+    : next < 0 ? SUGGEST.items.length - 1 : next;
+  paintSuggest();
+}
+
+function acceptSuggest() {
+  const item = SUGGEST.items[SUGGEST.index];
+  if (!item) return false;
+  $("q").value = item.label;
+  closeSuggest();
+  clearTimeout(state.timer);
+  runSearch();
+  return true;
+}
+
+$("q").addEventListener("input", () => {
+  scheduleSearch();
+  if (personal) openSuggest();
+  else loadPersonal().then(() => { if (!$("suggest").hidden || $("q").value) openSuggest(); });
+});
+
 $("q").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") { clearTimeout(state.timer); runSearch(); }
-  if (event.key === "Escape") { $("q").value = ""; runSearch(); }
-  if (event.key === "ArrowDown") { event.preventDefault(); moveSelection(1); }
-  if (event.key === "ArrowUp") { event.preventDefault(); moveSelection(-1); }
+  const suggestOpen = !$("suggest").hidden;
+  if (event.key === "Enter") {
+    clearTimeout(state.timer);
+    if (!(suggestOpen && SUGGEST.index >= 0 && acceptSuggest())) runSearch();
+    closeSuggest();
+  } else if (event.key === "Escape") {
+    if (suggestOpen) closeSuggest();
+    else { $("q").value = ""; runSearch(); }
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    if (!suggestOpen) openSuggest();
+    moveSuggest(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveSuggest(-1);
+  }
+});
+
+$("suggest").addEventListener("mousedown", (event) => {
+  event.preventDefault(); // keep the input focused; click runs the query
+  const button = event.target.closest("[data-suggest]");
+  if (!button) return;
+  SUGGEST.index = Number(button.dataset.suggest);
+  acceptSuggest();
+});
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".find")) closeSuggest();
 });
 $("sort").addEventListener("change", () => {
   state.sort = $("sort").value;
@@ -1294,6 +1466,12 @@ $("calendar").addEventListener("click", (event) => {
   if (action) {
     const name = action.dataset.cal;
     if (name === "clear") { setSince(""); return; }
+    if (name === "docdate") {
+      state.docdate = !state.docdate;
+      $("doc-date-toggle").classList.toggle("set", state.docdate);
+      if (state.query) runSearch();
+      return;
+    }
     if (name === "today") { setSince(isoDate(new Date())); return; }
     const step = name === "prev" ? -1 : 1;
     const next = new Date(CAL.year, CAL.month + step, 1);
@@ -1432,7 +1610,223 @@ $("wall-zoom").addEventListener("input", () => setWallZoom(Number($("wall-zoom")
 });
 $("index-btn").addEventListener("click", startJob);
 $("watch-btn").addEventListener("click", toggleWatch);
+
+/* Duplicate screenshots: the report opens in its own right-side drawer with
+   every copy listed by name and full path. Each row reuses the same reveal
+   handler the result cards have — click shows the file in Explorer. A checkbox
+   on every row marks a copy for deletion; the bin in the header deletes the
+   checked files after one confirmation. */
+function setDups(open) {
+  $("dups-drawer").classList.toggle("open", open);
+  $("dups-drawer").setAttribute("aria-hidden", String(!open));
+  $("scrim").classList.toggle("show", open);
+}
+
+function basename(path) {
+  return path.split("\\").pop().split("/").pop();
+}
+
+function renderDuplicates(groups) {
+  $("dups-body").innerHTML = groups.length
+    ? groups.map((group) => `
+        <div class="dup-group">
+          <b class="dup-count">${t("panel.copies", { n: group.items.length })}</b>
+          ${group.items.map((item) => `
+            <div class="dup-item">
+              <button type="button" class="dup-reveal" data-reveal="${item.file_id}"
+                      title="${esc(item.path)}">
+                <span class="dup-name">${esc(basename(item.path))}</span>
+                <span class="dup-full">${esc(item.path)}</span>
+              </button>
+              <input type="checkbox" class="dup-pick" value="${item.file_id}"
+                     aria-label="${esc(t("dups.select", { name: basename(item.path) }))}">
+            </div>`).join("")}
+        </div>`).join("")
+    : `<p class="panel-note">${esc(t("panel.noDuplicates"))}</p>`;
+}
+
+async function loadDuplicates() {
+  const data = await api("/api/duplicates");
+  renderDuplicates(data.groups || []);
+  setDups(true);
+}
+
+function selectedDupIds() {
+  return Array.from($("dups-body").querySelectorAll(".dup-pick:checked"))
+    .map((node) => Number(node.value));
+}
+
+/* Ctrl + drag paints selection over the rows. The first row decides the mode:
+   start on an unchecked row and the swiped rows become checked, start on a
+   checked one and they are cleared. A checkbox clicked on its own still behaves
+   like a normal checkbox. Near the top or bottom edge the report scrolls on its
+   own, so a selection can continue past the visible rows. */
+let dupPaint = null;
+let dupPaintSwallowClick = false;
+
+const DUP_SCROLL_EDGE = 46;
+const DUP_SCROLL_MAX = 20;
+
+function dupScroller() {
+  const body = $("dups-body");
+  const drawer = $("dups-drawer");
+  if (body.scrollHeight > body.clientHeight + 1) return body;
+  return drawer.scrollHeight > drawer.clientHeight + 1 ? drawer : body;
+}
+
+function dupPaintRowAt(x, y) {
+  const node = document.elementFromPoint(x, y);
+  const row = node && node.closest && node.closest(".dup-item");
+  if (!row || !$("dups-body").contains(row)) return;
+  const pick = row.querySelector(".dup-pick");
+  if (pick) pick.checked = dupPaint.value;
+}
+
+function dupAutoScroll() {
+  if (!dupPaint) return;
+  const scroller = dupScroller();
+  const rect = scroller.getBoundingClientRect();
+  let delta = 0;
+  if (dupPaint.y > rect.bottom - DUP_SCROLL_EDGE) {
+    const depth = dupPaint.y - (rect.bottom - DUP_SCROLL_EDGE);
+    delta = Math.min(DUP_SCROLL_MAX, Math.round(depth / 2) + 4);
+  } else if (dupPaint.y < rect.top + DUP_SCROLL_EDGE) {
+    const depth = (rect.top + DUP_SCROLL_EDGE) - dupPaint.y;
+    delta = -Math.min(DUP_SCROLL_MAX, Math.round(depth / 2) + 4);
+  }
+  if (delta) {
+    const before = scroller.scrollTop;
+    scroller.scrollTop += delta;
+    if (scroller.scrollTop !== before) {
+      const x = Math.min(Math.max(dupPaint.x, rect.left + 2), rect.right - 2);
+      const y = Math.min(Math.max(dupPaint.y, rect.top + 2), rect.bottom - 2);
+      dupPaintRowAt(x, y);
+    }
+  }
+  dupPaint.raf = requestAnimationFrame(dupAutoScroll);
+}
+
+$("dups-body").addEventListener("pointerdown", (event) => {
+  if (!event.ctrlKey || event.button !== 0) return;
+  if (event.target.closest(".dup-pick")) return;
+  const row = event.target.closest(".dup-item");
+  if (!row) return;
+  const pick = row.querySelector(".dup-pick");
+  if (!pick) return;
+  dupPaint = { value: !pick.checked, x: event.clientX, y: event.clientY, raf: 0 };
+  pick.checked = dupPaint.value;
+  dupPaintSwallowClick = true;
+  event.preventDefault();
+  dupPaint.raf = requestAnimationFrame(dupAutoScroll);
+});
+
+window.addEventListener("pointermove", (event) => {
+  if (!dupPaint) return;
+  dupPaint.x = event.clientX;
+  dupPaint.y = event.clientY;
+  dupPaintRowAt(event.clientX, event.clientY);
+});
+
+function stopDupPaint() {
+  if (dupPaint) cancelAnimationFrame(dupPaint.raf);
+  dupPaint = null;
+  if (dupPaintSwallowClick) {
+    setTimeout(() => { dupPaintSwallowClick = false; }, 0);
+  }
+}
+
+window.addEventListener("pointerup", stopDupPaint);
+window.addEventListener("pointercancel", stopDupPaint);
+
+/* The list is the only scroller in the drawer; the wheel works over the header
+   and the empty space too, not just over a row. */
+$("dups-drawer").addEventListener("wheel", (event) => {
+  const body = $("dups-body");
+  if (body.scrollHeight <= body.clientHeight + 1) return;
+  const step = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+  body.scrollTop += step;
+  event.preventDefault();
+}, { passive: false });
+
+$("dups-body").addEventListener("click", (event) => {
+  if (!dupPaintSwallowClick) return;
+  event.preventDefault();
+  event.stopPropagation();
+}, true);
+
+let pendingDelete = [];
+
+function setConfirm(open) {
+  pendingDelete = open ? selectedDupIds() : [];
+  $("confirm").classList.toggle("open", open);
+  $("confirm").setAttribute("aria-hidden", String(!open));
+}
+
+function closeConfirm() {
+  setConfirm(false);
+  $("confirm-yes").disabled = false;
+}
+
+$("dups-btn").addEventListener("click", async () => {
+  const button = $("dups-btn");
+  button.disabled = true;
+  try {
+    await loadDuplicates();
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("dups-delete").addEventListener("click", () => {
+  const ids = selectedDupIds();
+  if (!ids.length) { toast(t("dups.nothingSelected")); return; }
+  $("confirm-text").textContent = t("confirm.deleteText", { n: ids.length });
+  setConfirm(true);
+});
+
+$("confirm-no").addEventListener("click", closeConfirm);
+$("confirm").addEventListener("click", (event) => {
+  if (event.target.id === "confirm") closeConfirm();
+});
+
+$("confirm-yes").addEventListener("click", async () => {
+  const ids = pendingDelete.slice();
+  if (!ids.length) { closeConfirm(); return; }
+  const button = $("confirm-yes");
+  button.disabled = true;
+  try {
+    const result = await api("/api/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    closeConfirm();
+    toast(t("toast.deleted", { n: result.deleted }));
+    await loadDuplicates();
+  } catch (error) {
+    button.disabled = false;
+    toast(t("toast.failed", { error: error.message }));
+  }
+});
+
+$("dups-close").addEventListener("click", () => setDups(false));
 $("purge-btn").addEventListener("click", purgePrivate);
+$("privacy-toggle").addEventListener("click", () => {
+  const open = $("privacy-filters").classList.toggle("open");
+  $("privacy-filters").setAttribute("aria-hidden", String(!open));
+  $("privacy-toggle").classList.toggle("open", open);
+  $("privacy-toggle").setAttribute("aria-expanded", String(open));
+});
+$("privacy-enabled").addEventListener("change", () => {
+  savePrivacy({ enabled: $("privacy-enabled").checked });
+});
+$("privacy-filters-list").addEventListener("change", () => {
+  const categories = [...$("privacy-filters-list").querySelectorAll("[data-privacy]:checked")]
+    .map((box) => box.dataset.privacy);
+  savePrivacy({ categories });
+});
 $("modal-close").addEventListener("click", () => $("modal").classList.remove("open"));
 $("modal").addEventListener("click", (event) => { if (event.target.id === "modal") $("modal").classList.remove("open"); });
 $("preview-close").addEventListener("click", () => $("preview").classList.remove("open"));
@@ -1444,13 +1838,51 @@ $("panel-btn").addEventListener("click", () => {
   setPanel(!$("panel").classList.contains("open"));
 });
 $("panel-close").addEventListener("click", () => setPanel(false));
-$("scrim").addEventListener("click", () => setPanel(false));
+$("scrim").addEventListener("click", () => { setPanel(false); setDups(false); });
 
 $("settings-btn").addEventListener("click", () => setSettings(true));
 $("settings-close").addEventListener("click", () => setSettings(false));
 $("settings").addEventListener("click", (event) => {
   if (event.target.id === "settings") setSettings(false);
 });
+
+/* The welcome screen is the only place a new user learns that the index and
+   the language switch exist, so its controls have to work before the main app
+   has anything to show. */
+$("onboard-lang").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-lang]");
+  if (!button) return;
+  if (!setLang(button.dataset.lang)) { paintOnboarding(); return; }
+  paintLang();
+  paintOnboarding();
+  paintSince();
+  loadStats();
+  if (state.query) runSearch(); else renderIdle();
+});
+$("ob-autostart").addEventListener("change", toggleAutostart);
+$("ob-import").addEventListener("click", importKensaku);
+$("ob-import-scan").addEventListener("click", scanKensaku);
+$("ob-index").addEventListener("click", startOnboardingIndex);
+$("onboard-done").addEventListener("click", finishOnboarding);
+$("onboard-skip").addEventListener("click", finishOnboarding);
+$("replay-onboarding").addEventListener("click", replayOnboarding);
+
+/* The welcome card doubles as the title bar of its little frameless window:
+   grab it anywhere calm with the left button and drag. pywebview moves the
+   window for anything inside `.pywebview-drag-region`; the capture guard
+   keeps a press on a real control a click instead of a drag. */
+const onboardBox = $("onboard");
+onboardBox.classList.add("pywebview-drag-region");
+onboardBox.addEventListener(
+  "mousedown",
+  (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest("button, input, select, label, a, [role='switch'], [role='button']")) {
+      event.stopPropagation();
+    }
+  },
+  true,
+);
 
 /* Switching language redraws the screen from the same data: nothing is
    refetched except the strings, and the choice is remembered across launches. */
@@ -1481,12 +1913,14 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "Escape") {
+    if ($("confirm").classList.contains("open")) { closeConfirm(); return; }
     if (CAL.open) { openCalendar(false); return; }
     if (editor.open) { closeWallEditor(); return; }
     if ($("preview").classList.contains("open")) { $("preview").classList.remove("open"); return; }
     if ($("settings").classList.contains("open")) { setSettings(false); return; }
     if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }
     if ($("panel").classList.contains("open")) { setPanel(false); return; }
+    if ($("dups-drawer").classList.contains("open")) { setDups(false); return; }
   }
   if (inField && document.activeElement === $("q")) return;
 
@@ -1517,17 +1951,22 @@ function wireWindowControls() {
   document.addEventListener("pywebviewready", markApp);
   if (window.pywebview && window.pywebview.api) markApp();
 
-  const box = $("win-controls");
-  if (!box) return;
-  box.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-win]");
-    if (!button) return;
-    const api = window.pywebview && window.pywebview.api;
-    if (!api) return;
-    event.preventDefault();
-    if (button.dataset.win === "quit") api.quit();
-    else api.hide();
-  });
+  const wireDataWin = (box) => {
+    if (!box) return;
+    box.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-win]");
+      if (!button) return;
+      const api = window.pywebview && window.pywebview.api;
+      if (!api) return;
+      event.preventDefault();
+      if (button.dataset.win === "quit") api.quit();
+      else api.hide();
+    });
+  };
+  wireDataWin($("win-controls"));
+  // The welcome card carries the same pair in its own corner: the grey bar
+  // hides the little window, the grey cross leaves the app entirely.
+  wireDataWin($("onboard-controls"));
 }
 
 /* ------------------------------------------------------------ boot screen */
@@ -1560,6 +1999,360 @@ const BOOT_GREETINGS = [
 ];
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/* ------------------------------------------------------------ first run */
+
+/* The setup screen is the boot greeting with somewhere to put the answers.
+   It reuses the same greeting pool and the same words; the host window grows
+   around its centre and unfolds the right column (see `onboarding_split` in
+   app.py). */
+const ONBOARD = {
+  active: false,
+  data: null,
+  timer: null,
+  index: 0,
+  pool: BOOT_GREETINGS,
+  scan: null,
+  imported: null,
+  importBusy: false,
+  importError: null,
+  autostartError: null,
+  job: null,
+};
+
+function greetingBridge(name) {
+  const bridge = window.pywebview && window.pywebview.api;
+  return bridge && typeof bridge[name] === "function" ? bridge[name] : null;
+}
+
+async function fetchOnboarding() {
+  try {
+    return await api("/api/onboarding");
+  } catch (error) {
+    // The app can still be used without the setup screen; never block boot on it.
+    return null;
+  }
+}
+
+function showNextOnboardingGreeting() {
+  const hello = $("onboard-hello");
+  const lang = $("onboard-hello-lang");
+  if (!hello || !ONBOARD.pool.length) return;
+  const item = ONBOARD.pool[ONBOARD.index % ONBOARD.pool.length];
+  ONBOARD.index += 1;
+  hello.classList.add("fade");
+  setTimeout(() => {
+    hello.textContent = item.hello;
+    if (lang) lang.textContent = item.name;
+    hello.classList.remove("fade");
+  }, 140);
+}
+
+function startOnboardingCycle() {
+  clearInterval(ONBOARD.timer);
+  ONBOARD.timer = setInterval(showNextOnboardingGreeting, 2200);
+}
+
+function openOnboarding(data, current) {
+  const box = $("onboard");
+  if (!box) return;
+  ONBOARD.active = true;
+  ONBOARD.data = data;
+  ONBOARD.pool = BOOT_GREETINGS;
+  ONBOARD.index = 0;
+
+  const hello = $("onboard-hello");
+  const lang = $("onboard-hello-lang");
+  if (hello && current && current.hello) hello.textContent = current.hello;
+  if (lang && current && current.name) lang.textContent = current.name;
+
+  // Continue from the word already on screen instead of starting over.
+  const at = BOOT_GREETINGS.findIndex((item) => item.hello === (current && current.hello));
+  ONBOARD.index = at >= 0 ? at + 1 : 0;
+
+  box.hidden = false;
+  paintOnboarding();
+  requestAnimationFrame(() => box.classList.add("open"));
+
+  // A beat at the centre, then the window moves aside and the settings column
+  // unfolds. The delay is what makes the movement read as a transition rather
+  // than as a different window having opened behind the first one.
+  setTimeout(() => {
+    box.classList.add("split");
+    const split = greetingBridge("onboarding_split");
+    if (split) Promise.resolve(split()).catch(() => {});
+  }, 480);
+
+  startOnboardingCycle();
+  // Kensaku detection is cheap, but it touches foreign config files; let the
+  // layout settle first so a slow disk does not make the greeting stutter.
+  setTimeout(scanKensaku, 900);
+}
+
+function paintOnboarding() {
+  const data = ONBOARD.data;
+  if (!data) return;
+
+  document.querySelectorAll("#onboard-lang button").forEach((button) => {
+    button.setAttribute("aria-checked", String(button.dataset.lang === currentLang()));
+  });
+
+  const auto = data.autostart || {};
+  const toggle = $("ob-autostart");
+  if (toggle) {
+    toggle.checked = Boolean(auto.enabled);
+    toggle.disabled = !auto.supported;
+  }
+  const autoState = $("ob-autostart-state");
+  if (autoState) {
+    autoState.classList.remove("good", "bad");
+    if (ONBOARD.autostartError) {
+      autoState.textContent = t("onboard.autostartFailed", { error: ONBOARD.autostartError });
+      autoState.classList.add("bad");
+    } else if (!auto.supported) {
+      autoState.textContent = t("onboard.autostartUnsupported");
+    } else {
+      autoState.textContent = auto.enabled
+        ? t("onboard.autostartOn") : t("onboard.autostartOff");
+      autoState.classList.toggle("good", Boolean(auto.enabled));
+    }
+  }
+
+  const roots = data.roots || [];
+  const list = $("ob-roots");
+  if (list) {
+    list.innerHTML = roots.length
+      ? roots.map((root) => `<li title="${esc(root)}">${esc(root)}</li>`).join("")
+      : `<li class="ob-none">${esc(t("onboard.indexEmpty"))}</li>`;
+  }
+
+  paintImportState();
+  paintIndexState();
+}
+
+function paintImportState() {
+  const state = $("ob-import-state");
+  if (!state) return;
+  state.classList.remove("good", "bad");
+  const badge = $("ob-import-badge");
+  const importBtn = $("ob-import");
+  const scanBtn = $("ob-import-scan");
+  if (scanBtn) scanBtn.disabled = ONBOARD.importBusy;
+  if (importBtn) {
+    const blocked = ONBOARD.importBusy
+      || Boolean(ONBOARD.scan && !ONBOARD.scan.found);
+    importBtn.disabled = blocked;
+    // A filled primary button that does nothing is worse than a quiet one:
+    // without a Kensaku install there is nothing to import, so stop shouting.
+    importBtn.classList.toggle("primary", !blocked);
+    importBtn.classList.toggle("ghost", blocked);
+  }
+
+  if (ONBOARD.importBusy) {
+    state.textContent = t("onboard.importScanning");
+  } else if (ONBOARD.importError) {
+    state.textContent = t("onboard.importFailed", { error: ONBOARD.importError });
+    state.classList.add("bad");
+  } else if (ONBOARD.imported) {
+    const report = ONBOARD.imported;
+    state.textContent = t("onboard.importDone", {
+      pins: report.pins, saved: report.saved, aliases: report.aliases,
+    });
+    state.classList.add("good");
+    if (report.missing_count) {
+      state.textContent += ` ${t("onboard.importMissing", { n: report.missing_count })}`;
+    }
+  } else if (ONBOARD.scan) {
+    if (ONBOARD.scan.found) {
+      state.textContent = t("onboard.importFound", {
+        pins: ONBOARD.scan.pins,
+        saved: ONBOARD.scan.saved,
+        aliases: ONBOARD.scan.aliases,
+      });
+      state.classList.add("good");
+    } else {
+      state.textContent = t("onboard.importNothing");
+    }
+  } else {
+    state.textContent = "";
+  }
+
+  if (badge) {
+    const found = Boolean(ONBOARD.scan && ONBOARD.scan.found);
+    badge.hidden = !found;
+    if (found) {
+      badge.textContent = String(
+        ONBOARD.scan.pins + ONBOARD.scan.saved + ONBOARD.scan.aliases,
+      );
+    }
+  }
+}
+
+function paintIndexState() {
+  const state = $("ob-index-state");
+  const bar = $("ob-bar");
+  if (!state) return;
+  state.classList.remove("good", "bad");
+  const job = ONBOARD.job;
+  let percent = 0;
+  if (job && job.running) {
+    percent = job.total ? Math.round((job.position / job.total) * 100) : 4;
+    state.textContent = t("onboard.indexRunning", { done: percent });
+  } else if (job && job.errorKind === "empty") {
+    state.textContent = t("onboard.indexEmpty");
+    state.classList.add("bad");
+  } else if (job && job.error) {
+    state.textContent = t("onboard.indexFailed", { error: job.error });
+    state.classList.add("bad");
+  } else if (job && job.result) {
+    percent = 100;
+    state.textContent = t("onboard.indexDone", {
+      files: plural(job.result.indexed || 0, "unit.files"),
+      seconds: job.result.seconds || 0,
+    });
+    state.classList.add("good");
+  } else {
+    state.textContent = "";
+  }
+  if (bar) bar.style.width = `${percent}%`;
+}
+
+async function scanKensaku() {
+  if (ONBOARD.importBusy || ONBOARD.imported) return;
+  ONBOARD.importBusy = true;
+  ONBOARD.importError = null;
+  paintImportState();
+  try {
+    ONBOARD.scan = await api("/api/import/kensaku");
+  } catch (error) {
+    ONBOARD.importError = error.message;
+  } finally {
+    ONBOARD.importBusy = false;
+    paintImportState();
+  }
+}
+
+async function importKensaku() {
+  if (ONBOARD.importBusy) return;
+  ONBOARD.importBusy = true;
+  ONBOARD.importError = null;
+  paintImportState();
+  try {
+    ONBOARD.imported = await api("/api/import/kensaku", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!ONBOARD.imported.found) ONBOARD.scan = { found: false, pins: 0, saved: 0, aliases: 0 };
+    loadStats();
+    if (state.query) runSearch(); else renderIdle();
+  } catch (error) {
+    ONBOARD.importError = error.message;
+  } finally {
+    ONBOARD.importBusy = false;
+    paintImportState();
+  }
+}
+
+async function toggleAutostart() {
+  const toggle = $("ob-autostart");
+  if (!toggle || !ONBOARD.data) return;
+  const wanted = toggle.checked;
+  toggle.disabled = true;
+  ONBOARD.autostartError = null;
+  try {
+    ONBOARD.data.autostart = await api("/api/autostart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: wanted }),
+    });
+  } catch (error) {
+    toggle.checked = !wanted;
+    ONBOARD.autostartError = error.message;
+  } finally {
+    toggle.disabled = !ONBOARD.data.autostart.supported;
+    paintOnboarding();
+  }
+}
+
+async function startOnboardingIndex() {
+  const roots = (ONBOARD.data && ONBOARD.data.roots) || [];
+  if (!roots.length) {
+    ONBOARD.job = { running: false, errorKind: "empty" };
+    paintIndexState();
+    return;
+  }
+  const button = $("ob-index");
+  if (button) button.disabled = true;
+  ONBOARD.job = { running: true, position: 0, total: 0 };
+  paintIndexState();
+  try {
+    await api("/api/index", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roots, prune: false }),
+    });
+    pollOnboardingJob();
+  } catch (error) {
+    ONBOARD.job = { running: false, error: error.message };
+    paintIndexState();
+    if (button) button.disabled = false;
+  }
+}
+
+function pollOnboardingJob() {
+  api("/api/progress").then((job) => {
+    ONBOARD.job = job;
+    paintIndexState();
+    if (job.running) {
+      setTimeout(pollOnboardingJob, 450);
+    } else {
+      const button = $("ob-index");
+      if (button) button.disabled = false;
+      loadStats();
+    }
+  }).catch(() => {
+    const button = $("ob-index");
+    if (button) button.disabled = false;
+  });
+}
+
+async function finishOnboarding() {
+  if (!ONBOARD.active) return;
+  ONBOARD.active = false;
+  clearInterval(ONBOARD.timer);
+  // Persist first: the window grows back whether or not the bridge exists.
+  api("/api/onboarding/done", { method: "POST", body: "{}" }).catch(() => {});
+  const grow = greetingBridge("onboarding_finish");
+  if (grow) Promise.resolve(grow()).catch(() => {});
+
+  const box = $("onboard");
+  if (box) {
+    box.classList.add("done");
+    setTimeout(() => box.remove(), 640);
+  }
+  setTimeout(() => {
+    $("q")?.focus();
+    loadStats();
+    if (!state.query) renderIdle();
+  }, 700);
+  toast(t("onboard.ready"));
+}
+
+async function replayOnboarding() {
+  setSettings(false);
+  try {
+    await api("/api/onboarding/reset", { method: "POST", body: "{}" });
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+    return;
+  }
+  const reopen = greetingBridge("onboarding_reopen");
+  if (reopen) {
+    try { await reopen(); } catch (error) { /* reload still replays it */ }
+  }
+  location.reload();
+}
 
 async function boot() {
   const box = $("boot");
@@ -1597,6 +2390,22 @@ async function boot() {
     .catch(() => {
       // A splash must never be the reason the app does not start.
     });
+
+  // First launch is not a splash screen, it is a welcome: show the greeting
+  // three times while the window sits in the middle, then turn the same words
+  // into the setup screen. Waiting for the vector pack here would make setup
+  // feel like a hang; it warms up behind the conversation.
+  const onboard = await fetchOnboarding();
+  if (onboard && onboard.first_run) {
+    const enough = 3 * 700 + 250;
+    const wait = enough - (performance.now() - started);
+    if (wait > 0) await sleep(wait);
+    clearInterval(timer);
+    openOnboarding(onboard, { hello: hello.textContent, name: lang.textContent });
+    box.classList.add("done");
+    setTimeout(() => box.remove(), 460);
+    return;
+  }
 
   for (let attempt = 0; attempt < BOOT_MAX_POLLS; attempt += 1) {
     try {

@@ -1,8 +1,8 @@
-"""SemFind launcher.
+"""AutoFind launcher.
 
 With no arguments it opens the desktop window: its own icon, its own tray, and
 a global hotkey that brings it back while you are typing in another program.
-With a subcommand it behaves exactly like `semfind`, so the same file works as a
+With a subcommand it behaves exactly like `autofind`, so the same file works as a
 double-click target, as an MCP entry point for an editor, and as a CLI:
 
     python run.py                       # the app window (tray + hotkey)
@@ -11,7 +11,7 @@ double-click target, as an MCP entry point for an editor, and as a CLI:
     python run.py search "смета за март"
     python run.py mcp                   # JSON-RPC on stdio, for MCP clients
 
-MCP clients get `python run.py --db ... mcp` from `semfind connect`; keeping the
+MCP clients get `python run.py --db ... mcp` from `autofind connect`; keeping the
 dispatch here means that entry point does not depend on a console script being
 on PATH.
 """

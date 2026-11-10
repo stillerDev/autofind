@@ -176,6 +176,46 @@ class ShortcutTargetTests(unittest.TestCase):
         self.assertTrue(icon.exists())
 
 
+class OnboardingStateTests(unittest.TestCase):
+    """The welcome screen is installation state, not webview localStorage."""
+
+    def test_a_fresh_home_is_a_first_run(self):
+        from core.config import onboarding_done
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.assertFalse(onboarding_done(home))
+            instance = app._App("http://x/", home, tray=False, hotkey=None)
+            self.assertTrue(instance.first_run)
+
+    def test_done_survives_and_reset_brings_it_back(self):
+        from core.config import mark_onboarding_done, onboarding_done, reset_onboarding
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            mark_onboarding_done(home)
+            self.assertTrue(onboarding_done(home))
+            instance = app._App("http://x/", home, tray=False, hotkey=None)
+            self.assertFalse(instance.first_run)
+            reset_onboarding(home)
+            self.assertFalse(onboarding_done(home))
+
+    def test_a_broken_flag_file_is_treated_as_not_done(self):
+        from core.config import onboarding_done
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "onboarding.json").write_text("{not json", encoding="utf-8")
+            self.assertFalse(onboarding_done(home))
+
+    def test_login_launch_does_not_open_the_welcome_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = app._App(
+                "http://x/", Path(tmp), tray=True, hotkey=None, start_hidden=True
+            )
+            self.assertFalse(instance.first_run)
+
+
 class WorkAreaTests(unittest.TestCase):
     """The borderless window is sized by the work area, so that is what is tested.
 

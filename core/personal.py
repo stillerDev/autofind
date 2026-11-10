@@ -8,7 +8,7 @@ type instead of the ones the files contain.
 They live in the same SQLite file as the index, in `pins`, `saved` and `aliases`,
 which means they travel with a backup, they are readable with any SQLite client,
 and they never leave the machine. That is the whole argument against a cloud
-favourites list, and it is also why `semfind import kensaku` can move them over
+favourites list, and it is also why `autofind import kensaku` can move them over
 in one step instead of asking anyone to retype them.
 """
 

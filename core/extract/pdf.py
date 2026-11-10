@@ -1,9 +1,10 @@
 """PDF extraction.
 
-pypdf is used when installed. Without it a minimal fallback walks Flate
-streams and pulls strings out of text operators: it handles simple text PDFs
-and returns '' for scanned or CID-font documents, where OCR is the honest
-answer anyway.
+PyMuPDF is used when installed — an order of magnitude faster than pypdf, and
+its text layer knows about more encodings. Without it pypdf takes over, and
+without either a minimal fallback walks Flate streams and pulls strings out of
+text operators: it handles simple text PDFs and returns '' for scanned or
+CID-font documents, where OCR is the honest answer anyway.
 """
 
 from __future__ import annotations
@@ -21,6 +22,20 @@ ESCAPES = {
 
 
 def extract_pdf(path: str | Path) -> str:
+    try:
+        import pymupdf  # type: ignore
+    except ImportError:
+        pymupdf = None
+
+    if pymupdf is not None:
+        try:
+            with pymupdf.open(str(path)) as document:
+                text = "\n".join(page.get_text("text") for page in document)
+            if text.strip():
+                return text
+        except Exception:
+            pass
+
     try:
         from pypdf import PdfReader  # type: ignore
     except ImportError:

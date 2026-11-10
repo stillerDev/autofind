@@ -61,25 +61,25 @@ class ConnectTests(unittest.TestCase):
             config = self._config(tmp)
             target = connect.Target("cursor", "Cursor", Path(tmp) / "mcp.json")
             target.path.write_text('{"mcpServers": {"other": {"command": "x"}}}', encoding="utf-8")
-            changed, _ = connect.write(target, {"command": "semfind"})
+            changed, _ = connect.write(target, {"command": "autofind"})
             self.assertTrue(changed)
             payload = json.loads(target.path.read_text(encoding="utf-8"))
             self.assertIn("other", payload["mcpServers"])
-            self.assertEqual(payload["mcpServers"]["semfind"], {"command": "semfind"})
+            self.assertEqual(payload["mcpServers"]["autofind"], {"command": "autofind"})
             self.assertTrue(target.path.with_suffix(".json.bak").exists())
 
-            again, _ = connect.write(target, {"command": "semfind"})
+            again, _ = connect.write(target, {"command": "autofind"})
             self.assertTrue(again)
             self.assertEqual(
-                json.loads(target.path.read_text(encoding="utf-8"))["mcpServers"]["semfind"],
-                {"command": "semfind"},
+                json.loads(target.path.read_text(encoding="utf-8"))["mcpServers"]["autofind"],
+                {"command": "autofind"},
             )
 
     def test_broken_config_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = connect.Target("cursor", "Cursor", Path(tmp) / "mcp.json")
             target.path.write_text("{not json", encoding="utf-8")
-            changed, message = connect.write(target, {"command": "semfind"})
+            changed, message = connect.write(target, {"command": "autofind"})
             self.assertFalse(changed)
             self.assertIn("cannot read", message)
             self.assertEqual(target.path.read_text(encoding="utf-8"), "{not json")
@@ -87,9 +87,9 @@ class ConnectTests(unittest.TestCase):
     def test_dry_run_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = connect.Target("cursor", "Cursor", Path(tmp) / "mcp.json")
-            changed, message = connect.write(target, {"command": "semfind"}, dry_run=True)
+            changed, message = connect.write(target, {"command": "autofind"}, dry_run=True)
             self.assertTrue(changed)
-            self.assertIn("semfind", message)
+            self.assertIn("autofind", message)
             self.assertFalse(target.path.exists())
 
 
@@ -110,7 +110,7 @@ class McpHttpShapeTests(unittest.TestCase):
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
         })
-        self.assertEqual(init["result"]["serverInfo"]["name"], "semfind")
+        self.assertEqual(init["result"]["serverInfo"]["name"], "autofind")
         listing = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [tool["name"] for tool in listing["result"]["tools"]]
         self.assertIn("search", names)

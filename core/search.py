@@ -41,7 +41,7 @@ RRF_K = 60
 # they assume both channels are equally good. The vector weight is taken from
 # the embedder itself (`rrf_weight`): a semantic model gets 1.0, the hashed
 # fallback 0.3, because it largely duplicates BM25 and ranks worse. Measured
-# with `semfind eval --ablate`; re-measure before trusting it on another corpus.
+# with `autofind eval --ablate`; re-measure before trusting it on another corpus.
 # `cjk` is a real lexical index (of bigrams), so it earns an equal share; `tri`
 # is the deliberately fuzzy typo tier — kensaku damps its folded tier to ~0.55
 # of the lexical weight for the same reason.
@@ -450,6 +450,7 @@ def _rank(
     sort: str | None = None,
     parsed: ParsedQuery | None = None,
     usage: dict[int, tuple[int, float]] | None = None,
+    doc_dates: bool = False,
 ) -> tuple[list[Hit], dict[str, int]]:
     """Rank every matching file. Callers slice; `search_page` needs the total."""
     parsed = parsed or (query if isinstance(query, ParsedQuery) else understand(query))
@@ -591,13 +592,33 @@ def _rank(
         tri_files = ranked_scope["tri"]
         semantic_files = ranked_scope["vector"]
 
+    # Document-date mode: `since` also matches the date the document claims
+    # for itself, so a receipt screenshotted yesterday still surfaces when it
+    # is dated last March — mtime alone would have hidden it. One small query
+    # over the candidate pool, not over the whole index.
+    doc_date_by_id: dict[int, str] = {}
+    since_iso = None
+    if doc_dates and parsed.modified is not None and parsed.modified.low is not None:
+        since_iso = time.strftime("%Y-%m-%d", time.localtime(parsed.modified.low))
+        doc_date_by_id = store.doc_dates(file_rows)
+
     def allowed(file_id: int) -> bool:
         row = file_rows.get(file_id)
         if row is None:
             return False
-        if since is not None and float(row["mtime"]) < since:
+        mtime = float(row["mtime"])
+        if since is not None and mtime < since:
             return False
-        return parsed.matches(row["path"], row["kind"], int(row["size"]), float(row["mtime"]))
+        skip_modified = bool(since_iso and doc_date_by_id.get(file_id, "") >= since_iso)
+        if (
+            parsed.modified is not None
+            and not skip_modified
+            and not parsed.modified.matches(mtime)
+        ):
+            return False
+        return parsed.matches(
+            row["path"], row["kind"], int(row["size"]), mtime, skip_modified=skip_modified
+        )
 
     # Facets over every candidate that survives the filters — not just the
     # sliced page — so `type:` tabs can show real counts, the way kensaku
@@ -737,6 +758,7 @@ def search_page(
     usage: dict[int, tuple[int, float]] | None = None,
     group: bool = True,
     applied: list | None = None,
+    doc_dates: bool = False,
 ) -> SearchPage:
     """One query, with the counts and chips the UI needs to explain itself.
 
@@ -756,7 +778,10 @@ def search_page(
         not parsed.text and not parsed.regexes and not parsed.content_text
     )
     resolved = _resolve_sort(sort, parsed, listing=listing)
-    hits, facets = _rank(store, embedder, parsed, sort=resolved, parsed=parsed, usage=usage)
+    hits, facets = _rank(
+        store, embedder, parsed, sort=resolved, parsed=parsed, usage=usage,
+        doc_dates=doc_dates,
+    )
     total = len(hits)
 
     collapsed = 0

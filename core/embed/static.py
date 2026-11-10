@@ -57,7 +57,7 @@ class StaticEmbedder:
             from tokenizers import Tokenizer  # type: ignore
         except ImportError as exc:
             raise StaticUnavailable(
-                "the static pack needs the `tokenizers` package: pip install 'semfind[onnx]'"
+                "the static pack needs the `tokenizers` package: pip install 'autofind[onnx]'"
             ) from exc
 
         raw = table_path.read_bytes()[: HEADER.size]

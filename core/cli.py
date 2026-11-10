@@ -1,4 +1,4 @@
-"""Command line entry point: semfind index / search / serve / stats."""
+"""Command line entry point: autofind index / search / serve / stats."""
 
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ BAR_WIDTH = 28
 def main(argv: list[str] | None = None) -> int:
     _force_utf8()
     parser = argparse.ArgumentParser(
-        prog="semfind", description="Local search over files and screenshots. Nothing leaves the machine."
+        prog="autofind", description="Local search over files and screenshots. Nothing leaves the machine."
     )
-    parser.add_argument("--db", type=Path, help="path to index.db (default: <SEMFIND_HOME>/index.db)")
+    parser.add_argument("--db", type=Path, help="path to index.db (default: <AUTOFIND_HOME>/index.db)")
     parser.add_argument(
         "--vector-backend",
         default="pack",
@@ -266,7 +266,7 @@ def _cmd_install(args) -> int:
             code = 1
     print()
     print("start it now:   run.py app")
-    print("turn it off:    semfind autostart off && semfind shortcut remove")
+    print("turn it off:    autofind autostart off && autofind shortcut remove")
     return code
 
 
@@ -281,7 +281,7 @@ def _cmd_autostart(args) -> int:
             return 1
         print(f"{autostart.VALUE_NAME} will start with Windows:")
         print(f"  {command}")
-        print("turn it off with: semfind autostart off")
+        print("turn it off with: autofind autostart off")
         return 0
 
     if args.action == "off":
@@ -382,7 +382,7 @@ def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
 
 def _cmd_search(args, config: IndexConfig, db_path: Path) -> int:
     if not db_path.exists():
-        print(f"no index at {db_path}; run: semfind index <folder>", file=sys.stderr)
+        print(f"no index at {db_path}; run: autofind index <folder>", file=sys.stderr)
         return 2
     embedder = get_embedder(args.embedder, config.model_dir)
     store = Store(db_path, embedder.name, embedder.dim, readonly=True, vector_backend=config.vector_backend)
@@ -497,7 +497,7 @@ def _cmd_connect(args, config: IndexConfig, db_path: Path) -> int:
     if transport == "http":
         print(f"\nтокен лежит в {config.home / connect.TOKEN_FILE}; приложение должно быть запущено")
     else:
-        print("\nклиент запустит `semfind mcp` сам, приложение может быть закрыто")
+        print("\nклиент запустит `autofind mcp` сам, приложение может быть закрыто")
     return 0
 
 
@@ -550,7 +550,7 @@ def _cmd_watch(args, config: IndexConfig, db_path: Path) -> int:
 
 def _cmd_eval(args, config: IndexConfig, db_path: Path) -> int:
     if not db_path.exists():
-        print(f"no index at {db_path}; run: semfind index <folder>", file=sys.stderr)
+        print(f"no index at {db_path}; run: autofind index <folder>", file=sys.stderr)
         return 2
     try:
         labels = load_labels(args.labels)
@@ -612,7 +612,7 @@ def _cmd_ocr(args, config: IndexConfig) -> int:
         print(f"readable now   {cover['total']} languages")
         missing = [model for model in ocr_languages.MODELS if model not in cover["models"]]
         if missing:
-            print(f"one download   {', '.join(missing)}  (semfind ocr download all)")
+            print(f"one download   {', '.join(missing)}  (autofind ocr download all)")
         for language in cover["languages"]:
             print(f"  {language['tag']:<8} {language['name']:<18} {language['hello']}")
         return 0
@@ -637,7 +637,7 @@ def _cmd_ocr(args, config: IndexConfig) -> int:
         return 1 if failed else 0
 
     if not args.target:
-        print("usage: semfind ocr read <image> [--lang korean]", file=sys.stderr)
+        print("usage: autofind ocr read <image> [--lang korean]", file=sys.stderr)
         return 2
     preferred = f"rapidocr:{args.lang}" if getattr(args, "lang", None) else None
     result = ocr_image(args.target, config.ocr_languages, preferred)
@@ -701,7 +701,7 @@ def _cmd_privacy(args, config: IndexConfig, db_path: Path) -> int:
     print(f"{len(found)} file(s) the filter would skip today:")
     for item in found:
         print(f"  {item['reason']:<32} {item['path']}")
-    print("\nremove them with: semfind privacy purge")
+    print("\nremove them with: autofind privacy purge")
     return 0
 
 
@@ -789,7 +789,7 @@ def _cmd_pins(args, config: IndexConfig, db_path: Path) -> int:
         ))
         return 0
     if not rows:
-        print("nothing pinned yet: semfind pin <path>")
+        print("nothing pinned yet: autofind pin <path>")
         return 0
     for row in rows:
         print(f"  {int(row['id']):<7} {row['path']}")
@@ -834,7 +834,7 @@ def _cmd_saved(args, config: IndexConfig, db_path: Path) -> int:
         ))
         return 0
     if not rows:
-        print("no saved searches yet: semfind saved \"type:pdf про индексы\"")
+        print("no saved searches yet: autofind saved \"type:pdf про индексы\"")
         return 0
     for row in rows:
         used = f"  ×{int(row['used'] or 0)}" if row["used"] else ""
@@ -876,7 +876,7 @@ def _cmd_alias(args, config: IndexConfig, db_path: Path) -> int:
         print(json.dumps(table, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     if not table:
-        print('dictionary is empty: semfind alias cv "резюме"')
+        print('dictionary is empty: autofind alias cv "резюме"')
         return 0
     for alias, expand in sorted(table.items()):
         print(f"  {alias:<16} → {expand}")
@@ -911,13 +911,13 @@ def _cmd_import(args, config: IndexConfig, db_path: Path) -> int:
     from .migrate import apply, find_sources
 
     if not db_path.exists():
-        print(f"no index at {db_path}; run: semfind index <folder>", file=sys.stderr)
+        print(f"no index at {db_path}; run: autofind index <folder>", file=sys.stderr)
         return 2
     extra = [args.path] if args.path else []
     sources = find_sources(extra)
     if not sources:
         print("no kensaku config found.")
-        print("point at it directly:  semfind import kensaku \"C:\\Users\\you\\AppData\\Roaming\\kensaku\"")
+        print("point at it directly:  autofind import kensaku \"C:\\Users\\you\\AppData\\Roaming\\kensaku\"")
         return 1
     store = _open_store(config, db_path, readonly=False)
     try:

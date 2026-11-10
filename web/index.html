@@ -48,6 +48,115 @@
     <div class="boot-stage" id="boot-stage">starting</div>
   </div>
 </div>
+
+<!-- The first-run screen. It begins as the same centred greeting the boot
+     screen shows, then the host window grows around its centre and the right
+     column unfolds into setup. The greeting stays: this is a welcome, not a
+     wizard that hides the product until every field is filled in. -->
+<div class="onboard" id="onboard" hidden>
+  <!-- The little window's own title-bar corner, top right: a grey bar hides
+       it in the tray, a grey cross quits the app. Grey, not red: nothing is
+       lost — the setup simply waits for the next launch. -->
+  <div class="onboard-controls" id="onboard-controls">
+    <button type="button" data-win="hide"
+            data-i18n-title="win.hide" data-i18n-aria="win.hide">
+      <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor"
+           stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+        <path d="M1.5 6h9"></path>
+      </svg>
+    </button>
+    <button type="button" data-win="quit"
+            data-i18n-title="win.quit" data-i18n-aria="win.quit">
+      <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor"
+           stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+        <path d="M2.5 2.5l7 7M9.5 2.5l-7 7"></path>
+      </svg>
+    </button>
+  </div>
+  <section class="onboard-side" aria-labelledby="onboard-title">
+    <div class="onboard-scroll">
+      <div class="onboard-brand">
+        <span class="mark"></span>
+        <span>AutoFind</span>
+      </div>
+      <h1 class="onboard-title" id="onboard-title" data-i18n="onboard.title">Welcome to AutoFind</h1>
+      <p class="onboard-lead" data-i18n="onboard.subtitle"></p>
+
+      <section class="ob-block">
+        <div class="ob-block-head">
+          <h2 data-i18n="onboard.language">Interface language</h2>
+        </div>
+        <div class="segmented" id="onboard-lang" role="radiogroup"
+             data-i18n-aria="onboard.language">
+          <button type="button" data-lang="en" role="radio">English</button>
+          <button type="button" data-lang="ru" role="radio">Русский</button>
+        </div>
+        <p class="ob-note" data-i18n="onboard.languageNote"></p>
+      </section>
+
+      <section class="ob-block">
+        <div class="ob-block-head">
+          <h2 data-i18n="onboard.setupAutostart">Start with Windows</h2>
+          <label class="ob-switch">
+            <input type="checkbox" id="ob-autostart">
+            <span class="ob-switch-track" aria-hidden="true">
+              <span class="ob-switch-dot"></span>
+            </span>
+          </label>
+        </div>
+        <p class="ob-note" data-i18n="onboard.autostartNote"></p>
+        <p class="ob-state" id="ob-autostart-state"></p>
+      </section>
+
+      <section class="ob-block">
+        <div class="ob-block-head">
+          <h2 data-i18n="onboard.importTitle">Switch from Kensaku</h2>
+          <span class="ob-pill" id="ob-import-badge" hidden></span>
+        </div>
+        <p class="ob-note" data-i18n="onboard.importNote"></p>
+        <div class="ob-row">
+          <button class="btn primary ob-btn" id="ob-import" type="button"
+                  data-i18n="onboard.importButton">Import</button>
+          <button class="btn ob-btn" id="ob-import-scan" type="button"
+                  data-i18n="onboard.importScan">Look for Kensaku</button>
+        </div>
+        <p class="ob-state" id="ob-import-state"></p>
+      </section>
+
+      <section class="ob-block">
+        <div class="ob-block-head">
+          <h2 data-i18n="onboard.indexTitle">Index your folders</h2>
+        </div>
+        <p class="ob-note" data-i18n="onboard.indexNote"></p>
+        <ul class="ob-roots" id="ob-roots"></ul>
+        <div class="ob-row">
+          <button class="btn primary ob-btn" id="ob-index" type="button"
+                  data-i18n="onboard.indexButton">Start indexing</button>
+        </div>
+        <div class="ob-progress"><span id="ob-bar"></span></div>
+        <p class="ob-state" id="ob-index-state"></p>
+      </section>
+    </div>
+  </section>
+
+  <section class="onboard-stage">
+    <div class="onboard-greeting">
+      <div class="onboard-hello" id="onboard-hello">Hello</div>
+      <div class="onboard-hello-lang" id="onboard-hello-lang">English</div>
+    </div>
+    <div class="onboard-stage-foot">
+      <p class="onboard-tagline" data-i18n="onboard.tagline"></p>
+      <div class="onboard-actions">
+        <button class="btn ob-btn ghost" id="onboard-skip" type="button"
+                data-i18n="onboard.skip">Skip for now</button>
+        <button class="btn primary ob-btn" id="onboard-done" type="button"
+                data-i18n="onboard.start">Start searching</button>
+      </div>
+      <p class="onboard-foot" data-i18n="onboard.footer"></p>
+    </div>
+  </section>
+</div>
+
 <div class="app">
   <header class="hero">
     <div class="hero-inner">
@@ -75,6 +184,9 @@
             </svg>
           </button>
           <button class="clear" id="clear" type="button" data-i18n-aria="search.clear">×</button>
+          <!-- Recent queries and saved searches, one arrow-press away: the
+               list follows what is typed, ↑↓ pick, Enter runs, Esc closes. -->
+          <div class="suggest" id="suggest" hidden></div>
         </div>
 
         <div class="header-actions">
@@ -169,6 +281,8 @@
                   data-i18n="cal.clear">clear</button>
           <button class="cal-act" type="button" data-cal="today"
                   data-i18n="cal.today">today</button>
+          <button class="cal-act" type="button" data-cal="docdate" id="doc-date-toggle"
+                  data-i18n-title="cal.docDate" data-i18n-aria="cal.docDate">date</button>
         </div>
       </div>
     </div>
@@ -229,12 +343,34 @@
   </div>
 
   <div class="panel">
+    <h3 data-i18n="panel.duplicates">Duplicate screenshots</h3>
+    <p class="panel-note" data-i18n="panel.duplicatesNote"></p>
+    <div class="btn-row">
+      <button class="btn" id="dups-btn" data-i18n="panel.findDuplicates">Find duplicates</button>
+    </div>
+  </div>
+
+  <div class="panel">
     <h3 data-i18n="panel.privacy">Privacy</h3>
-    <div class="stat-row">
-      <span><span data-i18n="panel.filter">filter</span> <b id="p-enabled">—</b>
-        · <span data-i18n="panel.private">private</span> <b id="p-count">—</b></span>
+    <label class="stat-row privacy-master">
+      <span><span data-i18n="panel.privacyFilter">Privacy filter</span> <b id="p-enabled">—</b></span>
+      <input type="checkbox" id="privacy-enabled">
+    </label>
+    <button class="privacy-toggle" id="privacy-toggle" type="button"
+            aria-expanded="false" aria-controls="privacy-filters">
+      <span id="privacy-summary">—</span>
+      <svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+    </button>
+    <div class="privacy-filters" id="privacy-filters" aria-hidden="true">
+      <div class="privacy-filters-inner" id="privacy-filters-list"></div>
+    </div>
+    <div class="stat-row privacy-count">
+      <span><span data-i18n="panel.private">private</span> <b id="p-count">—</b></span>
       <button class="btn mini" id="purge-btn" data-i18n="panel.purge">remove</button>
     </div>
+    <p class="panel-note" data-i18n="panel.privacyNote"></p>
   </div>
 
   <div class="panel">
@@ -250,6 +386,42 @@
     <span class="only-app"><kbd>ctrl</kbd><kbd>alt</kbd><kbd>space</kbd> <span data-i18n="hints.window">window</span></span>
   </div>
 </aside>
+
+<!-- The duplicates report opens in its own right-side drawer, wide enough
+     for whole paths: every group of pixel-identical screenshots with each
+     file's name and full path. A click reveals the file in Explorer. -->
+<aside class="drawer dups-drawer" id="dups-drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <h3 data-i18n="panel.duplicates">Duplicate screenshots</h3>
+    <div class="drawer-tools">
+      <button class="dup-trash" id="dups-delete" type="button"
+              data-i18n-aria="dups.deleteSelected" aria-label="delete selected">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+             stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"></path>
+        </svg>
+      </button>
+      <button class="drawer-close" id="dups-close" type="button"
+              data-i18n-aria="preview.close" aria-label="close">×</button>
+    </div>
+  </div>
+  <p class="panel-note" data-i18n="panel.duplicatesNote"></p>
+  <div class="dups-body" id="dups-body"></div>
+</aside>
+
+<div class="modal" id="confirm" role="dialog" aria-modal="true">
+  <div class="modal-card confirm-card">
+    <div class="modal-head">
+      <h3 data-i18n="confirm.deleteTitle">Are you sure?</h3>
+    </div>
+    <p class="confirm-text" id="confirm-text"></p>
+    <div class="confirm-actions">
+      <button class="btn" id="confirm-no" type="button" data-i18n="confirm.cancel">Cancel</button>
+      <button class="btn danger" id="confirm-yes" type="button" data-i18n="confirm.delete">Delete</button>
+    </div>
+  </div>
+</div>
 
 <div class="toast" id="toast"></div>
 
@@ -343,6 +515,8 @@
       <section class="settings-section">
         <h4 data-i18n="settings.about">About</h4>
         <dl class="about-grid" id="about"></dl>
+        <button class="btn mini settings-replay" id="replay-onboarding" type="button"
+                data-i18n="settings.replayWelcome">Show the welcome screen again</button>
       </section>    </div>
   </div>
 </div>

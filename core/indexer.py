@@ -27,6 +27,7 @@ from .chunker import chunk_text
 from .config import IndexConfig
 from .embed import get_embedder, get_visual_embedder
 from .extract import extract_text
+from .extract.dates import find_doc_date
 from .group import dhash
 from .images import load_image, thumbnail_bytes, visual_features
 from .ocr import OcrUnavailable, ocr_image, reset_fallbacks
@@ -50,9 +51,15 @@ class IndexStats:
     ocr_empty: int = 0
     rehashed: int = 0
     pruned: int = 0
+    doc_dates: int = 0
     sensitive: int = 0
     sensitive_examples: list[tuple[str, str]] = field(default_factory=list)
     seconds: float = 0.0
+    # Per-stage wall time: scan/decide/store measured in the main process,
+    # sha/extract/chunk/embed/ocr/visual summed from each worker's own
+    # stopwatch. This is how a slow run gets argued about with numbers
+    # instead of vibes.
+    timings: dict[str, float] = field(default_factory=dict)
     errors: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -72,9 +79,11 @@ class IndexStats:
             "ocr_empty": self.ocr_empty,
             "rehashed": self.rehashed,
             "pruned": self.pruned,
+            "doc_dates": self.doc_dates,
             "sensitive": self.sensitive,
             "seconds": round(self.seconds, 2),
             "files_per_second": round(self.files_per_second, 1),
+            "timings": {k: round(v, 2) for k, v in sorted(self.timings.items()) if v > 0.01},
         }
 
 
@@ -95,6 +104,7 @@ def run_index(
     # verdict from the previous folder does not carry over.
     reset_fallbacks()
     blocked: list[tuple[str, str]] = []
+    scan_started = time.perf_counter()
     entries = list(
         iter_entries(
             roots,
@@ -103,14 +113,17 @@ def run_index(
             min_bytes=config.min_file_bytes,
             privacy=config.privacy and not config.allow_sensitive,
             skipped=blocked,
+            categories=config.privacy_categories,
         )
     )
     stats = IndexStats(scanned=len(entries), sensitive=len(blocked), sensitive_examples=blocked[:5])
+    stats.timings["scan"] = time.perf_counter() - scan_started
     seen: set[str] = set()
 
     # The cheap skip (size+mtime unchanged) needs the store, so it stays in the
     # main process and prunes the pool's workload before any process pays for a
     # spawn.
+    decide_started = time.perf_counter()
     todo = []
     seen_sha: dict[str, str] = {}  # digest -> path dispatched earlier in this run
     for position, entry in enumerate(entries, start=1):
@@ -129,12 +142,15 @@ def run_index(
             if entry.kind == "image":
                 # A byte-identical screenshot is skipped before the pool gets
                 # it: the digest costs one file read, while the OCR the worker
-                # would run first costs hundreds of milliseconds per copy. The
-                # in-memory map catches copies inside this same run, which the
-                # store cannot know about yet.
+                # would run first costs hundreds of milliseconds per copy. Its
+                # file row is kept so the duplicates report can surface it; the
+                # in-memory map catches copies inside this same run.
                 digest = sha256_file(entry.path)
                 duplicate = store.image_by_sha(digest)
                 if duplicate is not None and duplicate["path"] != entry.path:
+                    # Keep the copy's file row so the duplicates report can find
+                    # and delete it; it gets no image row, OCR or chunks.
+                    store.upsert_file(entry.path, entry.size, entry.mtime, digest, entry.kind)
                     stats.duplicates += 1
                     stats.skipped += 1
                     if progress:
@@ -142,6 +158,7 @@ def run_index(
                     continue
                 first = seen_sha.get(digest)
                 if first is not None and first != entry.path:
+                    store.upsert_file(entry.path, entry.size, entry.mtime, digest, entry.kind)
                     stats.duplicates += 1
                     stats.skipped += 1
                     if progress:
@@ -154,6 +171,12 @@ def run_index(
             continue
         todo.append((position, entry))
 
+    stats.timings["decide"] = time.perf_counter() - decide_started
+    # Light files first: a cold run becomes searchable in the first minutes,
+    # while the PDFs and screenshots are still grinding through extraction
+    # and OCR. Positions renumber so the progress bar keeps climbing.
+    todo.sort(key=lambda item: (item[1].kind in HEAVY_KINDS, item[1].size))
+    todo = [(number, entry) for number, (_, entry) in enumerate(todo)]
     done_count = len(entries) - len(todo)
     _run_extraction(todo, config, store, embedder, visual, stats, progress, commit_every, workers, done_count)
 
@@ -170,11 +193,17 @@ def run_index(
     # files that were there first. One pass, guarded by a meta flag.
     stats.symbols += backfill_symbols(store)
     store.commit()
+    # Document dates work the same way: files indexed before `doc_date` existed
+    # carry NULL until one pass reads their first chunks and tries the regexes.
+    stats.doc_dates = backfill_doc_dates(store)
+    store.commit()
     # Build the memory-mapped vector pack now, not on the first query. The
     # indexer already has everything on disk; the alternative is a 2.6 s stall
     # the first time someone searches after an index run.
     if store.vector_backend == "pack":
+        pack_started = time.perf_counter()
         store.rebuild_pack()
+        stats.timings["pack"] = time.perf_counter() - pack_started
     stats.seconds = time.perf_counter() - started
     return stats
 
@@ -194,6 +223,19 @@ def _worth_a_pool(todo: Sequence[tuple[int, object]], neural: bool) -> bool:
     """
     heavy = sum(1 for _, entry in todo if entry.kind in HEAVY_KINDS)
     return heavy >= 4 or len(todo) >= 40 and neural
+
+
+def _default_workers(todo: Sequence[tuple[int, object]]) -> int:
+    """Pool size from the workload, not from a constant.
+
+    rapidocr wants roughly 300 MB and its own model set per instance, so extra
+    workers only pay off when there is enough heavy work for them: a run of
+    plain text files stays at the lean default, while a screenshot-heavy run
+    takes the extra cores this machine has.
+    """
+    heavy = sum(1 for _, entry in todo if entry.kind in HEAVY_KINDS)
+    cap = 8 if heavy >= 16 else 4
+    return min(cap, os.cpu_count() or 2)
 
 
 def _run_extraction(
@@ -220,7 +262,7 @@ def _run_extraction(
         workers = config.extract_workers
     auto = workers == 0  # the heuristic decides; an explicit count is honoured
     if workers <= 0:
-        workers = min(4, os.cpu_count() or 2)
+        workers = _default_workers(todo)
     if workers != 1 and (not auto or _worth_a_pool(todo, getattr(embedder, "semantic", False))):
         pool = _open_pool(config, workers)
     if pool is None:
@@ -239,7 +281,17 @@ def _run_extraction(
             position, entry = futures[future]
             done += 1
             try:
-                status = _store_prepared(entry, future.result(), store, stats)
+                mark = time.perf_counter()
+                prepared = future.result()
+                # Each worker reports its own stopwatch per file: sha, extract,
+                # chunk, embed, ocr — summed here, so a slow run answers "which
+                # stage ate the time" without a profiler attached.
+                for key, value in (prepared.get("timing") or {}).items():
+                    stats.timings[key] = stats.timings.get(key, 0.0) + float(value)
+                status = _store_prepared(entry, prepared, store, stats)
+                stats.timings["store"] = stats.timings.get("store", 0.0) + (
+                    time.perf_counter() - mark
+                )
             except Exception as exc:  # one broken file must not stop the run
                 stats.failed += 1
                 stats.errors.append((entry.path, f"{type(exc).__name__}: {exc}"))
@@ -287,6 +339,14 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
     if status == "undecodable":
         stats.skipped += 1
         return status
+    if status == "seen-image":
+        # A pixel-identical copy of something already indexed: refresh this
+        # path's file row, count the copy, and write nothing else — no OCR,
+        # no chunks, no thumbnail. The twin carries the search.
+        store.upsert_file(entry.path, entry.size, entry.mtime, prepared["digest"], entry.kind)
+        stats.skipped += 1
+        stats.duplicates += 1
+        return "duplicate"
     digest = prepared["digest"]
     existing = store.get_file(entry.path)
     if existing and existing["sha256"] == digest:
@@ -298,7 +358,10 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
     vector_matrix = (
         np.frombuffer(vectors, dtype=np.float32).reshape(len(chunks), -1) if vectors else None
     )
-    file_id = store.upsert_file(entry.path, entry.size, entry.mtime, digest, entry.kind)
+    file_id = store.upsert_file(
+        entry.path, entry.size, entry.mtime, digest, entry.kind,
+        doc_date=prepared.get("doc_date"),
+    )
     stats.chunks += store.replace_chunks(file_id, chunks, vector_matrix)
     symbols = prepared.get("symbols")
     if symbols:
@@ -380,16 +443,27 @@ def _open_pool(config: IndexConfig, workers: int | None):
 def _extract_text_job(entry, config: IndexConfig) -> dict:
     """Worker side of a document: read, extract, chunk, embed. Everything that
     costs seconds happens here; the main process only writes."""
+    timing: dict[str, float] = {}
+    mark = time.perf_counter()
     digest = sha256_file(entry.path)
+    timing["sha"] = time.perf_counter() - mark
+    mark = time.perf_counter()
     text = extract_text(entry.path, entry.kind, config.max_file_bytes)
+    timing["extract"] = time.perf_counter() - mark
     if not text.strip():
-        return {"digest": digest, "status": "no-text"}
+        return {"digest": digest, "status": "no-text", "timing": timing}
+    mark = time.perf_counter()
     chunks = chunk_text(text, config.chunk_chars, config.chunk_overlap)
+    timing["chunk"] = time.perf_counter() - mark
+    mark = time.perf_counter()
     vectors = _worker_embedder().encode_passages(chunks)
+    timing["embed"] = time.perf_counter() - mark
     prepared = {
         "digest": digest,
         "chunks": chunks,
         "vectors": vectors.astype(np.float32).tobytes() if vectors is not None else None,
+        "doc_date": find_doc_date(text),
+        "timing": timing,
     }
     if entry.kind == "code":
         prepared["symbols"] = [s.as_tuple() for s in extract_for(entry.path, text)]
@@ -398,14 +472,38 @@ def _extract_text_job(entry, config: IndexConfig) -> dict:
 
 def _extract_image_job(entry, config: IndexConfig) -> dict:
     """Worker side of a screenshot: decode, OCR, thumbnail, hash, embed."""
+    timing: dict[str, float] = {}
+    mark = time.perf_counter()
     image = load_image(entry.path)
     if image is None:
         return {"status": "undecodable", "digest": None}
+    timing["decode"] = time.perf_counter() - mark
+    mark = time.perf_counter()
     digest = sha256_file(entry.path)
+    timing["sha"] = time.perf_counter() - mark
+    phash = dhash(image)
+
+    # Same bytes or same exact pixels already indexed? OCR costs a real
+    # inference per copy, and a re-saved screenshot decodes to identical
+    # pixels — one lookup covers the whole family. A phash match alone is
+    # not proof (near-duplicate screenshots share the gradient hash while
+    # differing by a line of text), so the decoded frames are compared
+    # before any OCR is skipped.
+    mark = time.perf_counter()
+    twin = _worker_twin_image(_WORKER_CONFIG.db_path, digest, phash)
+    timing["twin"] = time.perf_counter() - mark
+    if twin is not None:
+        if twin == entry.path:
+            # Touched but byte-identical: the row refresh happens in the
+            # main process, so spend no OCR on it here.
+            return {"status": "same-content", "digest": digest, "phash": phash, "timing": timing}
+        if _same_pixels(entry.path, twin):
+            return {"status": "seen-image", "digest": digest, "phash": phash, "timing": timing}
 
     ocr_text = ""
     engine_name = None
     if config.ocr_enabled:
+        mark = time.perf_counter()
         try:
             result = ocr_image(
                 entry.path, config.ocr_languages, config.ocr_engine,
@@ -417,11 +515,16 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
             engine_name = result.engine
         except OcrUnavailable:
             ocr_text = ""
+        timing["ocr"] = time.perf_counter() - mark
 
+    mark = time.perf_counter()
     chunks = chunk_text(ocr_text, config.chunk_chars, config.chunk_overlap) if ocr_text.strip() else []
     vectors = _worker_embedder().encode_passages(chunks) if chunks else None
+    timing["embed"] = time.perf_counter() - mark
+    mark = time.perf_counter()
     visual = _worker_visual()
     vector = visual.encode_image(image) if visual is not None else visual_features(image)
+    timing["visual"] = time.perf_counter() - mark
     return {
         "digest": digest,
         "chunks": chunks,
@@ -431,9 +534,56 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
         "width": image.size[0],
         "height": image.size[1],
         "thumb": thumbnail_bytes(image, config.thumb_size),
-        "phash": dhash(image),
+        "phash": phash,
         "visual": np.asarray(vector, dtype=np.float32).tobytes() if vector is not None else None,
+        "doc_date": find_doc_date(ocr_text),
+        "timing": timing,
     }
+
+
+def _worker_twin_image(db_path: Path, digest: str, phash: int) -> str | None:
+    """Path of an already-indexed image with the same bytes or the same pixels.
+
+    A read-only connection straight to SQLite: the worker has no Store, and a
+    two-column query is all it needs. A missing or locked database means "no
+    shortcut", never a failure.
+    """
+    import sqlite3
+
+    try:
+        uri = f"file:{Path(db_path).as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2)
+    except Exception:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT path FROM images WHERE sha256 = ? OR phash = ? "
+            "ORDER BY CASE WHEN sha256 = ? THEN 0 ELSE 1 END, id LIMIT 1",
+            (digest, int(phash), digest),
+        ).fetchone()
+        return str(row[0]) if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def _same_pixels(first: str, second: str) -> bool:
+    """True when two image files decode to exactly the same pixels.
+
+    dhash is a gradient hash: near-duplicate screenshots collide on it while
+    differing by a line of text, so a hash match is only trusted after the
+    actual frames are compared. Runs once per candidate pair, not per file.
+    """
+    try:
+        from PIL import Image, ImageChops
+
+        with Image.open(first) as left, Image.open(second) as right:
+            if left.size != right.size or left.mode != right.mode:
+                return False
+            return ImageChops.difference(left, right).getbbox() is None
+    except Exception:
+        return False
 
 
 def backfill_phash(store: Store, limit: int = 100_000) -> int:
@@ -454,6 +604,27 @@ def backfill_phash(store: Store, limit: int = 100_000) -> int:
             continue
         store.set_phash(int(row["id"]), dhash(image))
         done += 1
+    return done
+
+
+def backfill_doc_dates(store: Store, limit: int = 3000) -> int:
+    """Give files indexed before `doc_date` existed the date from their chunks.
+
+    One bounded pass per index run over files that still have NULL: the head
+    chunks are already in the store, so this costs a handful of small queries
+    and a regex per file, never a re-extract. The pass shrinks as files gain
+    dates; files whose text simply has no date stay NULL and cost the lookup
+    again next run — bounded by `limit`, so it stays cheap either way.
+    """
+    done = 0
+    for file_id in store.files_without_doc_date(limit):
+        try:
+            doc = find_doc_date(store.chunk_heads(file_id))
+        except Exception:
+            continue
+        if doc:
+            store.set_doc_date(file_id, doc)
+            done += 1
     return done
 
 
@@ -499,7 +670,10 @@ def _index_one(entry, config: IndexConfig, store: Store, embedder, visual, stats
 
     chunks = chunk_text(text, config.chunk_chars, config.chunk_overlap)
     vectors = embedder.encode_passages(chunks)
-    file_id = store.upsert_file(entry.path, entry.size, entry.mtime, digest, entry.kind)
+    file_id = store.upsert_file(
+        entry.path, entry.size, entry.mtime, digest, entry.kind,
+        doc_date=find_doc_date(text),
+    )
     stats.chunks += store.replace_chunks(file_id, chunks, vectors)
     if entry.kind == "code":
         # Definitions come from the text that was just extracted, so this costs
@@ -545,6 +719,9 @@ def _index_image(entry, config: IndexConfig, store: Store, embedder, visual, sta
     chunks = chunk_text(ocr_text, config.chunk_chars, config.chunk_overlap) if ocr_text.strip() else []
     vectors = embedder.encode_passages(chunks) if chunks else None
     stats.chunks += store.replace_chunks(file_id, chunks, vectors)
+    doc = find_doc_date(ocr_text) if ocr_text.strip() else None
+    if doc:
+        store.set_doc_date(file_id, doc)
 
     thumb = thumbnail_bytes(image, config.thumb_size)
     vector = visual.encode_image(image) if visual is not None else visual_features(image)

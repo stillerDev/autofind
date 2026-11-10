@@ -8,9 +8,9 @@ see core/embed/static.py for the runtime side and the quality trade.
 
 One-time, offline:
 
-    pip install 'semfind[onnx]' onnx
+    pip install 'autofind[onnx]' onnx
     python tools/distill_static.py            # finds e5 in the default model dir
-    python tools/distill_static.py --model-dir ~/.semfind/models
+    python tools/distill_static.py --model-dir ~/.autofind/models
 
 After distilling, reindex: the static embedder has its own name, and an index
 built with another embedder refuses to mix vector spaces.
@@ -56,8 +56,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--model-dir",
-        default=str(Path.home() / ".semfind" / "models"),
-        help="directory holding e5-small/model.onnx (default: ~/.semfind/models)",
+        default=str(Path.home() / ".autofind" / "models"),
+        help="directory holding e5-small/model.onnx (default: ~/.autofind/models)",
     )
     args = parser.parse_args()
 

@@ -1,6 +1,21 @@
 numpy>=1.26
 pillow>=10.0
 
+# OCR fallback engine (Windows OCR is tier 1 and needs no extra weight).
+# rapidocr declares opencv-python; the headless build below is installed
+# after it on purpose — same API, but without the GUI/ffmpeg payload,
+# which is worth ~40 MB in the frozen build. Keep this line LAST.
+rapidocr>=3.0
+opencv-python-headless>=4.9,<5
+
+# PDF text: PyMuPDF is an order of magnitude faster than pypdf and reads more
+# encodings; pypdf stays the fallback and is not installed by default.
+pymupdf>=1.24
+
+# onnxruntime: install onnxruntime-directml on Windows for GPU OCR/embedding,
+# or onnxruntime-gpu with a matching CUDA stack. The CPU wheel works everywhere.
+onnxruntime-directml; sys_platform == "win32"
+
 # Windows OCR: bindings to the recogniser that ships with the OS.
 winrt-runtime; sys_platform == "win32"
 winrt-Windows.Foundation; sys_platform == "win32"

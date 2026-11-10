@@ -19,6 +19,9 @@ const I18N = {
   en: {
     "app.title": "AutoFind — local search over files and screenshots",
     "win.hide": "Hide the window (Ctrl+Alt+Space brings it back)",
+    "win.quit": "Quit AutoFind",
+    "suggest.recent": "recent",
+    "suggest.saved": "saved",
 
     "boot.starting": "starting",
     "boot.index": "opening the index",
@@ -56,6 +59,7 @@ const I18N = {
     "cal.next": "Next month",
     "cal.clear": "clear",
     "cal.today": "today",
+    "cal.docDate": "match the date printed in the document, not the file date",
     "cal.monthYear": "{month} {year}",
     "cal.months": "January,February,March,April,May,June,July,August,September,October,November,December",
     "cal.weekdays": "Mo,Tu,We,Th,Fr,Sa,Su",
@@ -187,6 +191,19 @@ const I18N = {
     "panel.watchingOff": "watching is off",
     "panel.watchOn": "watching: {added} updated · {removed} removed · {batch} in the last batch",
     "panel.watchError": "watching stopped: {error}",
+    "panel.duplicates": "Duplicate screenshots",
+    "panel.duplicatesNote": "Exact copies only: same file name, same size and same bytes. Select the extras here and delete them.",
+    "panel.findDuplicates": "Find duplicates",
+    "panel.copies": "{n} copies:",
+    "panel.noDuplicates": "No duplicate screenshots found.",
+    "dups.deleteSelected": "Delete selected files",
+    "dups.select": "Select {name}",
+    "dups.nothingSelected": "Select at least one file",
+    "confirm.deleteTitle": "Are you sure?",
+    "confirm.deleteText": "Selected files ({n}) will be moved to the Recycle Bin and removed from the index.",
+    "confirm.cancel": "Cancel",
+    "confirm.delete": "Delete",
+    "toast.deleted": "Deleted: {n}",
     "panel.privacy": "Privacy",
     "panel.filter": "filter",
     "panel.on": "on",
@@ -199,6 +216,18 @@ const I18N = {
     "panel.noClip": "no CLIP",
     "panel.noClipHint": "text-to-image search is unavailable without CLIP",
     "panel.notFound": "not found",
+    "panel.privacyFilter": "Privacy filter",
+    "panel.privacyAll": "All filters",
+    "panel.privacySome": "{n} of {total} filters",
+    "panel.privacyOff": "Filter is off",
+    "panel.privacyNote": "Applied on the next index; “remove” deletes what is already indexed.",
+    "privacy.keys": "Keys & SSH",
+    "privacy.passwords": "Password managers",
+    "privacy.wallets": "Crypto wallets",
+    "privacy.browser": "Browser data",
+    "privacy.finance": "Bank statements",
+    "privacy.medical": "Medical records",
+    "privacy.secrets": "Secrets in names & configs",
 
     "hints.focus": "focus",
     "hints.select": "select",
@@ -209,6 +238,7 @@ const I18N = {
     "toast.watchOn": "Watching the folders",
     "toast.watchOff": "Watching is off",
     "toast.purged": "Removed from the index: {n}",
+    "toast.privacySaved": "Privacy filters updated",
     "toast.failed": "Failed: {error}",
     "toast.needRoots": "Pick at least one folder",
     "toast.jobDone": "done in {seconds} s · {files}",
@@ -242,6 +272,40 @@ const I18N = {
     "settings.aboutImages": "Image embedder",
     "settings.aboutOcr": "OCR engine",
     "settings.aboutVersion": "Version",
+    "settings.replayWelcome": "Show the welcome screen again",
+
+    "onboard.title": "Welcome to AutoFind",
+    "onboard.subtitle": "A quick setup before the first search. AutoFind reads files on this computer and sends nothing anywhere.",
+    "onboard.language": "Interface language",
+    "onboard.languageNote": "The welcome screen follows your system language. You can switch it here or later in settings.",
+    "onboard.setupAutostart": "Start with Windows",
+    "onboard.autostartNote": "Open AutoFind quietly in the tray when you sign in. Press Ctrl+Alt+Space to bring the window back.",
+    "onboard.autostartOn": "Registered to start at login",
+    "onboard.autostartOff": "Not registered",
+    "onboard.autostartUnsupported": "Not available on this system",
+    "onboard.autostartFailed": "Could not change the login entry: {error}",
+    "onboard.importTitle": "Switch from Kensaku",
+    "onboard.importNote": "Bring over pinned files, saved searches and dictionary words from a Kensaku install. Nothing is written until you press Import.",
+    "onboard.importButton": "Import",
+    "onboard.importScan": "Look for Kensaku",
+    "onboard.importScanning": "looking…",
+    "onboard.importFound": "Found {pins} pins · {saved} saved searches · {aliases} dictionary words.",
+    "onboard.importNothing": "No Kensaku data was found on this computer.",
+    "onboard.importDone": "Imported {pins} pins, {saved} searches and {aliases} words.",
+    "onboard.importMissing": "{n} pinned files are not indexed yet — start indexing below.",
+    "onboard.importFailed": "Import failed: {error}",
+    "onboard.indexTitle": "Index your folders",
+    "onboard.indexNote": "These folders are read on this machine. You can change the list later in the index panel.",
+    "onboard.indexButton": "Start indexing",
+    "onboard.indexRunning": "Indexing… {done}%",
+    "onboard.indexEmpty": "No folders found — add them in the index panel later.",
+    "onboard.indexDone": "{files} in {seconds} s",
+    "onboard.indexFailed": "Indexing failed: {error}",
+    "onboard.start": "Start searching",
+    "onboard.skip": "Skip for now",
+    "onboard.ready": "Ready — everything stays on this computer",
+    "onboard.tagline": "Search the contents of documents and the text inside screenshots.",
+    "onboard.footer": "No account. No cloud. No telemetry.",
 
     "alias.title": "Dictionary",
     "alias.note": "Your own words for what the files contain. Type `cv` and the search also looks for `резюме`. Whole words only, and never inside a filter like `type:cv`.",
@@ -269,6 +333,9 @@ const I18N = {
   ru: {
     "app.title": "AutoFind — локальный поиск по файлам и скриншотам",
     "win.hide": "Скрыть окно (Ctrl+Alt+Space вернёт его)",
+    "win.quit": "Выйти из AutoFind",
+    "suggest.recent": "недавний",
+    "suggest.saved": "сохранённый",
 
     "boot.starting": "запускаю",
     "boot.index": "открываю индекс",
@@ -306,6 +373,7 @@ const I18N = {
     "cal.next": "Следующий месяц",
     "cal.clear": "сбросить",
     "cal.today": "сегодня",
+    "cal.docDate": "искать по дате из документа, а не по дате файла",
     "cal.monthYear": "{month} {year}",
     "cal.months": "Январь,Февраль,Март,Апрель,Май,Июнь,Июль,Август,Сентябрь,Октябрь,Ноябрь,Декабрь",
     "cal.weekdays": "Пн,Вт,Ср,Чт,Пт,Сб,Вс",
@@ -437,6 +505,19 @@ const I18N = {
     "panel.watchingOff": "слежение выключено",
     "panel.watchOn": "слежение: {added} обновлено · {removed} удалено · {batch} в последней пачке",
     "panel.watchError": "слежение остановлено: {error}",
+    "panel.duplicates": "Дубликаты скриншотов",
+    "panel.duplicatesNote": "Только точные копии: одинаковое имя, размер и байты. Лишние можно выбрать здесь и удалить.",
+    "panel.findDuplicates": "Найти дубликаты",
+    "panel.copies": "копий: {n}",
+    "panel.noDuplicates": "Дубликатов не найдено.",
+    "dups.deleteSelected": "Удалить выбранные файлы",
+    "dups.select": "Выбрать {name}",
+    "dups.nothingSelected": "Выберите хотя бы один файл",
+    "confirm.deleteTitle": "Вы уверены?",
+    "confirm.deleteText": "Выбранные файлы ({n}) будут перемещены в корзину и убраны из индекса.",
+    "confirm.cancel": "Отмена",
+    "confirm.delete": "Удалить",
+    "toast.deleted": "Удалено: {n}",
     "panel.privacy": "Приватность",
     "panel.filter": "фильтр",
     "panel.on": "включён",
@@ -449,6 +530,18 @@ const I18N = {
     "panel.noClip": "без CLIP",
     "panel.noClipHint": "без CLIP поиск по описанию недоступен",
     "panel.notFound": "не найден",
+    "panel.privacyFilter": "Фильтр приватности",
+    "panel.privacyAll": "Все фильтры",
+    "panel.privacySome": "{n} из {total} фильтров",
+    "panel.privacyOff": "Фильтр выключен",
+    "panel.privacyNote": "Применяются при следующей индексации; «убрать» удаляет уже проиндексированное.",
+    "privacy.keys": "Ключи и SSH",
+    "privacy.passwords": "Менеджеры паролей",
+    "privacy.wallets": "Криптокошельки",
+    "privacy.browser": "Данные браузеров",
+    "privacy.finance": "Банковские выписки",
+    "privacy.medical": "Медкарты",
+    "privacy.secrets": "Секреты в именах и конфигах",
 
     "hints.focus": "фокус",
     "hints.select": "выбор",
@@ -459,6 +552,7 @@ const I18N = {
     "toast.watchOn": "Слежу за папками",
     "toast.watchOff": "Слежение выключено",
     "toast.purged": "Убрано из индекса: {n}",
+    "toast.privacySaved": "Фильтры приватности обновлены",
     "toast.failed": "Не удалось: {error}",
     "toast.needRoots": "Укажите хотя бы одну папку",
     "toast.jobDone": "готово за {seconds} с · {files}",
@@ -492,6 +586,40 @@ const I18N = {
     "settings.aboutImages": "Эмбеддер картинок",
     "settings.aboutOcr": "Движок OCR",
     "settings.aboutVersion": "Версия",
+    "settings.replayWelcome": "Показать приветствие снова",
+
+    "onboard.title": "Добро пожаловать в AutoFind",
+    "onboard.subtitle": "Короткая настройка перед первым поиском. AutoFind читает файлы на этом компьютере и никуда их не отправляет.",
+    "onboard.language": "Язык интерфейса",
+    "onboard.languageNote": "Экран приветствия подстраивается под язык системы. Переключить его можно здесь или позже в настройках.",
+    "onboard.setupAutostart": "Запускать с Windows",
+    "onboard.autostartNote": "Тихо открывать AutoFind в трее при входе в систему. Вернуть окно — Ctrl+Alt+Space.",
+    "onboard.autostartOn": "Добавлено в автозапуск",
+    "onboard.autostartOff": "Не добавлено в автозапуск",
+    "onboard.autostartUnsupported": "Недоступно в этой системе",
+    "onboard.autostartFailed": "Не удалось изменить автозапуск: {error}",
+    "onboard.importTitle": "Переезд с Kensaku",
+    "onboard.importNote": "Перенесите закреплённые файлы, сохранённые запросы и слова из словаря Kensaku. Ничего не запишется, пока вы не нажмёте «Импортировать».",
+    "onboard.importButton": "Импортировать",
+    "onboard.importScan": "Найти Kensaku",
+    "onboard.importScanning": "ищу…",
+    "onboard.importFound": "Найдено: закреплённых файлов — {pins} · сохранённых запросов — {saved} · слов — {aliases}.",
+    "onboard.importNothing": "Данные Kensaku на этом компьютере не найдены.",
+    "onboard.importDone": "Импортировано: файлов — {pins}, запросов — {saved}, слов — {aliases}.",
+    "onboard.importMissing": "{n} закреплённых файлов ещё не в индексе — начните индексацию ниже.",
+    "onboard.importFailed": "Не удалось импортировать: {error}",
+    "onboard.indexTitle": "Проиндексировать папки",
+    "onboard.indexNote": "Эти папки читаются на этом компьютере. Список можно изменить позже в панели индекса.",
+    "onboard.indexButton": "Начать индексацию",
+    "onboard.indexRunning": "Индексация… {done}%",
+    "onboard.indexEmpty": "Папки не найдены — добавьте их позже в панели индекса.",
+    "onboard.indexDone": "{files} за {seconds} с",
+    "onboard.indexFailed": "Индексация не удалась: {error}",
+    "onboard.start": "Начать поиск",
+    "onboard.skip": "Пропустить",
+    "onboard.ready": "Готово — всё остаётся на этом компьютере",
+    "onboard.tagline": "Поиск по содержимому документов и тексту на скриншотах.",
+    "onboard.footer": "Без аккаунта. Без облака. Без телеметрии.",
 
     "alias.title": "Словарь",
     "alias.note": "Ваши слова вместо тех, что в файлах. Наберёте `cv` — поиск посмотрит и `резюме`. Только целые слова и никогда внутри фильтра вроде `type:cv`.",
@@ -530,9 +658,23 @@ function detectLang() {
   try {
     stored = localStorage.getItem(LANG_KEY);
   } catch (error) {
-    // A blocked storage must not decide the language: fall through to default.
+    // A blocked storage must not decide the language: fall through to the
+    // system language, and then to English.
   }
-  return I18N[stored] ? stored : DEFAULT_LANG;
+  if (I18N[stored]) return stored;
+
+  // First run: the interface should already speak the language of the machine.
+  // Only English and Russian are translated, so everything else gets English —
+  // which is a better first impression than a Russian interface on a German
+  // desktop. The switcher stays visible either way.
+  let system = "";
+  try {
+    system = (navigator.language || (navigator.languages || [])[0] || "").toLowerCase();
+  } catch (error) {
+    system = "";
+  }
+  const base = system.split("-")[0];
+  return I18N[base] ? base : DEFAULT_LANG;
 }
 
 let LANG = detectLang();

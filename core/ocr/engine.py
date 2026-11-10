@@ -32,6 +32,7 @@ from PIL import Image
 
 from . import languages
 from .script import CJK_TAGS
+from ..embed.devices import gpu_provider
 
 
 @dataclass(slots=True)
@@ -265,10 +266,16 @@ class RapidOcrMulti:
             return False
         return self._error is None
 
-    def _build(self):
-        from rapidocr import ModelType, OCRVersion, RapidOCR
+    def _params(self, gpu: bool):
+        from rapidocr import ModelType, OCRVersion
 
         params: dict = {"Global.log_level": "warning"}
+        if gpu:
+            provider = gpu_provider()
+            if provider == "CUDAExecutionProvider":
+                params["EngineConfig.onnxruntime.use_cuda"] = True
+            elif provider == "DmlExecutionProvider":
+                params["EngineConfig.onnxruntime.use_dml"] = True
         if self.lang != "multi":
             params.update(
                 {
@@ -279,7 +286,36 @@ class RapidOcrMulti:
             )
         if self.model_dir is not None:
             params["Global.model_root_dir"] = str(self.model_dir)
-        return RapidOCR(params=params or None)
+        return params or None
+
+    @staticmethod
+    def _warm(engine) -> None:
+        """Run one blank image so every lazy det/cls/rec session actually builds.
+
+        rapidocr creates its onnxruntime sessions on the first call, not in the
+        constructor, so an engine object that "built" fine can still explode on
+        the real first image when the GPU provider does not cooperate. Warming
+        on a blank tile costs one small inference and moves that explosion here,
+        where a CPU rebuild is one `except` away.
+        """
+        import numpy as np
+
+        engine(np.full((64, 64, 3), 255, dtype=np.uint8))
+
+    def _build(self):
+        from rapidocr import RapidOCR
+
+        if gpu_provider() is None:
+            return RapidOCR(params=self._params(False))
+        # The GPU tier: try it, prove it with one warmup inference, and fall
+        # back to the CPU engine rather than failing the whole index over it.
+        try:
+            engine = RapidOCR(params=self._params(True))
+            self._warm(engine)
+            return engine
+        except Exception:
+            pass
+        return RapidOCR(params=self._params(False))
 
     def recognize(self, image: Image.Image) -> OcrResult:
         if self._engine is None:

@@ -104,6 +104,448 @@
   .boot, .boot-hello, .boot-bar { transition: none; }
 }
 
+/* ---------------------------------------------------------- first-run setup */
+
+/* The welcome starts as the boot screen's greeting and ends as two columns:
+   settings on the left, the same greeting still cycling on the right. The
+   column is a flex item with a zero basis that grows, so the greeting is
+   physically pushed aside instead of being redrawn somewhere else. The host
+   window is moved and resized in step by core/app.py. */
+.onboard {
+  position: fixed;
+  inset: 0;
+  z-index: 105;
+  display: flex;
+  min-width: 0;
+  background:
+    radial-gradient(circle at 74% 20%, rgba(255, 255, 255, 0.055), transparent 58%),
+    linear-gradient(155deg, #181b1f 0%, #121417 56%, #0b0d10 100%);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.4s ease, visibility 0.4s ease;
+  /* The card doubles as the window's title bar: grabbed anywhere calm, it
+     moves the frameless window, so its text must not select under the drag. */
+  user-select: none;
+  cursor: default;
+}
+
+.onboard.open { opacity: 1; visibility: visible; }
+
+/* The welcome window's own quiet title-bar corner: a grey bar hides the
+   window, a grey cross quits the app. Grey on purpose — nothing destructive
+   is happening, the setup simply waits for the next launch. */
+.onboard-controls { display: none; }
+
+body.in-app .onboard-controls {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+}
+
+.onboard-controls button {
+  width: 36px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.5);
+  background: transparent;
+  cursor: pointer;
+}
+
+.onboard-controls button:hover {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.onboard-controls button:active { background: rgba(255, 255, 255, 0.14); }
+
+.onboard-controls button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 1px;
+}
+
+.onboard.done {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.onboard-side {
+  /* The greeting is the left column, so the settings appear on the right:
+     the welcome moves aside in the direction the eye already left. */
+  order: 2;
+  flex: 0 0 0;
+  min-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  visibility: hidden;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+  background:
+    linear-gradient(180deg, rgba(24, 27, 31, 0.96) 0%, rgba(14, 16, 19, 0.99) 100%);
+  transition:
+    flex-basis 0.58s cubic-bezier(0.22, 0.72, 0.2, 1),
+    opacity 0.38s ease,
+    visibility 0s linear 0.4s;
+}
+
+.onboard.split .onboard-side {
+  flex-basis: 54%;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    flex-basis 0.58s cubic-bezier(0.22, 0.72, 0.2, 1),
+    opacity 0.38s ease,
+    visibility 0s;
+}
+
+.onboard-scroll {
+  width: 100%;
+  max-width: 660px;
+  height: 100%;
+  margin: 0 auto;
+  padding: 30px clamp(22px, 3.4vw, 44px) 38px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #343a42 transparent;
+}
+
+.onboard-scroll::-webkit-scrollbar { width: 9px; }
+.onboard-scroll::-webkit-scrollbar-thumb {
+  background: #343a42;
+  border-radius: 9px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.onboard-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 26px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.onboard-brand .mark {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f2f3f4;
+  box-shadow: 0 0 9px rgba(255, 255, 255, 0.8);
+}
+
+.onboard-title {
+  margin: 0;
+  font-size: clamp(27px, 2.8vw, 36px);
+  line-height: 1.18;
+  font-weight: 300;
+  letter-spacing: -0.012em;
+  color: #f4f5f6;
+}
+
+.onboard-lead {
+  max-width: 52ch;
+  margin: 12px 0 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.ob-block {
+  margin-top: 16px;
+  padding: 15px 17px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.028);
+}
+
+.ob-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ob-block h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+  color: #d7dade;
+}
+
+.ob-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--faint);
+}
+
+.ob-state {
+  min-height: 1.4em;
+  margin: 9px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.ob-state.good { color: #b8c0c8; }
+.ob-state.bad { color: #e0a3a0; }
+
+.ob-pill {
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.ob-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.ob-btn {
+  width: auto;
+  min-width: 132px;
+  padding: 8px 16px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+.ob-btn.ghost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+}
+
+.ob-btn.ghost:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.ob-btn:disabled { cursor: default; opacity: 0.55; }
+
+/* A switch, not a checkbox: it is the only boolean on the screen, and a
+   tickbox next to a sentence reads like a licence agreement. */
+.ob-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.ob-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.ob-switch-track {
+  position: relative;
+  display: block;
+  width: 38px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.ob-switch-dot {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #8e959c;
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.ob-switch input:checked + .ob-switch-track {
+  background: rgba(230, 232, 234, 0.9);
+  border-color: transparent;
+}
+
+.ob-switch input:checked + .ob-switch-track .ob-switch-dot {
+  transform: translateX(16px);
+  background: #17191d;
+}
+
+.ob-switch input:focus-visible + .ob-switch-track {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 2px;
+}
+
+.ob-switch input:disabled + .ob-switch-track {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ob-roots {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ob-roots li {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ob-roots li::before {
+  content: "·";
+  margin-right: 7px;
+  color: var(--faint);
+}
+
+.ob-roots .ob-none {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.ob-roots .ob-none::before { content: none; }
+
+.ob-progress {
+  height: 2px;
+  margin-top: 11px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.ob-progress span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.4), #f4f5f6);
+  transition: width 0.3s ease;
+}
+
+.onboard-stage {
+  order: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 36px clamp(24px, 4vw, 58px);
+  text-align: center;
+}
+
+.onboard-greeting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.onboard-hello {
+  max-width: 100%;
+  font-size: clamp(54px, 8.6vw, 104px);
+  line-height: 1.12;
+  font-weight: 300;
+  letter-spacing: 0.005em;
+  color: #f4f5f6;
+  transition: font-size 0.55s ease, opacity 0.18s ease;
+  overflow-wrap: anywhere;
+}
+
+.onboard-hello.fade { opacity: 0; }
+
+.onboard-hello-lang {
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.onboard.split .onboard-hello {
+  font-size: clamp(38px, 4.4vw, 60px);
+}
+
+.onboard-stage-foot {
+  max-width: 420px;
+  margin-top: 34px;
+  opacity: 0;
+  transform: translateY(9px);
+  transition: opacity 0.42s ease 0.08s, transform 0.42s ease 0.08s;
+}
+
+.onboard.split .onboard-stage-foot {
+  opacity: 1;
+  transform: none;
+}
+
+.onboard-tagline {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.onboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.onboard-actions .ob-btn { min-width: 150px; }
+
+.onboard-foot {
+  margin: 18px 0 0;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--faint);
+}
+
+.settings-replay { margin-top: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .onboard,
+  .onboard-side,
+  .onboard-hello,
+  .onboard-stage-foot,
+  .ob-switch-track,
+  .ob-switch-dot,
+  .ob-progress span { transition: none; }
+}
+
+@media (max-height: 640px) {
+  .onboard-scroll { padding-top: 20px; padding-bottom: 24px; }
+  .onboard-brand { margin-bottom: 16px; }
+  .ob-block { margin-top: 11px; padding: 12px 14px 13px; }
+  .onboard-stage-foot { margin-top: 20px; }
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -299,6 +741,7 @@ body.in-app .win-controls { display: flex; align-items: center; }
   display: flex;
   align-items: center;
   gap: 8px;
+  position: relative; /* the suggestions dropdown anchors to the pill */
   /* Pushed to the right edge next to the header actions: with three children
      space-between would strand the search box in the middle of the header. */
   margin-left: auto;
@@ -694,6 +1137,9 @@ body.in-app .win-controls { display: flex; align-items: center; }
 
 .cal-act:hover { color: var(--text); background: rgba(255, 255, 255, 0.13); }
 
+/* The document-date toggle keeps its lit state while the mode is on. */
+.cal-act.set { color: var(--text); background: rgba(255, 255, 255, 0.16); }
+
 .meta-line {
   margin-left: auto;
   font-size: 12px;
@@ -990,6 +1436,173 @@ main {
   padding: 0 2px;
 }
 
+/* Recent queries and saved searches under the box: what you searched before
+   is closer than typing it again. Anchored to the pill, closed by Esc or by
+   clicking anywhere else. */
+.suggest {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(14, 16, 19, 0.97);
+  backdrop-filter: blur(14px) saturate(120%);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+}
+
+.suggest[hidden] { display: none; }
+
+.suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #c9ccd1;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.suggest-item .suggest-kind {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.suggest-item .suggest-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggest-item.active, .suggest-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+/* The duplicates report: its own right-side drawer, wider than the index one
+   because whole paths live here. Every group is one grey block; each file is
+   a two-line row — its name, then the full path — with a checkbox for deletion
+   and a click that reveals it. */
+.drawer.dups-drawer {
+  width: min(1080px, calc(92vw - 20px));
+  overflow: hidden;
+}
+
+.dups-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 10px;
+  overflow-y: auto;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  scrollbar-width: thin;
+  scrollbar-color: #343a42 transparent;
+}
+
+.dups-body[hidden] { display: none; }
+
+.dup-group {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  padding: 10px 12px 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.dup-count { font-size: 12px; color: #d7dade; }
+
+.dup-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 9px 6px 6px;
+  margin-top: 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+}
+
+.dup-reveal {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 1px 3px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dup-pick {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.dup-item .dup-name {
+  display: block;
+  font-size: 12.5px;
+  color: #e8eaed;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dup-item .dup-full {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: #8b9096;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dup-item:hover { background: rgba(255, 255, 255, 0.09); }
+.dup-item:hover .dup-name { color: #fff; }
+
+.drawer-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A white outline bin: the one control that removes things, so it stays plain
+   and colourless until it is hovered. */
+.dup-trash {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.dup-trash:hover { background: rgba(255, 255, 255, 0.14); }
+
 .actions { display: flex; gap: 8px; margin-top: 10px; }
 
 .act {
@@ -1203,6 +1816,110 @@ body.in-app .side-foot .only-app { display: inline-flex; }
 
 .stat-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* Privacy: a master switch, then a disclosure with one checkbox per group.
+   The arrow points down when collapsed and flips when the list is open. */
+.privacy-master { align-items: center; cursor: pointer; }
+
+.privacy-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin-top: 7px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.privacy-toggle:hover { background: rgba(255, 255, 255, 0.075); color: var(--text); }
+.privacy-toggle .chev { opacity: 0.65; transition: transform 0.18s ease; }
+.privacy-toggle.open .chev { transform: rotate(180deg); }
+
+/* Height + opacity glide the list open; `hidden` toggling can only snap.
+   `visibility` keeps the collapsed checkboxes out of the tab order while the
+   transition runs, and is delayed so it does not cut the closing animation. */
+.privacy-filters {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition:
+    max-height 240ms ease,
+    opacity 180ms ease,
+    transform 240ms ease,
+    visibility 0s linear 240ms;
+}
+
+.privacy-filters.open {
+  max-height: 300px;
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition:
+    max-height 240ms ease,
+    opacity 200ms ease,
+    transform 240ms ease,
+    visibility 0s;
+}
+
+.privacy-filters-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 5px;
+  padding: 5px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+/* Each row follows the one above it instead of the whole block landing at
+   once. `both` holds the from-state during the delay, so a row does not flash
+   before its turn. --i is the row index, set when the list is rendered. */
+@keyframes privacy-filter-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.privacy-filters.open .privacy-filter {
+  animation: privacy-filter-in 240ms ease both;
+  animation-delay: calc(var(--i, 0) * 40ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .privacy-filters { transition: none; }
+  .privacy-filters.open .privacy-filter { animation: none; }
+}
+
+.privacy-filter {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.privacy-filter:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+
+.privacy-filter input,
+.privacy-master input { accent-color: var(--accent); cursor: pointer; }
+
+.privacy-filter input:disabled { cursor: default; }
+.privacy-filter:has(input:disabled) { opacity: 0.45; cursor: default; }
+.privacy-filter:has(input:disabled):hover { background: transparent; color: var(--muted); }
+
+.privacy-count { margin-top: 6px; align-items: center; }
+
 .engines { font-size: 10.5px; color: var(--faint); line-height: 1.45; }
 .engines span { color: var(--muted); }
 .engines .hint { color: var(--faint); border-bottom: 1px dotted rgba(255, 255, 255, 0.22); cursor: help; }
@@ -1410,10 +2127,25 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   min-width: 0;
   padding: 4px 6px;
   border-radius: 9px;
-  transition: background 0.14s ease;
+  transition: background 0.14s ease, box-shadow 0.14s ease, color 0.14s ease;
 }
 
-.pin-row:hover { background: rgba(255, 255, 255, 0.05); }
+/* Hover reads as a white glow, not a dim grey wash: the whole row lifts and
+   every line of text in it turns white, not just the name button. */
+.pin-row:hover {
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.34), 0 0 20px rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.pin-row:hover .pin-name,
+.pin-row:hover .pin-path { color: #fff; }
+
+.pin-row:hover .pin-kind {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+}
+
 .pin-row .pin-star { margin-left: 0; }
 
 .pin-thumb {
@@ -1481,7 +2213,19 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   border-radius: 999px;
   background: rgba(14, 16, 19, 0.6);
   overflow: hidden;
+  transition: border-color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
 }
+
+/* Same white glow as the pinned rows: the pill itself lights up on hover, so
+   the padding and the × are part of the affordance, not dead grey space. */
+.saved-chip:hover {
+  border-color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22), 0 0 18px rgba(255, 255, 255, 0.2);
+}
+
+.saved-chip:hover .saved-run { color: #fff; }
+.saved-chip:hover .saved-x { color: rgba(255, 255, 255, 0.85); }
 
 .saved-run {
   max-width: 240px;
@@ -1509,7 +2253,8 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   cursor: pointer;
 }
 
-.saved-x:hover { color: #e08a86; }
+.saved-x:hover,
+.saved-chip:hover .saved-x:hover { color: #e08a86; }
 
 .empty-tip {
   margin-top: 8px !important;
@@ -1593,6 +2338,32 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   padding: 3px 10px;
   cursor: pointer;
 }
+
+.confirm-card { width: min(420px, 100%); }
+
+.confirm-text {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-actions .btn { width: auto; }
+
+.btn.danger {
+  background: #f2f3f4;
+  color: #15181b;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.btn.danger:hover { background: #fff; filter: none; }
 
 /* ---------------------------------------------------------------- settings */
 

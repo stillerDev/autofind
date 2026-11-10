@@ -215,7 +215,7 @@ class McpTests(unittest.TestCase):
 
     def test_initialize(self):
         response = self.call("initialize")
-        self.assertEqual(response["result"]["serverInfo"]["name"], "semfind")
+        self.assertEqual(response["result"]["serverInfo"]["name"], "autofind")
         self.assertIn("tools", response["result"]["capabilities"])
 
     def test_tools_are_listed(self):

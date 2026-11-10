@@ -1,6 +1,6 @@
 {
   "label": "demo corpus (smoke set)",
-  "corpus": ".demo-corpus/screens + SemFind plan docx + this repository",
+  "corpus": ".demo-corpus/screens + AutoFind plan docx + this repository",
   "note": "Small hand-built set that exists to prove the harness works end to end. It is NOT the acceptance measurement: the plan asks for 20 real queries over a real corpus, judged by someone other than the author.",
   "queries": [
     { "q": "неверный пароль при входе", "expected": ["dark-proxy-settings.png"] },
@@ -12,9 +12,9 @@
     { "q": "дашборд продаж по месяцам", "expected": ["sales-dashboard.png"] },
     { "q": "заказ подтверждён сумма и доставка", "expected": ["order-4821-confirm.png"] },
     { "q": "функция слияния результатов поиска", "expected": ["core/search.py"] },
-    { "q": "ранговое слияние RRF", "expected": ["core/search.py", "SemFind_план_реализации_MVP.docx"] },
+    { "q": "ранговое слияние RRF", "expected": ["core/search.py", "AutoFind_план_реализации_MVP.docx"] },
     { "q": "схема базы данных FTS5 и векторы", "expected": ["core/store.py"] },
-    { "q": "размер инсталлятора и модели в int8", "expected": ["SemFind_план_реализации_MVP.docx"] },
+    { "q": "размер инсталлятора и модели в int8", "expected": ["AutoFind_план_реализации_MVP.docx"] },
     { "q": "как запустить локальный интерфейс", "expected": ["README.md"] },
     { "q": "распознавание текста на скриншотах", "expected": ["core/ocr/engine.py", "core/ocr/__init__.py"] }
   ]

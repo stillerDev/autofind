@@ -1,4 +1,4 @@
-"""`.gitignore` / `.cursorignore` / `.semfindignore` parity for the index.
+"""`.gitignore` / `.cursorignore` / `.autofindignore` parity for the index.
 
 If a repository ignores a file, the index should not surface it: otherwise the
 search shows build output and secrets the project already decided to hide. This
@@ -17,7 +17,7 @@ import os
 import re
 from pathlib import Path
 
-IGNORE_FILES = (".gitignore", ".cursorignore", ".semfindignore")
+IGNORE_FILES = (".gitignore", ".cursorignore", ".autofindignore")
 MAX_IGNORE_FILES = 2000
 
 

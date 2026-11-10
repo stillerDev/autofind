@@ -133,6 +133,42 @@ class SketchSearchTests(unittest.TestCase):
             path.write_bytes(bytes(raw[:old_size]))
             self.assertIsNone(Pack.open(path, 384))
 
+    def test_expanded_rerank_on_a_deduplicated_pack(self):
+        """The acceptance path must survive duplicates and keep < count.
+
+        `_expand` maps an original row through its unique row into the rerank
+        scores; indexed by unique id directly it read another row's score —
+        invisible while every test pack was duplicate-free and acceptance
+        always fell back to exact, and an IndexError on a real pack (263k
+        rows, 28% duplicates) the first time the sketch passed its own bound.
+        Orthogonal clusters put the nearest excluded sketch far away, so the
+        bound clears and the two-phase result really is the expanded one.
+        """
+        rng = np.random.default_rng(5)
+        dim = 384
+        centers = rng.standard_normal((4, dim), dtype=np.float32)
+        # Gram-Schmidt: mutually orthogonal centers, so a query at center 0
+        # scores ~1.0 there and ~0 everywhere else.
+        for i in range(1, len(centers)):
+            for j in range(i):
+                centers[i] -= (centers[i] @ centers[j] / (centers[j] @ centers[j])) * centers[j]
+        centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+        centers = centers + rng.standard_normal(centers.shape, dtype=np.float32) * 0.01
+        centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+        rows = np.repeat(centers, 30_000, axis=0)          # 120k rows, byte-identical duplicates
+        with tempfile.TemporaryDirectory() as tmp:
+            pack = make_pack(tmp, rows.astype(np.float32))
+            try:
+                self.assertLess(pack.count, pack.orig_count, "the pack must carry duplicates")
+                query = rows[0].copy()
+                exact = pack._search_exact(query, 50)
+                fast = pack._search_sketch(query, 50)
+                self.assertEqual([fid for fid, _ in exact], [fid for fid, _ in fast])
+                for (_, s_exact), (_, s_fast) in zip(exact, fast):
+                    self.assertAlmostEqual(s_exact, s_fast, places=4)
+            finally:
+                pack.close()
+
 
 if __name__ == "__main__":
     unittest.main()

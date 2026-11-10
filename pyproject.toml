@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "semfind"
+name = "autofind"
 version = "0.1.0"
 description = "Local search over files and screenshots. Nothing leaves the machine."
 readme = "README.md"
@@ -29,7 +29,7 @@ watch = ["watchdog>=4.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-semfind = "core.cli:main"
+autofind = "core.cli:main"
 
 [tool.setuptools]
 packages = ["core", "core.extract", "core.embed", "core.ocr"]

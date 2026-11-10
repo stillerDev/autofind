@@ -1,6 +1,6 @@
-"""Wire semfind into MCP clients with one command.
+"""Wire autofind into MCP clients with one command.
 
-`semfind mcp` speaks JSON-RPC over stdio, which every client supports but which
+`autofind mcp` speaks JSON-RPC over stdio, which every client supports but which
 means the client owns the process and the index is only reachable while the
 desktop app is open. The HTTP transport removes that: the same tools are served
 by the running app on 127.0.0.1, guarded by a bearer token that is generated
@@ -24,7 +24,7 @@ from pathlib import Path
 from .config import IndexConfig
 
 TOKEN_FILE = "mcp_token"
-SERVER_KEY = "semfind"
+SERVER_KEY = "autofind"
 
 
 @dataclass(slots=True)
@@ -101,7 +101,7 @@ def entry(transport: str, config: IndexConfig, port: int, db_path: Path) -> dict
     # do not control, so `python -m core.cli` would fail to import. Prefer the
     # installed console script; fall back to a one-liner that puts the project
     # root on sys.path explicitly.
-    installed = shutil.which("semfind")
+    installed = shutil.which("autofind")
     if installed:
         # `which` can return a path relative to the current directory when "." is
         # on PATH; the client runs from somewhere else, so make it absolute.

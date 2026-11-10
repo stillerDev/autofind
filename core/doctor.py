@@ -165,7 +165,7 @@ def format_report(data: dict) -> str:
     bundle = data["bundle"]
 
     lines = [
-        f"semfind      {data['version']}",
+        f"autofind      {data['version']}",
         f"python       {data['python']}  ({data['platform']})",
         "",
         f"index        {index['path']}",

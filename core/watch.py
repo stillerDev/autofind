@@ -96,7 +96,7 @@ class Watcher:
             return
         self._stop.clear()
         self.state.running = True
-        self._thread = threading.Thread(target=self.run, name="semfind-watch", daemon=True)
+        self._thread = threading.Thread(target=self.run, name="autofind-watch", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 3.0) -> None:
@@ -204,6 +204,7 @@ class Watcher:
             max_bytes=self.config.max_file_bytes,
             min_bytes=self.config.min_file_bytes,
             privacy=self.config.privacy and not self.config.allow_sensitive,
+            categories=self.config.privacy_categories,
         ):
             if not self._owns(entry.path):
                 continue
@@ -304,7 +305,7 @@ class EventFan:
         self._threads: list[threading.Thread] = []
         for root in roots:
             thread = threading.Thread(
-                target=self._watch_root, args=(root, stop), name=f"semfind-fswatch", daemon=True
+                target=self._watch_root, args=(root, stop), name=f"autofind-fswatch", daemon=True
             )
             self._threads.append(thread)
             thread.start()

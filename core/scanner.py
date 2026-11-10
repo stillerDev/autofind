@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from .ignore import IgnoreSet
-from .privacy import SENSITIVE_DIRS, match_reason
+from .privacy import match_reason, sensitive_dirs
 
 TEXT_EXT = {
     ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json",
@@ -79,22 +79,26 @@ def iter_entries(
     privacy: bool = True,
     skipped: list[tuple[str, str]] | None = None,
     respect_ignore: bool = True,
+    categories: frozenset[str] | set[str] | None = None,
 ) -> Iterator[FileEntry]:
     """Yield supported files under every root, skipping noise directories.
 
     With `privacy` on, sensitive locations are dropped before they are opened and
     appended to `skipped` as (path, reason) so the caller can report the count.
 
-    With `respect_ignore` on, `.gitignore` / `.cursorignore` / `.semfindignore`
+    With `respect_ignore` on, `.gitignore` / `.cursorignore` / `.autofindignore`
     are honoured: an ignored directory is pruned from the walk (git semantics —
     nothing inside can be re-included) and ignored files never reach the index.
     """
     seen: set[str] = set()
+    blocked = sensitive_dirs(categories) if privacy else frozenset()
     for root in roots:
         base = Path(root).expanduser()
         if base.is_file():
             entry = _entry_for(base, max_bytes, min_bytes)
-            if entry and entry.path not in seen and _passes_privacy(entry.path, privacy, skipped):
+            if entry and entry.path not in seen and _passes_privacy(
+                entry.path, privacy, skipped, categories
+            ):
                 seen.add(entry.path)
                 yield entry
             continue
@@ -108,7 +112,7 @@ def iter_entries(
             for name in dirnames:
                 if name in excluded_dirs or name.startswith("."):
                     continue
-                if privacy and name.lower() in SENSITIVE_DIRS:
+                if privacy and name.lower() in blocked:
                     if skipped is not None:
                         skipped.append((str(Path(dirpath) / name), f"directory '{name.lower()}'"))
                     continue
@@ -123,15 +127,22 @@ def iter_entries(
                 if respect_ignore and ignore.is_ignored(str(path), False):
                     continue
                 entry = _entry_for(path, max_bytes, min_bytes)
-                if entry and entry.path not in seen and _passes_privacy(entry.path, privacy, skipped):
+                if entry and entry.path not in seen and _passes_privacy(
+                    entry.path, privacy, skipped, categories
+                ):
                     seen.add(entry.path)
                     yield entry
 
 
-def _passes_privacy(path: str, privacy: bool, skipped: list[tuple[str, str]] | None) -> bool:
+def _passes_privacy(
+    path: str,
+    privacy: bool,
+    skipped: list[tuple[str, str]] | None,
+    categories: frozenset[str] | set[str] | None = None,
+) -> bool:
     if not privacy:
         return True
-    reason = match_reason(path)
+    reason = match_reason(path, categories)
     if reason is None:
         return True
     if skipped is not None:

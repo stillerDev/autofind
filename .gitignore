@@ -14,3 +14,14 @@ index.db-wal
 index.db-shm
 .DS_Store
 node_modules/
+
+# Personal editor settings and machine-specific build/debug artifacts.
+.vscode/
+_diag.py
+afdiag*.spec
+*-debug.spec
+
+# Screenshots taken on a real machine: file paths, user names and index
+# statistics in them are personal, so they stay out of the source tree.
+docs/ui-*.png
+docs/shot-*.png

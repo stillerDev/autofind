@@ -11,7 +11,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from core.chunker import chunk_text
-from core.config import IndexConfig
+from core.config import IndexConfig, save_privacy_prefs
 from core.doctor import estimate_bundle
 from core.embed import HashingEmbedder
 from core.embed.visual import LAYOUT_DIM, LayoutEmbedder
@@ -104,9 +104,9 @@ class ExtractorTests(unittest.TestCase):
     def test_pdf_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sample.pdf"
-            make_pdf(path, "SemFind local search")
+            make_pdf(path, "AutoFind local search")
             text = extract_text(path, "pdf")
-            self.assertIn("SemFind local search", text)
+            self.assertIn("AutoFind local search", text)
 
 
 class ImageTests(unittest.TestCase):
@@ -356,6 +356,39 @@ class PrivacyTests(unittest.TestCase):
             purged = purge_indexed(store)
             self.assertEqual(purged["removed"], 0)  # nothing sensitive got in
             store.close()
+
+    def test_categories_select_which_paths_are_hidden(self):
+        wallet = "/home/me/wallets/wallet.dat"
+        key = "/home/me/.ssh/id_rsa"
+        self.assertIsNotNone(match_reason(wallet, {"wallets"}))
+        self.assertIsNone(match_reason(wallet, {"keys"}))
+        self.assertIsNotNone(match_reason(key, {"keys"}))
+        self.assertIsNone(match_reason(key, frozenset()))
+
+    def test_scanner_respects_selected_categories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            (root / "keepass").mkdir(parents=True)
+            (root / "keepass" / "vault.txt").write_text("vault " * 8, encoding="utf-8")
+            (root / "notes.md").write_text("обычная заметка про поиск", encoding="utf-8")
+            only_keys = [entry.path for entry in iter_entries([root], categories={"keys"})]
+            self.assertEqual(len(only_keys), 2)
+            only_passwords = [
+                entry.path for entry in iter_entries([root], categories={"passwords"})
+            ]
+            self.assertEqual(len(only_passwords), 1)
+            self.assertTrue(only_passwords[0].endswith("notes.md"))
+
+    def test_privacy_prefs_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            config = IndexConfig(home=home)
+            config.privacy = False
+            config.privacy_categories = frozenset({"keys"})
+            save_privacy_prefs(config)
+            again = IndexConfig(home=home)
+            self.assertFalse(again.privacy)
+            self.assertEqual(again.privacy_categories, frozenset({"keys"}))
 
 
 class WatcherTests(unittest.TestCase):

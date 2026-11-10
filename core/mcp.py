@@ -26,7 +26,7 @@ from .search import search_page
 from .store import Store
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_NAME = "semfind"
+SERVER_NAME = "autofind"
 DEFAULT_PAGE = 10
 MAX_PAGE = 50
 
@@ -55,7 +55,7 @@ TOOLS = [
         "name": "search",
         "description": (
             "Search the local file index (names, paths and document text). Read-only. "
-            "Understands the semfind query grammar: type:, ext:, in:, path:, name:, "
+            "Understands the autofind query grammar: type:, ext:, in:, path:, name:, "
             "content:, modified:<7d, size:>2mb, re:\"...\", sym:parse_query, -exclude, "
             "mode:exhaustive, sort:newest. Plain Russian or English phrasing also works "
             "(\"скриншоты за прошлую неделю\"). Returns ranked hits with a snippet and "
@@ -430,7 +430,7 @@ def _version() -> str:
     try:
         from importlib.metadata import version
 
-        return version("semfind")
+        return version("autofind")
     except Exception:
         return "0.1.0"
 

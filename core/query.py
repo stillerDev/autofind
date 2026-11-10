@@ -255,7 +255,10 @@ class ParsedQuery:
         return not (self.terms or self.regexes or self.has_filters)
 
     # -- row predicate ---------------------------------------------------
-    def matches(self, path: str, kind: str, size: int, mtime: float) -> bool:
+    def matches(
+        self, path: str, kind: str, size: int, mtime: float,
+        skip_modified: bool = False,
+    ) -> bool:
         lowered = path.lower()
         if self.kinds and kind not in self.kinds:
             return False
@@ -270,7 +273,10 @@ class ParsedQuery:
         for fragment in self.not_paths:
             if fragment.lower() in lowered:
                 return False
-        if self.modified is not None and not self.modified.matches(mtime):
+        # `skip_modified` serves the document-date mode: the caller has already
+        # accepted this row on the strength of its claimed date instead of its
+        # mtime, so the mtime range must not veto it a second time.
+        if self.modified is not None and not skip_modified and not self.modified.matches(mtime):
             return False
         if self.size is not None and not self.size.matches(size):
             return False

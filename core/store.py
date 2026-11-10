@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS images (
     indexed_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_images_sha ON images(sha256);
+CREATE INDEX IF NOT EXISTS idx_images_phash ON images(phash);
 CREATE INDEX IF NOT EXISTS idx_images_file ON images(file_id);
 CREATE TABLE IF NOT EXISTS vectors (
     id         INTEGER PRIMARY KEY,
@@ -132,6 +133,9 @@ CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
 FILE_COLUMNS = {
     "name": "TEXT",
     "char_mask": "INTEGER DEFAULT 0",
+    # The date the document itself claims (a receipt's printed date), ISO or
+    # NULL until a re-index reads one. mtime is when the file landed on disk.
+    "doc_date": "TEXT",
 }
 
 IMAGE_COLUMNS = {
@@ -531,18 +535,55 @@ class Store:
     def file_by_id(self, file_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
 
-    def upsert_file(self, path: str, size: int, mtime: float, sha256: str, kind: str) -> int:
+    def upsert_file(
+        self, path: str, size: int, mtime: float, sha256: str, kind: str,
+        doc_date: str | None = None,
+    ) -> int:
         name = basename(path)
         self.conn.execute(
-            "INSERT INTO files(path, name, char_mask, size, mtime, sha256, kind, indexed_at) "
-            "VALUES(?,?,?,?,?,?,?,?) "
+            "INSERT INTO files(path, name, char_mask, size, mtime, sha256, kind, doc_date, indexed_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(path) DO UPDATE SET name=excluded.name, char_mask=excluded.char_mask, "
             "size=excluded.size, mtime=excluded.mtime, sha256=excluded.sha256, "
-            "kind=excluded.kind, indexed_at=excluded.indexed_at",
-            (path, name, char_mask(name), size, mtime, sha256, kind, time.time()),
+            "kind=excluded.kind, doc_date=COALESCE(excluded.doc_date, doc_date), "
+            "indexed_at=excluded.indexed_at",
+            (path, name, char_mask(name), size, mtime, sha256, kind, doc_date, time.time()),
         )
         row = self.conn.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()
         return int(row["id"])
+
+    def doc_dates(self, file_ids: Iterable[int]) -> dict[int, str]:
+        """The document-claimed date per file id, when the index knows one."""
+        ids = [int(fid) for fid in file_ids]
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT id, doc_date FROM files WHERE id IN ({marks}) AND doc_date IS NOT NULL",
+            ids,
+        ).fetchall()
+        return {int(row["id"]): str(row["doc_date"]) for row in rows}
+
+    def files_without_doc_date(self, limit: int = 3000) -> list[int]:
+        return [
+            int(row["id"])
+            for row in self.conn.execute(
+                "SELECT id FROM files WHERE doc_date IS NULL LIMIT ?", (limit,)
+            )
+        ]
+
+    def set_doc_date(self, file_id: int, doc_date: str) -> None:
+        self.conn.execute(
+            "UPDATE files SET doc_date = ? WHERE id = ?", (doc_date, int(file_id))
+        )
+
+    def chunk_heads(self, file_id: int, limit: int = 3) -> str:
+        """The first chunks' text: a document's date lives in its header."""
+        rows = self.conn.execute(
+            "SELECT text FROM chunks WHERE file_id = ? ORDER BY ord LIMIT ?",
+            (int(file_id), limit),
+        ).fetchall()
+        return "\n".join(str(row["text"]) for row in rows)
 
     def replace_chunks(self, file_id: int, chunks: Sequence[str], vectors: np.ndarray | None) -> int:
         self._drop_chunks_of(file_id)
@@ -592,6 +633,11 @@ class Store:
             "DELETE FROM vectors WHERE owner_type='chunk' AND owner_id IN "
             f"({','.join('?' * len(old_ids))})", old_ids
         )
+        # The pack cache's epoch: chunk vectors are gone, so a base pack built
+        # earlier is no longer a faithful prefix of this table — and a freed
+        # rowid can come back as a different vector. One integer here is what
+        # lets `refresh` tell deletions from cheap appends.
+        vecstore.bump_vector_epoch(self.conn)
         self.conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
 
     def drop_file(self, file_id: int) -> None:
@@ -623,6 +669,34 @@ class Store:
 
     def image_by_file_id(self, file_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM images WHERE file_id = ?", (file_id,)).fetchone()
+
+    def duplicate_images(self, limit: int = 30, per_group: int = 500) -> list[dict]:
+        """Exact copies: same file name, same byte size and same digest.
+
+        The perceptual hash is deliberately not used here — it groups screens
+        that merely look alike, which is not what "duplicate" means in this
+        report. Exact copies are byte-identical, so the digest settles it, and
+        the name and size keep unrelated images with a digest collision out.
+        """
+        rows = self.conn.execute(
+            "SELECT id AS file_id, path, size, sha256 FROM files "
+            "WHERE kind = 'image' ORDER BY id"
+        ).fetchall()
+        groups: dict[tuple[str, int, str], list[dict]] = {}
+        for row in rows:
+            path = str(row["path"])
+            name = basename(path).casefold()
+            key = (name, int(row["size"]), str(row["sha256"]))
+            groups.setdefault(key, []).append(
+                {"file_id": int(row["file_id"]), "path": path}
+            )
+
+        duplicates = [items for items in groups.values() if len(items) > 1]
+        duplicates.sort(key=lambda items: (-len(items), basename(items[0]["path"]).casefold()))
+        return [
+            {"name": basename(items[0]["path"]), "items": items[:per_group]}
+            for items in duplicates[:limit]
+        ]
 
     def image_meta(self, file_ids: Iterable[int]) -> dict[int, tuple[int, int, int]]:
         """(width, height, phash) per file, in one query.
@@ -856,11 +930,13 @@ class Store:
             self._checkout = None
 
     def rebuild_pack(self):
-        """Force a rebuild. Called at the end of an index run so the first
-        search does not pay for it. The Store's own checkout comes through the
-        standard `acquire` path — `release` must never see a pack that no
-        `acquire` balanced."""
-        vecstore.PACKS.build(self.path, self.conn, self.dim)
+        """Refresh the pack after an index run. Incremental: new vectors land
+        in the delta layer and the base file is left alone; deleted chunk rows
+        (bumped `vector_epoch`) or a delta past its cap fall back to the full
+        rebuild. Called at the end of a run so the first search does not pay
+        for it. The Store's own checkout comes through the standard `acquire`
+        path — `release` must never see a pack that no `acquire` balanced."""
+        vecstore.PACKS.refresh(self.path, self.conn, self.dim)
         return self.pack()
 
     def image_index(self, dim: int | None = None) -> tuple[np.ndarray, np.ndarray]:

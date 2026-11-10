@@ -5,7 +5,7 @@ pinned files, the four saved queries and the ten dictionary words they typed
 in over a year. Asking them to retype those is asking them not to switch. So
 the switch has to be one command that leaves nothing behind:
 
-    semfind import kensaku
+    autofind import kensaku
 
 It reads kensaku's own config, wherever that config happens to be, and copies
 pins, saved searches and dictionary entries into the same SQLite file the index

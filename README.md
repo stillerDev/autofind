@@ -1,12 +1,12 @@
 **English** | [Русский](README.ru.md)
 
-# SemFind / AutoFind
+# AutoFind / AutoFind
 
 Local search over your files and screenshots. One SQLite file, no account, no
 network calls at runtime.
 
 The window is branded **AutoFind** — the folder the project lives in. The Python
-package, the CLI and the index directory are still `semfind`; renaming those
+package, the CLI and the index directory are still `autofind`; renaming those
 would break every path in the docs for no functional gain.
 
 The header follows the sketched layout: the forest photo (`web/fon.jpg`) as the
@@ -34,7 +34,7 @@ with no model downloads:
 | Result grouping | works | versions, identical copies and screenshot bursts, expandable |
 | Query language | works | `type:`, `ext:`, `in:`, `modified:`, `size:`, `re:`, … |
 | Natural language | works | deterministic RU/EN intent compiler with removable chips |
-| Agent access | works | MCP over stdio **and** HTTP (`semfind connect`) |
+| Agent access | works | MCP over stdio **and** HTTP (`autofind connect`) |
 | CJK screenshots | works | Japanese, Chinese and Korean read via RapidOCR, not just retried |
 | Live updates | works | polling watcher, ~2 s debounce |
 | Quality measurement | works | `eval` with Recall@10, MRR, ablation |
@@ -53,7 +53,7 @@ search is similarity-only, and the UI says so instead of pretending.
 ## Quick start
 
 ```bat
-SemFind.bat
+AutoFind.bat
 ```
 
 or
@@ -71,9 +71,9 @@ starting a rival copy.
 To make it permanent — start with Windows, in the tray, no console window:
 
 ```bash
-semfind install               # autostart entry + desktop and Start Menu shortcuts
-semfind autostart status      # what the login entry points at
-semfind autostart off         # undo it
+autofind install               # autostart entry + desktop and Start Menu shortcuts
+autofind autostart status      # what the login entry points at
+autofind autostart off         # undo it
 ```
 
 The login entry is one value under `HKCU\...\Run`, so it also appears in Task
@@ -159,21 +159,21 @@ Two transports, because the right one depends on the client:
 
 | Transport | Endpoint | When |
 |---|---|---|
-| stdio | `semfind mcp` | Claude Desktop, Cursor — the client owns the process |
+| stdio | `autofind mcp` | Claude Desktop, Cursor — the client owns the process |
 | HTTP | `POST http://127.0.0.1:8765/mcp` | sandboxed agents, remote tools, no process to spawn |
 
-`semfind connect` writes the entry into `claude_desktop_config.json` or
+`autofind connect` writes the entry into `claude_desktop_config.json` or
 `~/.cursor/mcp.json`, merging with the servers already there and keeping a
 `.bak` of the file it changed. `--transport http` writes the URL form instead,
-with a bearer token generated once into `~/.semfind/mcp_token`. `--write` is
+with a bearer token generated once into `~/.autofind/mcp_token`. `--write` is
 required to actually touch a file; without it the command prints the diff, which
 is what you want the first time.
 
 ```bash
-semfind connect                      # show what would change, all clients found
-semfind connect cursor --write       # edit one client
-semfind connect --transport http --write
-semfind connect print                # paste-ready JSON
+autofind connect                      # show what would change, all clients found
+autofind connect cursor --write       # edit one client
+autofind connect --transport http --write
+autofind connect print                # paste-ready JSON
 ```
 
 ## How it works
@@ -212,7 +212,7 @@ milliseconds, so an ANN index would be premature. `sqlite-vec` can replace
 
 **Indexing is incremental.** Unchanged files are skipped by size+mtime, moved
 files by sha256. Screenshots are deduplicated by sha256 before OCR runs.
-`.gitignore`, `.cursorignore` and `.semfindignore` are honoured during the walk,
+`.gitignore`, `.cursorignore` and `.autofindignore` are honoured during the walk,
 so build output a repository already ignores never reaches the index.
 
 **Live updates** (`watch`) poll the roots every 2 s instead of using inotify or
@@ -244,11 +244,11 @@ copy of the pack open at once.
 - **`Ctrl+Alt+Space`** shows and hides it from anywhere. `--hotkey` changes it,
   `--no-hotkey` removes it.
 - **A second launch raises the first.** The running app writes its port to
-  `~/.semfind/app.port` and answers `POST /api/focus`; the new process asks and
+  `~/.autofind/app.port` and answers `POST /api/focus`; the new process asks and
   exits. An instance lock (`msvcrt.locking`, released by the OS on crash) is what
   stops two windows with two ports in the first place.
 - **The window remembers.** Size, position and maximised state live in
-  `~/.semfind/window.json`, clamped to the current screen so a window from a
+  `~/.autofind/window.json`, clamped to the current screen so a window from a
   bigger monitor cannot open half under the taskbar. Borderless mode ignores the
   file: its size is the work area, not a preference.
 - **Dark title bar and the app icon** via `DwmSetWindowAttribute` and
@@ -335,7 +335,7 @@ Two smaller decisions come out of the same idea.
 
 **The wallpaper is a file, not a `localStorage` entry.** A 4 MB photo in browser
 storage is a quota error waiting for the wrong day, and it would die with a
-cache clear. It is written to `~/.semfind/background.<ext>` next to the index —
+cache clear. It is written to `~/.autofind/background.<ext>` next to the index —
 so it survives, it travels with a backup of the config directory, and
 `GET /api/background` serves it back with a cache-busting query. Only one is kept
 at a time: a new PNG deletes the old JPG, because two files would leave the
@@ -390,9 +390,9 @@ them, and they never leave the machine — which is also what makes the migratio
 a copy rather than a retyping:
 
 ```bash
-semfind import kensaku              # find the config, show what would move
-semfind import kensaku --write      # copy pins, saved searches, dictionary
-semfind import kensaku "C:\Users\you\AppData\Roaming\kensaku"
+autofind import kensaku              # find the config, show what would move
+autofind import kensaku --write      # copy pins, saved searches, dictionary
+autofind import kensaku "C:\Users\you\AppData\Roaming\kensaku"
 ```
 
 The reader does not assume a schema. kensaku is a Tauri app, so its store is one
@@ -406,11 +406,11 @@ The same things are on the command line, for scripts and for a machine where
 the window is not open:
 
 ```bash
-semfind pin "C:\Docs\contract.pdf"   # --off to unpin
-semfind pins
-semfind saved "type:pdf invoices" --label "Invoices"
-semfind alias cv "резюме"
-semfind sym parse_query -n 5
+autofind pin "C:\Docs\contract.pdf"   # --off to unpin
+autofind pins
+autofind saved "type:pdf invoices" --label "Invoices"
+autofind alias cv "резюме"
+autofind sym parse_query -n 5
 ```
 
 ## Measured on this machine
@@ -516,14 +516,14 @@ Clicking the badge expands the group. The badge is a fact, not decoration: it
 tells you the row you see is the one the ranker picked out of N.
 
 Bursts need a perceptual hash, which arrived in schema v4. An index built by an
-older version gets it backfilled at the end of `semfind index` — decode only, no
+older version gets it backfilled at the end of `autofind index` — decode only, no
 OCR, 1 097 images in 3.8 s here. Without it the detector would silently see no
 hashes on exactly the screenshots that were indexed first, since an unchanged
 file is never re-indexed.
 
 ## Quality
 
-`semfind eval` scores a labelled query set. On the 14-query smoke set over the
+`autofind eval` scores a labelled query set. On the 14-query smoke set over the
 8.4k-file corpus:
 
 | Channel | Recall@10 | MRR | p95 |
@@ -587,14 +587,14 @@ Measured end to end on rendered test images:
 | Arabic | `rapidocr:arabic` | 7.2 s | Arabic script, partially correct |
 
 The tail is expensive on purpose, and bounded in two ways. Models that are not
-on disk are never downloaded in the middle of an index run — `semfind ocr
+on disk are never downloaded in the middle of an index run — `autofind ocr
 download all` fetches them once (9 models, 70 MB). And the chain switches itself
 off after eight consecutive attempts that changed nothing, so a folder of
 photographs stops paying for the fallback after ~10 s while a folder of Japanese
 screenshots — where every attempt succeeds — never hits the limit.
 
-`semfind ocr languages` prints the languages readable *right now* with their
-greetings; `semfind doctor` prints the count, the models on disk and the
+`autofind ocr languages` prints the languages readable *right now* with their
+greetings; `autofind doctor` prints the count, the models on disk and the
 installed packs. `ocr_cjk_model` still pins a custom recognition model.
 
 ## Cold start
@@ -642,17 +642,17 @@ greeting.
 Drop weights in and restart:
 
 ```
-~/.semfind/models/e5-small/model.onnx + tokenizer.json
-~/.semfind/models/clip/visual.onnx + textual.onnx + tokenizer.json
+~/.autofind/models/e5-small/model.onnx + tokenizer.json
+~/.autofind/models/clip/visual.onnx + textual.onnx + tokenizer.json
 ```
 
-`pip install 'semfind[onnx]'` adds the runtime. The index records which embedder
+`pip install 'autofind[onnx]'` adds the runtime. The index records which embedder
 built it and refuses to mix two, so switching means reindexing — deliberate, not
 an oversight.
 
 ## Bundle budget
 
-`semfind doctor` adds up what would actually ship:
+`autofind doctor` adds up what would actually ship:
 
 ```
 bundle       378.0 MB of 150 MB budget  over by 228.0 MB
@@ -688,7 +688,7 @@ Two separate promises, and the second one was missing:
    standard-library module is not an incident.
 
 The filter is on by default, its count appears in `index` output and in the UI,
-and `semfind privacy purge` removes what slipped in earlier. On this machine it
+and `autofind privacy purge` removes what slipped in earlier. On this machine it
 found two «Пароль на архив» files that predate the filter.
 
 Still missing: **the index is not encrypted**. Filtered paths are skipped, but
@@ -753,7 +753,7 @@ turns Recall@10 from a claim into a number.
 Closed since the kensaku comparison: the name index (1.7 ms at 100k instead of a
 35 ms scan at 8k), the vector matrix (a memory-mapped pack: ~40 ms warm, ~0 ms
 cold, no 333 MB allocation), version grouping, identical copies and screenshot
-bursts, MCP over HTTP with `semfind connect`, OCR in 66 languages, cold start
+bursts, MCP over HTTP with `autofind connect`, OCR in 66 languages, cold start
 under a second, and the launcher — a borderless window over the taskbar, a tray
 icon, a global summon key and a login entry.
 
