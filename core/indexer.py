@@ -25,7 +25,7 @@ from typing import Callable, Sequence
 import numpy as np
 
 from . import filevec
-from .chunker import chunk_spans
+from .chunker import chunk_spans, normalize
 from .config import IndexConfig
 from .embed import get_embedder, get_visual_embedder
 from .extract import extract_text, PLAIN_KINDS
@@ -35,7 +35,7 @@ from .group import dhash
 from .images import load_image, thumbnail_bytes, visual_features
 from .ocr import OcrUnavailable, ocr_image, reset_fallbacks
 from .scanner import iter_entries, sha256_file
-from .store import Store
+from .store import Store, _pack_text
 from .symbols import extract_for
 
 Progress = Callable[[int, int, str, str], None]
@@ -98,7 +98,7 @@ def run_index(
     visual=None,
     prune: bool = False,
     progress: Progress | None = None,
-    commit_every: int = 250,
+    commit_every: int = 1000,
     workers: int | None = None,
 ) -> IndexStats:
     started = time.perf_counter()
@@ -414,7 +414,9 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
         entry.path, entry.size, entry.mtime, digest, entry.kind,
         doc_date=prepared.get("doc_date"),
     )
-    stats.chunks += store.replace_chunks(file_id, chunks, spans, vector)
+    stats.chunks += store.replace_chunks(
+        file_id, chunks, spans, vector, prepared.get("packed")
+    )
     symbols = prepared.get("symbols")
     if symbols:
         stats.symbols += store.replace_symbols(file_id, symbols)
@@ -534,6 +536,12 @@ def _extract_text_job(entry, config: IndexConfig) -> dict:
     mark = time.perf_counter()
     vectors = _worker_embedder().encode_passages(chunks)
     timing["embed"] = time.perf_counter() - mark
+    mark = time.perf_counter()
+    # Compressing the text and hashing it is CPU work the worker can do while
+    # the main process is still writing an earlier file. Only the compressed
+    # blocks cross the pipe, too, so the transfer shrinks.
+    packed = _pack_text(normalize(text))
+    timing["pack"] = time.perf_counter() - mark
     prepared = {
         "digest": digest,
         # The document text travels once and the spans point into it, instead
@@ -544,6 +552,7 @@ def _extract_text_job(entry, config: IndexConfig) -> dict:
         "vector": (
             filevec.mean_pool(vectors).astype(np.float32).tobytes() if vectors is not None else None
         ),
+        "packed": packed,
         "doc_date": find_doc_date(text),
         "timing": timing,
     }

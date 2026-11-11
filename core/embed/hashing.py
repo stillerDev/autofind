@@ -12,7 +12,7 @@ import re
 import zlib
 from typing import Iterable
 
-import numpy as np
+from ..lazynp import np
 
 DIM = 384
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)

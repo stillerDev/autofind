@@ -38,7 +38,10 @@ def cjk_bigrams(text: str) -> str:
     latin neighbour (`CUDA数据库`) cannot swallow the first bigram into one
     unicode61 token.
     """
-    if not CJK_RE.search(text):
+    # Pure-ASCII text cannot contain a CJK run. `isascii` is a C-level flag and
+    # skips the regex scan for the bulk of a typical corpus (code, English
+    # prose), which measured as ~10% of indexing wall time.
+    if text.isascii() or not CJK_RE.search(text):
         return text
 
     def run(match: re.Match) -> str:

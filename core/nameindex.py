@@ -33,7 +33,7 @@ import time
 from pathlib import Path
 from typing import Sequence
 
-import numpy as np
+from .lazynp import np
 
 from .store import char_mask
 
@@ -47,13 +47,15 @@ HARD_CAP = 20_000
 # fall back to the SQL path instead of eating gigabytes.
 MAX_ENTRIES = 1_500_000
 
-# Bytes that make the character after them read as a word start.
-BOUNDARY_BYTES = np.frombuffer(b" ._-(", dtype=np.uint8)
+# Bytes that make the character after them read as a word start. Stored as
+# plain bytes and turned into a numpy array at call time: a module-level
+# `np.frombuffer(...)` would import numpy on every cold CLI start.
+BOUNDARY_CHARS = b" ._-("
 
 # Byte values the match-position table covers: lowercase ASCII letters and
 # digits. A query byte outside it (punctuation, non-ASCII) sends the whole
 # query to the Python scorer.
-ALPHABET = np.frombuffer(b"abcdefghijklmnopqrstuvwxyz0123456789", dtype=np.uint8)
+ALPHABET_BYTES = b"abcdefghijklmnopqrstuvwxyz0123456789"
 # Bytes the vectorised scorer's position table actually knows. Any other
 # ASCII byte (`_`, `-`, `.`, space…) has no indexed positions, so such queries
 # take the Python scorer, exactly like non-ASCII ones.
@@ -225,8 +227,8 @@ class NameIndex:
         # C-level scan per byte value at build, ~4 ms at 100k names; the
         # table is roughly the size of the blob itself, int32.
         chunks: list[np.ndarray] = []
-        alpha_starts = np.zeros(len(ALPHABET) + 1, dtype=np.int64)
-        for column, byte in enumerate(ALPHABET):
+        alpha_starts = np.zeros(len(ALPHABET_BYTES) + 1, dtype=np.int64)
+        for column, byte in enumerate(ALPHABET_BYTES):
             hits = np.flatnonzero(self.blob_array == byte)
             chunks.append(hits.astype(np.int32, copy=False))
             alpha_starts[column + 1] = alpha_starts[column] + len(hits)
@@ -247,6 +249,12 @@ class NameIndex:
         """Persist every build product to `<db>.nameidx` so the next process
         can `np.load` it instead of re-encoding 100k rows (~450 ms). Best
         effort by design: a failed save just costs the next process a rebuild.
+
+        Compressed: the payload is mostly path and name text, so `savez`
+        shrank 8.2 MB to 1.6 MB on the benchmark corpus for ~200 ms of
+        one-time CPU at save and ~10 ms extra per load. The cold CLI never
+        loads it (it uses the SQL scan), so only a server's first fuzzy query
+        pays the load.
         """
         payload = {
             "ids": self.ids, "masks": self.masks,
@@ -267,7 +275,7 @@ class NameIndex:
         # tmp-then-replace dance fail repeatedly. A torn write here is safe —
         # the loader validates the npz and falls back to a rebuild.
         with open(path, "wb") as fh:
-            np.savez(fh, **payload)
+            np.savez_compressed(fh, **payload)
 
     @classmethod
     def from_arrays(cls, arrays: dict, build_seconds: float = 0.0) -> "NameIndex":
@@ -429,7 +437,12 @@ class NameIndex:
         # Word-start bonus: the character before the hit is a separator. Look it
         # up in the same buffer instead of slicing strings one at a time.
         previous = self.blob_array[np.maximum(starts - 1, 0)]
-        score += np.where(np.isin(previous, BOUNDARY_BYTES) & (starts > 0), 20.0, 0.0)
+        score += np.where(
+            np.isin(previous, np.frombuffer(BOUNDARY_CHARS, dtype=np.uint8))
+            & (starts > 0),
+            20.0,
+            0.0,
+        )
         # The Python scorer measured both the query and the name in
         # characters, not bytes — the two differ the moment Cyrillic shows
         # up, and the tiers must agree with it.
@@ -524,7 +537,7 @@ class NameIndex:
 
         match_positions = np.empty((len(encoded), len(candidates)), dtype=np.int32)
         for step, byte in enumerate(encoded):
-            column = int(np.nonzero(ALPHABET == byte)[0][0])
+            column = int(np.nonzero(np.frombuffer(ALPHABET_BYTES, dtype=np.uint8) == byte)[0][0])
             table = self.alpha_positions[
                 self.alpha_starts[column]:self.alpha_starts[column + 1]
             ]
@@ -558,7 +571,10 @@ class NameIndex:
             score += np.where(offset_in_name == 0, 40.0, 0.0)
             previous = self.blob_array[np.maximum(position.astype(np.int64) - 1, 0)]
             score += np.where(
-                (offset_in_name != 0) & np.isin(previous, BOUNDARY_BYTES), 20.0, 0.0
+                (offset_in_name != 0)
+                & np.isin(previous, np.frombuffer(BOUNDARY_CHARS, dtype=np.uint8)),
+                20.0,
+                0.0,
             )
             score += 30.0 / np.maximum(
                 self.name_chars[candidates[survivors]], 1
@@ -572,7 +588,12 @@ class NameIndex:
             score += 6.0 + 2.0 * run
             at_start = position == starts[survivors]
             previous = self.blob_array[np.maximum(position.astype(np.int64) - 1, 0)]
-            score += np.where(at_start | np.isin(previous, BOUNDARY_BYTES), 8.0, 0.0)
+            score += np.where(
+                at_start
+                | np.isin(previous, np.frombuffer(BOUNDARY_CHARS, dtype=np.uint8)),
+                8.0,
+                0.0,
+            )
             if step + 1 < len(encoded):
                 run = np.where(picked[step + 1] == position + 1, run + 1, 1)
         # Every skipped character is a small penalty, so "app" prefers App.tsx.
@@ -717,6 +738,37 @@ def _stamps(path: Path) -> tuple[int, int]:
 def load(store) -> NameIndex:
     """Build the index for `store`, or return the cached one."""
     return NAME_CACHE.get(store, lambda: _build(store))
+
+
+def search_rows(store, text: str, limit: int = 50) -> list[tuple[int, float]]:
+    """A numpy-free name scan for one-shot CLI processes.
+
+    Importing numpy costs ~70 ms on Windows, which is most of a cold
+    `autofind search`; the numpy index costs another 70-150 ms to build. The
+    files table already carries a denormalised lowercased name and the same
+    64-bit character bloom the vectorised path prefilter uses, so a Python pass
+    over them answers the query in a few milliseconds. Only chosen before
+    numpy is loaded: the app server keeps the fast in-memory index.
+    """
+    needle = text.strip().lower()
+    if not needle or limit <= 0:
+        return []
+    mask = char_mask(needle)
+    try:
+        rows = store.conn.execute(
+            "SELECT id, name, char_mask FROM files"
+        ).fetchall()
+    except Exception:
+        return []
+    scored: list[tuple[float, int]] = []
+    for row in rows:
+        if mask and (int(row[2] or 0) & mask) != mask:
+            continue
+        score = _score(needle, str(row[1] or "").lower())
+        if score is not None:
+            scored.append((score, int(row[0])))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [(file_id, score) for score, file_id in scored[:limit]]
 
 
 def _fingerprint(store) -> tuple[int, int, float, float]:

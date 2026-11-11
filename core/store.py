@@ -21,12 +21,13 @@ import sqlite3
 import threading
 import time
 import zlib
+from array import array
 from bisect import bisect_right
 from itertools import groupby
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-import numpy as np
+from .lazynp import np
 
 from . import vectors as vecstore
 from . import bm25 as bm25mod
@@ -506,6 +507,9 @@ def _pack_text(text: str) -> tuple[str, int, int, bytes, bytes]:
     zlib, not zstd: it is in the standard library, so the frozen build and a
     bare `python -m core` behave the same. Level 6 lands within a few percent
     of zstd on prose and costs ~58 MB instead of the 322 MB of raw UTF-8.
+    Packing runs in the extraction workers, which are never the indexing
+    bottleneck, so the extra level costs no wall time; level 3 was measured
+    5 MB larger on the benchmark corpus for no speedup.
     """
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     offsets = [0]
@@ -552,7 +556,11 @@ def _row_slice(row: sqlite3.Row, start: int, end: int) -> str:
         return ""
     if not block_size or not offsets:
         return _unpack_text(data)[start:end]
-    table = np.frombuffer(offsets, dtype=np.int32)
+    # Plain stdlib array, not numpy: `_row_slice` runs for every snippet, and a
+    # one-shot CLI search should not import numpy (70 ms) just to read four
+    # block offsets.
+    table = array("i")
+    table.frombytes(offsets)
     if len(table) < 2:
         return _unpack_text(data)[start:end]
     first = start // block_size
@@ -1086,6 +1094,7 @@ class Store:
         text: str | Sequence[str],
         spans: Sequence[tuple[int, int]] | np.ndarray | None = None,
         vectors: np.ndarray | None = None,
+        packed: tuple[str, int, int, bytes, bytes] | None = None,
     ) -> int:
         """Write one document: its text once, its chunk spans, its vector.
 
@@ -1123,7 +1132,9 @@ class Store:
             self._invalidate_vectors()
             return 0
 
-        digest, raw_len, block_size, offsets, data = _pack_text(document)
+        digest, raw_len, block_size, offsets, data = (
+            packed if packed is not None else _pack_text(document)
+        )
         # Content-addressed: a second copy of the same document costs one row
         # in `files`, not another copy of its text or its postings.
         self.conn.execute(

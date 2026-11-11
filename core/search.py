@@ -23,6 +23,7 @@ from __future__ import annotations
 import difflib
 import math
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -289,7 +290,14 @@ def fuzzy_files(store: Store, text: str, limit: int) -> list[tuple[int, float]]:
     Delegates to the process-wide in-memory name index: the bloom prefilter is
     one vectorised AND over the whole corpus, so this no longer issues a query
     per keystroke and no longer scales with the number of rows in SQLite.
+
+    A one-shot CLI process has no warm index to amortise, and importing numpy
+    for it is most of a cold start. Until numpy is loaded the SQL-backed scan
+    answers instead; the app server (numpy already in memory) keeps the fast
+    vectorised path.
     """
+    if "numpy" not in sys.modules:
+        return nameindex.search_rows(store, text, limit)
     index = nameindex.load(store)
     return index.search(text, limit)
 
@@ -561,18 +569,18 @@ def _rank(
         if "vector" not in channels or not (bm25_text or parsed.text):
             return []
         # A hashed embedder has no notion of meaning — its "semantic" pass is a
-        # lexical blur, so on a single-term query the exact channel has already
-        # answered it costs a 100k-row matvec (5 ms) and reorders nothing:
-        # measured top-12 overlap against the gated run is 100% on the
-        # benchmark corpus and 92-100% on the real index. A real embedder still
-        # gets the pass, and so does a term the lexical channel missed.
-        # Filters keep it too: the exact channel can be empty *after* the
-        # predicate, and then the vectors are the only recall left.
+        # lexical blur, so when the exact channel already found something it
+        # costs a 100k-row matvec and reorders almost nothing: measured top-12
+        # overlap against the gated run is 100% on the benchmark corpus and
+        # 92-100% on the real index. A real embedder still gets the pass, and
+        # so does a query the lexical channel missed. Filters keep it too: the
+        # exact channel can be empty *after* the predicate, and then the
+        # vectors are the only recall left. Skipping it also keeps numpy out of
+        # a cold one-shot CLI process, where importing it costs ~70 ms.
         if (
             lexical_hits
             and not parsed.has_filters
             and not getattr(embedder, "semantic", False)
-            and len(tokenize(bm25_text or parsed.text)) <= 1
         ):
             return []
         return store.knn(embedder.encode_query(bm25_text or parsed.text), pool)

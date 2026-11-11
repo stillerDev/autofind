@@ -54,7 +54,7 @@ import threading
 import time
 from pathlib import Path
 
-import numpy as np
+from .lazynp import np
 
 BACKEND_META = "vector_backend"
 VEC_TABLE = "vec_chunks"
@@ -88,8 +88,8 @@ HOT_MIN_ROWS = 10_000
 # still holds ids the table no longer does (or a reused id) — full rebuild.
 EPOCH_META = "vector_epoch"
 # The sketch phase needs numpy's SIMD popcount (2.0+); without it the pack
-# stays exact-only and every query takes the brute-force path.
-SKETCH_OK = hasattr(np, "bitwise_count")
+# stays exact-only and every query takes the brute-force path. Checked lazily:
+# a module-level `hasattr(np, ...)` would import numpy on every cold CLI start.
 SKETCH_MIN_ROWS = 100_000  # below this, exact BLAS is already milliseconds
 HEADER_BYTES = HEADER.size
 
@@ -338,7 +338,7 @@ class Pack:
         # nothing allocates.
         q = query if isinstance(query, np.ndarray) and query.dtype == np.float32 else np.asarray(query, dtype=np.float32)
         if (
-            SKETCH_OK
+            hasattr(np, "bitwise_count")
             and self._sketch_mode != "off"
             and self.count >= SKETCH_MIN_ROWS
         ):

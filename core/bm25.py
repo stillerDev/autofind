@@ -24,7 +24,7 @@ import time
 from array import array
 from collections.abc import Iterable
 
-import numpy as np
+from .lazynp import np
 
 from .cjk import cjk_bigrams
 

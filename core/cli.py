@@ -8,11 +8,9 @@ import sys
 import time
 from pathlib import Path
 
-from .config import IndexConfig
-from .personal import expand_aliases
-from .query import understand
-from .search import search_page
-from .store import Store
+# The command modules are imported inside `main`/handlers: importing them here
+# would make every cold start pay for search/store machinery the command may
+# not touch (and would drag numpy into one-shot searches).
 
 
 def get_embedder(*args, **kwargs):
@@ -179,6 +177,8 @@ def main(argv: list[str] | None = None) -> int:
     connect_cmd.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
+    from .config import IndexConfig
+
     config = IndexConfig()
     config.vector_backend = args.vector_backend
     db_path = args.db or config.db_path
@@ -343,6 +343,7 @@ def _cmd_app(args, config: IndexConfig, db_path: Path) -> int:
 def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
     from .indexer import run_index
     from .ocr import engine_report
+    from .store import Store
 
     config.ensure_home()
     if args.no_ocr:
@@ -394,6 +395,11 @@ def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
 
 
 def _cmd_search(args, config: IndexConfig, db_path: Path) -> int:
+    from .personal import expand_aliases
+    from .query import understand
+    from .search import search_page
+    from .store import Store
+
     if not db_path.exists():
         print(f"no index at {db_path}; run: autofind index <folder>", file=sys.stderr)
         return 2
@@ -566,6 +572,7 @@ def _cmd_watch(args, config: IndexConfig, db_path: Path) -> int:
 
 def _cmd_eval(args, config: IndexConfig, db_path: Path) -> int:
     from .evaluate import compare_channels, evaluate, format_report, load_labels
+    from .store import Store
 
     if not db_path.exists():
         print(f"no index at {db_path}; run: autofind index <folder>", file=sys.stderr)
@@ -691,6 +698,7 @@ def _probe_image():
 
 def _cmd_privacy(args, config: IndexConfig, db_path: Path) -> int:
     from .privacy import indexed_sensitive, purge_indexed
+    from .store import Store
 
     if not db_path.exists():
         print(f"no index at {db_path}", file=sys.stderr)
@@ -730,6 +738,7 @@ def _cmd_privacy(args, config: IndexConfig, db_path: Path) -> int:
 
 def _cmd_stats(config: IndexConfig, db_path: Path) -> int:
     from .ocr import engine_report
+    from .store import Store
 
     if not db_path.exists():
         print(f"no index at {db_path}")
@@ -758,6 +767,8 @@ def _cmd_stats(config: IndexConfig, db_path: Path) -> int:
 
 
 def _open_store(config: IndexConfig, db_path: Path, readonly: bool = True) -> Store:
+    from .store import Store
+
     embedder = get_embedder("auto", config.model_dir)
     return Store(
         db_path, embedder.name, embedder.dim,

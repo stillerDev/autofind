@@ -18,7 +18,7 @@ Binarising the query too would only lose information without saving a byte.
 
 from __future__ import annotations
 
-import numpy as np
+from .lazynp import np
 
 BITS_PER_BYTE = 8
 

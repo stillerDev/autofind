@@ -23,7 +23,7 @@ import struct
 from pathlib import Path
 from typing import Iterable
 
-import numpy as np
+from ..lazynp import np
 
 MAX_TOKENS = 512
 QUERY_PREFIX = "query: "
