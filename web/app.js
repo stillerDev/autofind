@@ -3260,6 +3260,54 @@ $("privacy-filters-list").addEventListener("change", () => {
   savePrivacy({ categories });
 });
 $("modal-close").addEventListener("click", () => $("modal").classList.remove("open"));
+  // Context menu on result cards (right-click): copy path, open folder, pin.
+  document.addEventListener('contextmenu', (event) => {
+    const card = event.target.closest('.card[data-index]');
+    if (!card || !state.hits[Number(card.dataset.index)]) return;
+    event.preventDefault();
+    const hit = state.hits[Number(card.dataset.index)];
+    const menu = document.createElement('div');
+    menu.className = 'ctx-menu';
+    menu.style.cssText = 'position:fixed;left:'+Math.min(event.clientX,innerWidth-180)+
+      'px;top:'+Math.min(event.clientY,innerHeight-120)+'px;z-index:1001;'+
+      'background:var(--bg,#1a1d21);border:1px solid rgba(255,255,255,.15);'+
+      'border-radius:8px;padding:4px 0;min-width:170px;box-shadow:0 8px 32px rgba(0,0,0,.5)';
+    const mk = (label, fn) => {
+      const item = document.createElement('div');
+      item.textContent = label;
+      item.style.cssText = 'padding:6px 14px;cursor:pointer;font-size:13px;color:inherit';
+      item.addEventListener('mouseenter', () => item.style.background = 'rgba(255,255,255,.08)');
+      item.addEventListener('mouseleave', () => item.style.background = '');
+      item.addEventListener('click', () => { fn(); menu.remove(); });
+      menu.appendChild(item);
+    };
+    mk('Copy path', () => navigator.clipboard.writeText(hit.path));
+    mk('Open folder', () => {
+      const dir = hit.path.replace(/[^\/]+$/, '');
+      window.open('file:///' + dir.replace(/\\/g, '/'));
+    });
+    mk(hit.pinned ? 'Unpin' : 'Pin', () => {
+      const star = card.querySelector('[data-pin]');
+      if (star) star.click();
+    });
+    document.body.appendChild(menu);
+    const close = (e) => {
+      if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', close); }
+    };
+    setTimeout(() => document.addEventListener('click', close), 0);
+  });
+
+  // Drag-and-drop: dragging a result card into Explorer copies the file.
+  document.addEventListener('dragstart', (event) => {
+    const card = event.target.closest('.card[data-index]');
+    if (!card || !state.hits[Number(card.dataset.index)]) return;
+    const hit = state.hits[Number(card.dataset.index)];
+    event.dataTransfer.setData('text/uri-list',
+      'file:///' + hit.path.replace(/\\/g, '/'));
+    event.dataTransfer.setData('text/plain', hit.path);
+    event.dataTransfer.effectAllowed = 'copy';
+  });
+
 $("modal").addEventListener("click", (event) => { if (event.target.id === "modal") $("modal").classList.remove("open"); });
 $("preview-close").addEventListener("click", () => $("preview").classList.remove("open"));
 $("preview").addEventListener("click", (event) => {
@@ -3634,6 +3682,17 @@ document.addEventListener("keydown", (event) => {
     if (editor.open) { closeWallEditor(); return; }
     if ($("preview").classList.contains("open")) { $("preview").classList.remove("open"); return; }
     if ($("settings").classList.contains("open")) { setSettings(false); return; }
+  // Double Enter on the same result = open containing folder
+  if (state.selected >= 0 && state.lastEnterHit === state.selected) {
+    const hit = state.hits[state.selected];
+    if (hit) {
+      const folder = hit.path.replace(/[^\\]+$/, "");
+      window.open(`file:///${folder.replace(/\\/g, "/")}`);
+      state.lastEnterHit = -1;
+      return;
+    }
+  }
+  if (state.selected >= 0) state.lastEnterHit = state.selected;
     if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }
     if ($("panel").classList.contains("open")) { setPanel(false); return; }
     if ($("dups-drawer").classList.contains("open")) { setDups(false); return; }

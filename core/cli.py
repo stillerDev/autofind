@@ -120,6 +120,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     seal_cmd.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
 
+    update_cmd = sub.add_parser("update", help="check GitHub for a newer release and install it")
+    update_cmd.add_argument("--check", action="store_true",
+                            help="only check for an update, do not install")
+
     autostart_cmd = sub.add_parser("autostart", help="start the app with Windows (tray, no console)")
     autostart_cmd.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
     autostart_cmd.add_argument("--json", action="store_true")
@@ -226,6 +230,30 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_app(args, config, db_path)
     if args.command == "seal":
         return _cmd_seal(args, config, db_path)
+
+    if args.command == "update":
+        from .updater import check_update, download_update, apply_update, UpdateError, current_version, parse_version
+        if args.check:
+            info = check_update()
+            if info:
+                print(f"update available: v{current_version()} -> v{info['version']}")
+                print(f"download: {info['url']}")
+            else:
+                print(f"up to date (v{current_version()})")
+            return 0
+        info = check_update()
+        if not info:
+            print(f"up to date (v{current_version()})")
+            return 0
+        print(f"downloading v{info['version']} ({info.get('name', 'update')})...")
+        try:
+            staged = download_update(info["url"], info.get("size", 0))
+            apply_update(staged)
+            print("update installed — restarting")
+        except (UpdateError, OSError) as exc:
+            print(f"update failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
 
     if args.command == "autostart":
         return _cmd_autostart(args)
