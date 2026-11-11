@@ -13,6 +13,7 @@ raw path, so a page cannot ask us to open something we never scanned.
 from __future__ import annotations
 
 import base64
+import sqlite3
 import csv
 import io
 import json
@@ -279,6 +280,31 @@ def _trash_path(path: Path) -> None:
     path.unlink()
 
 
+# In-RAM BM25 for the long-lived server: a multi-word query costs a few ms of
+# numpy gathers instead of ~100 ms of FTS5 prefix expansion. The postings only
+# fit comfortably when the chunk table is small; on the 298k-chunk real index
+# the build measured 35 s and ~1.5 GB, so there the FTS5 path stays.
+_RAM_BM25_LIMIT = 200_000
+_RAM_BM25_OK: dict[str, bool] = {}
+
+
+def _ram_bm25_for(db_path) -> bool:
+    cached = _RAM_BM25_OK.get(str(db_path))
+    if cached is not None:
+        return cached
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            count = int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        count = 0
+    ok = 0 < count <= _RAM_BM25_LIMIT
+    _RAM_BM25_OK[str(db_path)] = ok
+    return ok
+
+
 def _window_handles() -> set[int] | None:
     """Every top-level window on screen right now, or None if it cannot be read."""
     if sys.platform != "win32":
@@ -438,7 +464,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _store(self, readonly: bool = True) -> Store:
         embedder = get_embedder("auto", self.config.model_dir)
-        return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly, cache=CACHE, vector_backend=self.config.vector_backend)
+        return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly, cache=CACHE,
+                     vector_backend=self.config.vector_backend,
+                     ram_bm25=readonly and _ram_bm25_for(self.db_path))
 
     # ------------------------------------------------------------------ GET
 

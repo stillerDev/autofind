@@ -38,6 +38,13 @@ from .chunker import chunk_spans, normalize
 _BM25: dict = {"key": None, "index": None, "building": None}
 _BM25_LOCK = threading.Lock()
 
+# One ±1 float32 matrix per database, shared process-wide. The API server
+# opens a short-lived Store per request; without this cache every request
+# unpacked 100k bit rows into a fresh ~154 MB matrix and freed it again, and
+# the heap fragments grew faster than the GC could return them.
+_FILEVEC_CACHE: dict = {"key": None, "ids": None, "matrix": None}
+_FILEVEC_LOCK = threading.Lock()
+
 # The in-RAM BM25 is a trade, not a free win: on a 298k-chunk index it took
 # 35-37 s to build and ~1.5 GB, and its query time was a wash against FTS5
 # (faster on rare multi-word queries, slower on common single words) while the
@@ -1650,27 +1657,35 @@ class Store:
         # File stamps, not `SELECT COUNT(*), MAX(file_id)`: on a 100k-file
         # index that count is a 3 ms scan paid on every query, which was 11%
         # of a warm search. Two stat() calls answer the same question, and
-        # `_vec_gen` covers this connection's own writes.
-        key = (self._stamps(), self._vec_gen)
-        if self._vec_key == key and self._vec_matrix is not None and self._vec_ids is not None:
-            return self._vec_ids, self._vec_matrix
-
-        rows = self.conn.execute(
-            "SELECT file_id, bits FROM file_vectors WHERE dim = ? ORDER BY file_id",
-            (int(self.dim),),
-        ).fetchall()
-        if not rows:
-            self._vec_ids = np.zeros(0, dtype=np.int64)
-            self._vec_matrix = np.zeros((0, self.dim), dtype=np.float32)
-        else:
-            # `np.fromiter` skips the intermediate 100k-element Python list
-            # `np.array([int(...) ...])` builds; ~2 ms of a cold load.
-            self._vec_ids = np.fromiter(
-                (int(row[0]) for row in rows), dtype=np.int64, count=len(rows)
-            )
-            self._vec_matrix = filevec.matrix([row[1] for row in rows], int(self.dim))
-        self._vec_key = key
-        return self._vec_ids, self._vec_matrix
+        # `_vec_gen` covers this connection's own writes. The cache is
+        # module-level: this Store dies with the request, the matrix must not.
+        key = (str(self.path), *self._stamps(), self._vec_gen)
+        cached = _FILEVEC_CACHE
+        if cached["key"] == key and cached["matrix"] is not None:
+            return cached["ids"], cached["matrix"]
+        with _FILEVEC_LOCK:
+            if _FILEVEC_CACHE["key"] == key and _FILEVEC_CACHE["matrix"] is not None:
+                return _FILEVEC_CACHE["ids"], _FILEVEC_CACHE["matrix"]
+            rows = self.conn.execute(
+                "SELECT file_id, bits FROM file_vectors WHERE dim = ? ORDER BY file_id",
+                (int(self.dim),),
+            ).fetchall()
+            if not rows:
+                ids = np.zeros(0, dtype=np.int64)
+                matrix = np.zeros((0, self.dim), dtype=np.float32)
+            else:
+                # `np.fromiter` skips the intermediate 100k-element Python list
+                # `np.array([int(...) ...])` builds; ~2 ms of a cold load.
+                ids = np.fromiter(
+                    (int(row[0]) for row in rows), dtype=np.int64, count=len(rows)
+                )
+                matrix = filevec.matrix([row[1] for row in rows], int(self.dim))
+            _FILEVEC_CACHE["key"] = key
+            _FILEVEC_CACHE["ids"] = ids
+            _FILEVEC_CACHE["matrix"] = matrix
+            self._vec_key = key
+            self._vec_ids, self._vec_matrix = ids, matrix
+            return ids, matrix
 
     def knn(self, query_vector: np.ndarray, limit: int) -> list[tuple[int, float]]:
         """Nearest files to a query vector.
