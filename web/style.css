@@ -1657,16 +1657,8 @@ main {
    a two-line row — its name, then the full path — with a checkbox for deletion
    and a click that reveals it. */
 .drawer.dups-drawer {
-  left: auto;
-  right: 10px;
-  width: min(1080px, calc(92vw - 20px));
+  width: min(1080px, calc(92vw - 76px));
   overflow: hidden;
-  box-shadow: -18px 0 64px rgba(0, 0, 0, 0.5);
-  transform: translateX(calc(100% + 14px));
-}
-
-.drawer.dups-drawer.open {
-  transform: none;
 }
 
 .dups-body {

@@ -2102,13 +2102,23 @@ async function openSimilar(fileId) {
 /* The index panel is a drawer, not a column. Two consequences worth naming:
    it slides over the results instead of reflowing them, and the scrim behind it
    is the close button for people who do not aim at small targets. */
+function updateRailActive() {
+  // The lit circle follows the open function, not the drawer itself.
+  const map = { index: "rail-index", privacy: "rail-privacy",
+                encryption: "rail-seal", search: "rail-search", keys: "rail-keys" };
+  const lit = map[state.drawerTab];
+  ["rail-index", "rail-privacy", "rail-seal", "rail-search", "rail-keys"].forEach((id) => {
+    const button = $(id);
+    if (button) button.classList.toggle("active", button.id === lit);
+  });
+}
+
 function setPanel(open) {
   const drawer = $("panel");
   $("panel").classList.toggle("open", open);
   $("scrim").classList.toggle("show", open);
   drawer.setAttribute("aria-hidden", String(!open));
-  const indexBtn = $("rail-index");
-  if (indexBtn) indexBtn.classList.toggle("active", open);
+  updateRailActive();
 }
 
 function setSettings(open) {
@@ -3228,7 +3238,10 @@ $("confirm-yes").addEventListener("click", async () => {
   }
 });
 
-$("dups-close").addEventListener("click", () => setDups(false));
+$("dups-close").addEventListener("click", () => {
+  setDups(false);
+  $("rail-dups").classList.remove("active");
+});
 $("purge-btn").addEventListener("click", purgePrivate);
 $("privacy-toggle").addEventListener("click", () => {
   const open = $("privacy-filters").classList.toggle("open");
@@ -3256,6 +3269,7 @@ $("preview").addEventListener("click", (event) => {
    its own drawer; search and hotkeys live in the drawer since the settings
    modal gave them up. */
 function setDrawerTab(name) {
+  state.drawerTab = name;
   setPanel(true);
   document.querySelectorAll("#drawer-tabs .drawer-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.drawerTab === name);
@@ -3274,7 +3288,14 @@ function setDrawerTab(name) {
   if (name === "keys") loadHotkeys().then(renderHotkeys);
 }
 
-$("rail-dups").addEventListener("click", () => setDups(true));
+$("rail-dups").addEventListener("click", () => {
+  ["rail-index", "rail-privacy", "rail-seal", "rail-search", "rail-keys"].forEach((id) => {
+    const button = $(id);
+    if (button) button.classList.remove("active");
+  });
+  $("rail-dups").classList.add("active");
+  setDups(true);
+});
 $("rail-index").addEventListener("click", () => setDrawerTab("index"));
 $("rail-privacy").addEventListener("click", () => setDrawerTab("privacy"));
 $("rail-seal").addEventListener("click", () => setDrawerTab("encryption"));
