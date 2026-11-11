@@ -112,6 +112,7 @@ const I18N = {
 
     "results.more": "show more",
     "results.similarImages": "similar images",
+    "results.noSimilar": "No similar images",
     "results.nothing": "Nothing found",
     "results.nothingHint": "Try other words, drop the type filter, or index a folder from the panel.",
 
@@ -578,6 +579,7 @@ const I18N = {
 
     "results.more": "показать ещё",
     "results.similarImages": "похожие изображения",
+    "results.noSimilar": "Нет похожих изображений",
     "results.nothing": "Ничего не найдено",
     "results.nothingHint": "Попробуйте другие слова, снимите фильтр по типу или проиндексируйте папку в панели справа.",
 

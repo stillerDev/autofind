@@ -2020,7 +2020,7 @@ async function openSimilar(fileId) {
     const data = await api(`/api/similar?id=${fileId}`);
     $("modal-grid").innerHTML = data.images.length
       ? data.images.map(shot).join("")
-      : `<div class="empty" style="min-height:120px"><p>${esc(t("results.nothing"))}</p></div>`;
+      : `<div class="empty" style="min-height:120px"><p>${esc(t("results.noSimilar"))}</p></div>`;
     $("modal").classList.add("open");
   } catch (error) {
     toast(error.message);

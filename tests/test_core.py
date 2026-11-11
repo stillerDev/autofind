@@ -308,6 +308,35 @@ class ImageIndexTests(unittest.TestCase):
             self.assertIn("dark-b.png", similar[0].path)
             store.close()
 
+    def test_similar_returns_only_related_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir()
+            make_screenshot(root / "dark-a.png", "настройки прокси", dark=True)
+            make_screenshot(root / "dark-b.png", "параметры сети", dark=True)
+            make_screenshot(root / "light.png", "светлая страница", dark=False)
+
+            config = IndexConfig(home=Path(tmp) / "home")
+            config.ocr_enabled = False
+            embedder = HashingEmbedder()
+            visual = LayoutEmbedder()
+            store = Store(Path(tmp) / "index.db", embedder.name, embedder.dim)
+            run_index([root], config, store, embedder, visual)
+
+            def file_id(name):
+                row = store.conn.execute(
+                    "SELECT file_id FROM images WHERE path LIKE ?", (f"%{name}",)
+                ).fetchone()
+                return int(row["file_id"])
+
+            dark = similar_images(store, visual, file_id("dark-a.png"))
+            paths = {Path(hit.path).name for hit in dark}
+            self.assertIn("dark-b.png", paths)
+            self.assertNotIn("light.png", paths)
+
+            self.assertEqual(similar_images(store, visual, file_id("light.png")), [])
+            store.close()
+
     def test_duplicate_screenshots_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "corpus"

@@ -33,7 +33,8 @@ from . import nameindex
 from . import cjk
 from .bm25 import tokenize
 from .cjk import cjk_query_phrase
-from .group import group_hits
+from .group import group_hits, hamming
+from .lazynp import np
 from .nameindex import subsequence_score
 from .personal import expand_aliases
 from .query import Hint, ParsedQuery, understand
@@ -68,6 +69,18 @@ FRECENCY_TAU_DAYS = 14.0
 PIN_BONUS = 0.12
 DEPTH_PENALTY = 0.10
 DEPTH_SATURATION = 20
+
+# "Similar images" needs more than a layout cosine. The 228-dim descriptor is
+# non-negative, so every screenshot in a corpus scores ~0.9 against every other
+# one: measured top-20 pairs sit at a median 0.90/23 bits, and unrelated pages
+# reach 0.98/29 bits. A candidate is only similar when it is a near-duplicate
+# by perceptual hash (<=8 of 63 bits — tighter than the burst budget because a
+# burst has OCR to confirm the match) or when its cosine is essentially 1.0 (the
+# same picture, re-rendered). Anything else is just "another screenshot" and is
+# not shown at all. A simple dark-vs-light page pair lands at 10 bits, so 8 keeps
+# the colour inversion out while genuine sprite siblings (0-8 bits) still pass.
+SIMILAR_MAX_HAMMING = 8
+SIMILAR_MIN_COSINE = 0.99
 
 SORTS = ("best", "newest", "oldest", "largest", "name")
 
@@ -910,30 +923,47 @@ def search_page(
 
 
 def similar_images(store: Store, visual, file_id: int, limit: int = 12) -> list[ImageHit]:
-    """Find screenshots whose layout and colours resemble the given one."""
+    """Find images that genuinely resemble the given one.
+
+    The cosine ranking only nominates candidates; `SIMILAR_MAX_HAMMING` /
+    `SIMILAR_MIN_COSINE` decide which of them are actually similar. There is no
+    padding: when nothing clears the bar the result is empty, so the UI can say
+    "no similar images" instead of showing twelve unrelated screenshots.
+    """
     source = store.image_by_file_id(file_id)
     if source is None:
         return []
     ids, matrix = store.image_index(dim=None)
     if not len(ids):
         return []
-    position = None
-    for index, image_id in enumerate(ids.tolist()):
-        if image_id == int(source["id"]):
-            position = index
-            break
-    if position is None:
+    id_list = ids.tolist()
+    try:
+        position = id_list.index(int(source["id"]))
+    except ValueError:
         return []
 
-    query = matrix[position]
-    results = store.knn_images(query, limit + 1)
+    scores = matrix @ matrix[position]
+    similar = scores >= SIMILAR_MIN_COSINE
+
+    source_phash = int(source["phash"] or 0)
+    if source_phash:
+        phashes = _image_phashes(store)
+        for index, image_id in enumerate(id_list):
+            other = phashes.get(image_id, 0)
+            if other and hamming(other, source_phash) <= SIMILAR_MAX_HAMMING:
+                similar[index] = True
+    similar[position] = False
+
+    candidates = np.nonzero(similar)[0]
+    if not len(candidates):
+        return []
+    candidates = candidates[np.argsort(-scores[candidates])][:limit]
+
     hits: list[ImageHit] = []
-    for image_id, score in results:
-        if image_id == int(source["id"]):
-            continue
+    for index in candidates.tolist():
         row = store.conn.execute(
             "SELECT i.id, i.file_id, i.path, i.width, i.height, i.ocr_text FROM images i WHERE i.id = ?",
-            (image_id,),
+            (int(ids[index]),),
         ).fetchone()
         if row is None or row["file_id"] is None:
             continue
@@ -942,15 +972,18 @@ def similar_images(store: Store, visual, file_id: int, limit: int = 12) -> list[
                 image_id=int(row["id"]),
                 file_id=int(row["file_id"]),
                 path=row["path"],
-                score=round(score, 4),
+                score=round(float(scores[index]), 4),
                 width=int(row["width"] or 0),
                 height=int(row["height"] or 0),
                 ocr_text=(row["ocr_text"] or "")[:200],
             )
         )
-        if len(hits) >= limit:
-            break
     return hits
+
+
+def _image_phashes(store: Store) -> dict[int, int]:
+    rows = store.conn.execute("SELECT id, phash FROM images").fetchall()
+    return {int(row["id"]): int(row["phash"] or 0) for row in rows}
 
 
 def visual_text_search(store: Store, visual, query: str, limit: int = 12) -> list[ImageHit]:
