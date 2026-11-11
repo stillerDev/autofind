@@ -34,23 +34,33 @@ a = Analysis(
         'pandas', 'pyarrow', 'scipy', 'numba', 'llvmlite',
         'pymupdf4llm', 'pymupdf.layout',
         'pydoc_data', 'unittest', 'xmlrpc',
+        # rapidocr's optional TensorRT backend. It pulls nvinfer_10.dll and
+        # friends from the CUDA toolkit when that is installed — 440 MB of
+        # binaries for an engine the app never selects (it uses onnxruntime).
+        # On a machine without CUDA the same wheels are simply absent.
+        'tensorrt', 'tensorrt_libs', 'tensorrt_bindings',
+        'rapidocr.inference_engine.tensorrt',
     ],
     noarchive=False,
     optimize=0,
 )
+a.binaries = [
+    entry for entry in a.binaries
+    if not any(marker in entry[0].lower()
+               for marker in ('nvinfer', 'nvonnxparser', 'tensorrt'))
+]
 pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='AutoFind',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
@@ -60,4 +70,18 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['web/icon.ico'],
+)
+
+# One-folder, not one-file. A one-file build unpacks the whole runtime into a
+# temp directory on every launch; at this size (OCR models, OpenCV, MuPDF) that
+# was 6 s of disk churn before the first window. The folder starts in about the
+# time plain Python does because nothing is extracted.
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='AutoFind',
 )
