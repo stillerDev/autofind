@@ -8,8 +8,9 @@ a plain matvec over 14 000 rows instead of a scan over 300 000 chunks.
 
 The trade is deliberate: magnitudes are dropped, so two passages that differ
 only in how strongly they lean on a dimension become the same vector. On this
-corpus that costs 2-4% recall against float32 — kensaku's `binary` mode makes
-the same trade — and the lexical channel carries the exact matches anyway.
+corpus that costs 2-4% recall against float32, and the lexical channel carries
+the exact matches anyway. (Kensaku stores its semantic units as i8, not as
+sign bits, so this is a trade it does not make.)
 
 Scoring is asymmetric: the stored vectors are ±1 and the *query* stays float32,
 so `matrix @ query` is the dot product of the query with the sign pattern.
