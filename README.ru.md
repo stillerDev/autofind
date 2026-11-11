@@ -20,7 +20,7 @@ CLI и каталог индекса по-прежнему называются 
 
 
 
-бренч autofind против kensaku 
+метрик autofind против kensaku 
 <img width="1042" height="699" alt="image" src="https://github.com/user-attachments/assets/a9350119-5bff-4944-81bd-dec08429c9c7" />
 
 
