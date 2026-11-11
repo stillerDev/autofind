@@ -1488,7 +1488,12 @@ function paintRecent(host) {
   host.hidden = false;
 }
 
-function card(hit, query, index) {
+function card(hit, query, index, order = 0) {
+  // Results arrive in a short cascade: the delay lives on the card so the CSS
+  // animation stays declarative, and it is capped so a full page still settles
+  // in about half a second. `order` is the card's place in *this* batch, which
+  // means "show more" starts its own cascade instead of inheriting the page's.
+  const delay = Math.min(order, 12) * 38;
   const label = KIND_LABEL[hit.kind] || hit.kind;
   const icon = hit.is_image && hit.thumb
     ? `<div class="icon k-image"><img src="${hit.thumb}" alt="" loading="lazy"></div>`
@@ -1513,7 +1518,8 @@ function card(hit, query, index) {
     <button class="tag-chip small" type="button" data-tag-run="${esc(tag)}">#${esc(tag)}</button>`
   ).join("");
   return `
-    <div class="card${picked ? " picked" : ""}" data-index="${index}" data-file="${hit.file_id}">
+    <div class="card${picked ? " picked" : ""}" data-index="${index}" data-file="${hit.file_id}"
+         style="--enter-delay:${delay}ms">
       <label class="card-pick-wrap" title="${esc(t("card.select"))}">
         <input type="checkbox" class="card-pick" data-pick="${hit.file_id}"
                aria-label="${esc(t("card.select"))}"${picked ? " checked" : ""}>
@@ -1672,7 +1678,7 @@ function renderResults(data, append) {
   // (selection and Quick Look key off it).
   const fresh = append ? state.hits.slice(state.hits.length - (data.hits || []).length) : state.hits;
   const first = state.hits.length - fresh.length;
-  const cards = fresh.map((hit, index) => card(hit, data.query, first + index)).join("");
+  const cards = fresh.map((hit, index) => card(hit, data.query, first + index, index)).join("");
 
   if (append) {
     // Insert into the existing list instead of a new `.results` block: two

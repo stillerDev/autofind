@@ -1316,6 +1316,23 @@ main {
 
 .results { display: flex; flex-direction: column; gap: 10px; }
 
+/* Matches settle into place one after another: each card fades in and lifts
+   from 10px below, with a per-card delay set inline by `card()`. The delay is
+   capped there, so even a full page finishes its cascade quickly. */
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.results .card {
+  animation: card-in 0.28s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .results .card { animation: none; }
+}
+
 .card {
   display: grid;
   grid-template-columns: 18px 40px minmax(0, 1fr);
