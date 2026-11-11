@@ -20,7 +20,7 @@ a warning against fog.
 
 
 
-brench autofind vs kensaku
+metric autofind vs kensaku
 <img width="1046" height="692" alt="image" src="https://github.com/user-attachments/assets/1de83f46-b6d7-4c39-9b0a-ca0a7c5894a7" />
 
 
