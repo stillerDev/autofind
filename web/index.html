@@ -193,16 +193,6 @@
           <!-- The index panel used to be a permanent right column: 320 px of
                stats and buttons that were read once and then in the way. It is a
                drawer now, opened from here, the way kensaku does it. -->
-          <button class="icon-btn" id="panel-btn" type="button"
-                  data-i18n-title="panel.toggle" data-i18n-aria="panel.toggle"
-                  aria-expanded="false" aria-controls="panel">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-                 stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-              <rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect>
-              <path d="M14.5 4.5v15"></path>
-              <path d="M17.5 9.5h1M17.5 12h1M17.5 14.5h1"></path>
-            </svg>
-          </button>
           <button class="icon-btn" id="settings-btn" type="button"
                   data-i18n-title="settings.title" data-i18n-aria="settings.title">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
@@ -478,13 +468,64 @@
 
 <div class="scrim" id="scrim"></div>
 
+
+<!-- The function rail: a vertical stack of circular buttons pinned to the
+     left edge, TikTok-style. Each circle opens its own function. -->
+<nav class="rail" id="rail" aria-label="functions">
+  <button class="rail-btn" id="rail-dups" type="button" data-i18n-title="rail.duplicates" data-i18n-aria="rail.duplicates">
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="8" y="8" width="12" height="12" rx="2"></rect>
+      <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
+    </svg>
+  </button>
+  <button class="rail-btn" id="rail-index" type="button" data-i18n-title="rail.index" data-i18n-aria="rail.index">
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <ellipse cx="12" cy="5.5" rx="8" ry="2.8"></ellipse>
+      <path d="M4 5.5v6c0 1.6 3.6 2.8 8 2.8s8-1.2 8-2.8v-6"></path>
+      <path d="M4 11.5v6c0 1.6 3.6 2.8 8 2.8s8-1.2 8-2.8v-6"></path>
+    </svg>
+  </button>
+  <button class="rail-btn" id="rail-privacy" type="button" data-i18n-title="rail.privacy" data-i18n-aria="rail.privacy">
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"></path>
+      <path d="M9.5 12l2 2 3.5-4"></path>
+    </svg>
+  </button>
+  <button class="rail-btn" id="rail-seal" type="button" data-i18n-title="rail.encryption" data-i18n-aria="rail.encryption">
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="5" y="11" width="14" height="9" rx="2"></rect>
+      <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
+      <circle cx="12" cy="15.5" r="1.4"></circle>
+    </svg>
+  </button>
+  <button class="rail-btn" id="rail-search" type="button" data-i18n-title="rail.search" data-i18n-aria="rail.search">
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="6.5"></circle>
+      <path d="M20 20l-4.2-4.2"></path>
+      <path d="M8.5 11h5M11 8.5v5"></path>
+    </svg>
+  </button>
+  <button class="rail-btn" id="rail-keys" type="button" data-i18n-title="rail.keys" data-i18n-aria="rail.keys">
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="3" y="7" width="18" height="11" rx="2"></rect>
+      <path d="M6.5 10.5h.01M10 10.5h.01M13.5 10.5h.01M17 10.5h.01M8 14h8"></path>
+    </svg>
+  </button>
+</nav>
+
 <aside class="drawer" id="panel" aria-hidden="true">
   <div class="drawer-head">
     <h3 data-i18n="panel.index">Index</h3>
     <button class="drawer-close" id="panel-close" type="button" data-i18n-aria="preview.close">×</button>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="panel-index">
     <div class="stat-grid">
       <div class="stat"><span data-i18n="panel.files">files</span><b id="s-files">—</b></div>
       <div class="stat"><span data-i18n="panel.chunks">chunks</span><b id="s-chunks">—</b></div>
@@ -522,7 +563,7 @@
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="panel-privacy">
     <h3 data-i18n="panel.privacy">Privacy</h3>
     <label class="stat-row privacy-master">
       <span><span data-i18n="panel.privacyFilter">Privacy filter</span> <b id="p-enabled">—</b></span>
@@ -545,7 +586,7 @@
     <p class="panel-note" data-i18n="panel.privacyNote"></p>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="panel-encryption">
     <h3 data-i18n="panel.encryption">Encryption</h3>
     <p class="panel-note" data-i18n="panel.encryptionNote"></p>
     <div class="stat-row">
@@ -559,9 +600,48 @@
     <p class="panel-note" id="seal-warn" hidden data-i18n="panel.sealWarn"></p>
   </div>
 
-  <div class="panel">
-    <h3 data-i18n="panel.engines">Engines</h3>
-    <div class="engines" id="engines">—</div>
+
+  <div class="panel" id="panel-search">
+    <h3 data-i18n="panel.searchTitle">Search</h3>
+      <div class="moved-pane">
+      <section class="settings-section">
+        <h4 data-i18n="alias.title">Dictionary</h4>
+        <p class="settings-note" data-i18n="alias.note"></p>
+        <div class="alias-list" id="alias-list"></div>
+        <div class="alias-add">
+          <input id="alias-word" data-i18n-placeholder="alias.word" autocomplete="off" spellcheck="false">
+          <span class="alias-arrow">→</span>
+          <input id="alias-means" data-i18n-placeholder="alias.means" autocomplete="off" spellcheck="false">
+          <button class="btn mini" id="alias-add" type="button" data-i18n="alias.add">Add</button>
+        </div>
+      </section>
+      <section class="settings-section">
+        <div class="types-head">
+          <h4 data-i18n="types.title">File types</h4>
+          <button class="btn mini" id="types-add" type="button"
+                  data-i18n="types.add">+ type</button>
+        </div>
+        <p class="settings-note" data-i18n="types.note"></p>
+        <div class="types-list" id="types-list"></div>
+        <p class="settings-note types-example" data-i18n="types.example"></p>
+      </section>
+      </div>
+  </div>
+
+  <div class="panel" id="panel-keys">
+    <h3 data-i18n="hotkeys.title">Keyboard shortcuts</h3>
+      <div class="moved-pane">
+        <section class="settings-section">
+          <h4 data-i18n="hotkeys.title">Keyboard shortcuts</h4>
+          <p class="settings-note" data-i18n="hotkeys.note"></p>
+          <div class="hotkeys-list" id="hotkeys-list"></div>
+          <div class="hotkeys-foot">
+            <button class="btn mini" id="hotkeys-reset" type="button"
+                    data-i18n="hotkeys.reset">Reset to defaults</button>
+            <span class="hotkeys-status" id="hotkeys-status"></span>
+          </div>
+        </section>
+      </div>
   </div>
 
   <div class="side-foot">
@@ -692,10 +772,6 @@
     <div class="settings-tabs" id="settings-tabs" role="tablist">
       <button type="button" class="settings-tab active" data-tab="general"
               role="tab" data-i18n="settings.tab.general">General</button>
-      <button type="button" class="settings-tab" data-tab="search"
-              role="tab" data-i18n="settings.tab.search">Search</button>
-      <button type="button" class="settings-tab" data-tab="keys"
-              role="tab" data-i18n="settings.tab.keys">Hotkeys</button>
       <button type="button" class="settings-tab" data-tab="data"
               role="tab" data-i18n="settings.tab.data">Data</button>
     </div>
@@ -750,41 +826,6 @@
         </div>
         <p class="settings-note" data-i18n="settings.languageNote"></p>
       </section>
-      </div>
-      <div class="settings-pane" data-pane="search">
-      <section class="settings-section">
-        <h4 data-i18n="alias.title">Dictionary</h4>
-        <p class="settings-note" data-i18n="alias.note"></p>
-        <div class="alias-list" id="alias-list"></div>
-        <div class="alias-add">
-          <input id="alias-word" data-i18n-placeholder="alias.word" autocomplete="off" spellcheck="false">
-          <span class="alias-arrow">→</span>
-          <input id="alias-means" data-i18n-placeholder="alias.means" autocomplete="off" spellcheck="false">
-          <button class="btn mini" id="alias-add" type="button" data-i18n="alias.add">Add</button>
-        </div>
-      </section>
-      <section class="settings-section">
-        <div class="types-head">
-          <h4 data-i18n="types.title">File types</h4>
-          <button class="btn mini" id="types-add" type="button"
-                  data-i18n="types.add">+ type</button>
-        </div>
-        <p class="settings-note" data-i18n="types.note"></p>
-        <div class="types-list" id="types-list"></div>
-        <p class="settings-note types-example" data-i18n="types.example"></p>
-      </section>
-      </div>
-      <div class="settings-pane" data-pane="keys">
-        <section class="settings-section">
-          <h4 data-i18n="hotkeys.title">Keyboard shortcuts</h4>
-          <p class="settings-note" data-i18n="hotkeys.note"></p>
-          <div class="hotkeys-list" id="hotkeys-list"></div>
-          <div class="hotkeys-foot">
-            <button class="btn mini" id="hotkeys-reset" type="button"
-                    data-i18n="hotkeys.reset">Reset to defaults</button>
-            <span class="hotkeys-status" id="hotkeys-status"></span>
-          </div>
-        </section>
       </div>
       <div class="settings-pane" data-pane="data">
       <section class="settings-section">

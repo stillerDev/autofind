@@ -1829,13 +1829,6 @@ async function loadStats() {
     renderWatch(watch);
     if (seal) renderSeal(seal);
 
-    const engines = status.ocr?.available || [];
-    const clip = status.visual_supports_text
-      ? "" : ` <span class="hint" title="${esc(t("panel.noClipHint"))}">${esc(t("panel.noClip"))}</span>`;
-    $("engines").innerHTML = `
-      <div>${esc(t("panel.text"))} <span>${esc(status.text_embedder)}</span> · ${
-        esc(t("panel.images"))} <span>${esc(status.visual_embedder)}</span>${clip}</div>
-      <div>OCR <span>${engines.length ? esc(engines.join(", ")) : esc(t("panel.notFound"))}</span></div>`;
     if (!$("roots").value.trim() && status.default_roots?.length) {
       $("roots").value = status.default_roots.join("\n");
     }
@@ -2100,7 +2093,8 @@ function setPanel(open) {
   $("panel").classList.toggle("open", open);
   $("scrim").classList.toggle("show", open);
   drawer.setAttribute("aria-hidden", String(!open));
-  $("panel-btn").setAttribute("aria-expanded", String(open));
+  const indexBtn = $("rail-index");
+  if (indexBtn) indexBtn.classList.toggle("active", open);
 }
 
 function setSettings(open) {
@@ -2108,19 +2102,12 @@ function setSettings(open) {
   if (open) {
     renderAbout();
     paintLang();
-    loadPersonal().then(renderAliases);
-    loadTypes(true).then(() => { renderTypes(); renderTypeTabs(); });
     loadMeta().then(paintFilters);
-    loadHotkeys().then(renderHotkeys);
     renderWalls();
     setSettingsTab(document.querySelector("#settings-tabs .settings-tab.active")?.dataset.tab || "general");
     // Focus the card, not the close button: a ring on "close" is the first
     // thing the eye lands on, and it is not what the dialog is about.
     $("settings").querySelector(".settings-card").focus();
-  } else if (typesTimer) {
-    // Closing the panel is a save, not a cancel: the debounce must not swallow
-    // the last mask typed.
-    saveTypes();
   }
 }
 
@@ -3250,10 +3237,33 @@ $("preview").addEventListener("click", (event) => {
   if (event.target.id === "preview") $("preview").classList.remove("open");
 });
 
-$("panel-btn").addEventListener("click", () => {
-  setPanel(!$("panel").classList.contains("open"));
+/* The rail: each circular button opens its own function. Index, privacy and
+   encryption slide the drawer and scroll to their section; duplicates opens
+   its own drawer; search and hotkeys live in the drawer since the settings
+   modal gave them up. */
+function openPanelAt(sectionId) {
+  setPanel(true);
+  const section = $(sectionId);
+  if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("rail-dups").addEventListener("click", () => setDups(true));
+$("rail-index").addEventListener("click", () => openPanelAt("panel-index"));
+$("rail-privacy").addEventListener("click", () => openPanelAt("panel-privacy"));
+$("rail-seal").addEventListener("click", () => openPanelAt("panel-encryption"));
+$("rail-search").addEventListener("click", () => {
+  openPanelAt("panel-search");
+  loadPersonal().then(renderAliases);
+  loadTypes(true).then(() => { renderTypes(); renderTypeTabs(); });
 });
-$("panel-close").addEventListener("click", () => setPanel(false));
+$("rail-keys").addEventListener("click", () => {
+  openPanelAt("panel-keys");
+  loadHotkeys().then(renderHotkeys);
+});
+$("panel-close").addEventListener("click", () => {
+  setPanel(false);
+  if (typesTimer) saveTypes();
+});
 $("scrim").addEventListener("click", () => { setPanel(false); setDups(false); });
 
 $("settings-btn").addEventListener("click", () => setSettings(true));

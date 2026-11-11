@@ -1657,8 +1657,16 @@ main {
    a two-line row — its name, then the full path — with a checkbox for deletion
    and a click that reveals it. */
 .drawer.dups-drawer {
+  left: auto;
+  right: 10px;
   width: min(1080px, calc(92vw - 20px));
   overflow: hidden;
+  box-shadow: -18px 0 64px rgba(0, 0, 0, 0.5);
+  transform: translateX(calc(100% + 14px));
+}
+
+.drawer.dups-drawer.open {
+  transform: none;
 }
 
 .dups-body {
@@ -1899,13 +1907,49 @@ main {
    one button. It floats — inset from the window edge, rounded on all four
    corners — so it reads as a card laid over the results rather than as a wall
    attached to the side of the window. */
+.rail {
+  position: fixed;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 47;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rail-btn {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(13, 15, 17, 0.86);
+  backdrop-filter: blur(18px) saturate(130%);
+  color: inherit;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform 0.18s cubic-bezier(0.32, 0.72, 0.28, 1),
+    border-color 0.18s ease, background 0.18s ease;
+}
+
+.rail-btn:hover {
+  transform: scale(1.08);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.rail-btn.active {
+  border-color: currentColor;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.14);
+}
+
 .drawer {
   position: fixed;
   top: 10px;
-  right: 10px;
+  left: 66px;
   bottom: 10px;
   z-index: 46;
-  width: min(360px, calc(92vw - 20px));
+  width: min(360px, calc(92vw - 76px));
   display: flex;
   flex-direction: column;
   padding: 14px 16px 16px;
@@ -1913,11 +1957,11 @@ main {
   border-radius: 18px;
   background: rgba(13, 15, 17, 0.92);
   backdrop-filter: blur(22px) saturate(130%);
-  box-shadow: -18px 0 64px rgba(0, 0, 0, 0.5);
+  box-shadow: 18px 0 64px rgba(0, 0, 0, 0.5);
   overflow-y: auto;
-  /* 100% of the panel is not enough to clear the 10 px inset: a sliver of the
-     rounded edge would stay on screen. */
-  transform: translateX(calc(100% + 14px));
+  /* Hide to the left, past the rail: the drawer and the rail read as one
+     unit, the way the reference pins its circle buttons to the edge. */
+  transform: translateX(calc(-100% - 76px));
   visibility: hidden;
   transition: transform 0.26s cubic-bezier(0.32, 0.72, 0.28, 1), visibility 0.26s ease;
 }
