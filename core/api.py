@@ -167,6 +167,14 @@ WATCHER: Watcher | None = None
 WATCH_LOCK = threading.Lock()
 CACHE = VectorCache()
 
+# Duplicate reports are expensive to recompute (the document fingerprint reads
+# the head of up to 4 000 files) and stay valid until the index file changes.
+# The key includes the Store's file stamps, so an index run or a delete makes
+# the entry unreachable and the next request scans again.
+DUP_CACHE: dict[tuple, list[dict]] = {}
+DUP_LOCK = threading.Lock()
+DUP_CACHE_SIZE = 16
+
 
 class _ReadStores:
     """Reuse read-only Stores across requests.
@@ -520,8 +528,27 @@ class Handler(BaseHTTPRequestHandler):
             self._open_file(query, reveal=route.endswith("reveal"))
         elif route == "/api/duplicates":
             self._duplicates(query)
+        elif route == "/api/duplicates/stream":
+            self._duplicates_stream(query)
         else:
             self._error("unknown route", 404)
+
+    def _dup_groups(self, store: Store, mode: str) -> list[dict]:
+        """Groups for one mode, memoised until the index file changes."""
+        key = (str(self.db_path), mode, store.index_stamp())
+        with DUP_LOCK:
+            cached = DUP_CACHE.get(key)
+        if cached is not None:
+            return cached
+        if mode == "docs":
+            groups = store.duplicate_documents()
+        else:
+            groups = store.duplicate_images()
+        with DUP_LOCK:
+            if len(DUP_CACHE) >= DUP_CACHE_SIZE:
+                DUP_CACHE.clear()
+            DUP_CACHE[key] = groups
+        return groups
 
     def _duplicates(self, query: dict | None = None) -> None:
         """Duplicate report, in two modes.
@@ -532,14 +559,66 @@ class Handler(BaseHTTPRequestHandler):
         is not a set a person should delete from.
         """
         mode = ((query or {}).get("mode") or ["images"])[0]
+        mode = "docs" if mode == "docs" else "images"
         store = self._store()
         try:
-            if mode == "docs":
-                self._json({"mode": "docs", "groups": store.duplicate_documents()})
-            else:
-                self._json({"mode": "images", "groups": store.duplicate_images()})
+            self._json({"mode": mode, "groups": self._dup_groups(store, mode)})
         finally:
             store.close()
+
+    def _dup_event(self, payload: dict) -> None:
+        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        self.wfile.write(line.encode("utf-8") + b"\n")
+        self.wfile.flush()
+
+    def _dup_progress(self, done: int, total: int) -> None:
+        self._dup_event({"type": "progress", "done": done, "total": total})
+
+    def _duplicates_stream(self, query: dict | None = None) -> None:
+        """The same report, streamed as newline-delimited JSON.
+
+        The document scan is the slow path, so the response starts as soon as
+        the request is accepted: `{"type":"progress","done":N,"total":M}` lines
+        arrive while the fingerprints are computed, then one `done` line carries
+        the groups. The body is close-delimited (HTTP/1.0), so the client reads
+        until EOF — no polling and no SSE reconnect logic.
+        """
+        mode = ((query or {}).get("mode") or ["images"])[0]
+        mode = "docs" if mode == "docs" else "images"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            store = self._store()
+            try:
+                if mode == "docs":
+                    key = (str(self.db_path), mode, store.index_stamp())
+                    with DUP_LOCK:
+                        cached = DUP_CACHE.get(key)
+                    if cached is not None:
+                        self._dup_event({"type": "progress", "done": 1, "total": 1})
+                        groups = cached
+                    else:
+                        groups = store.duplicate_documents(progress=self._dup_progress)
+                        with DUP_LOCK:
+                            if len(DUP_CACHE) >= DUP_CACHE_SIZE:
+                                DUP_CACHE.clear()
+                            DUP_CACHE[key] = groups
+                else:
+                    groups = self._dup_groups(store, mode)
+                self._dup_event({"type": "done", "mode": mode, "groups": groups})
+            finally:
+                store.close()
+        except ConnectionError:  # the client closed the drawer mid-scan
+            return
+        except Exception as exc:  # headers are gone; report in-band
+            try:
+                self._dup_event({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
+            except ConnectionError:
+                pass
 
     # ------------------------------------------------------- tags / collections
 

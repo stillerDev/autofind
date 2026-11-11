@@ -10,7 +10,7 @@ const state = {
   tags: [], collections: [], metaLoaded: false,
   hotkeys: {}, hotkeyDefaults: {}, hotkeyConflicts: [],
   preview: null,
-  dupMode: "images", dupGroups: [],
+  dupMode: "images", dupGroups: [], dupCache: {},
   watchAdded: -1, watchTimer: null,
 };
 
@@ -1980,6 +1980,7 @@ function pollJob() {
       state.jobTimer = setTimeout(pollJob, 400);
     } else {
       $("index-btn").disabled = false;
+      if (job.result) state.dupCache = {};
       loadStats();
       if (job.result && job.result.indexed) runSearch();
     }
@@ -2852,6 +2853,11 @@ function setDups(open) {
   $("dups-drawer").classList.toggle("open", open);
   $("dups-drawer").setAttribute("aria-hidden", String(!open));
   $("scrim").classList.toggle("show", open);
+  if (!open && dupStream) {
+    dupStream.abort();
+    dupStream = null;
+    hideDupProgress();
+  }
 }
 
 function basename(path) {
@@ -2888,12 +2894,88 @@ function renderDuplicates(groups) {
   });
 }
 
+function showDupProgress(done, total) {
+  const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  $("dups-progress").hidden = false;
+  $("dups-progress-fill").style.width = `${percent}%`;
+  $("dups-progress-label").textContent = t("dups.scanning", { percent });
+}
+
+function hideDupProgress() {
+  $("dups-progress").hidden = true;
+}
+
+let dupStream = null;
+
+/* The document report can take a second or two on a big index. The request is
+   streamed, so the drawer opens at once, the percentage moves while the papers
+   are fingerprinted, and the rows already on screen (a previous load of this
+   mode) stay clickable. Switching modes or closing the drawer aborts the old
+   stream so a slow answer cannot overwrite a newer one. */
 async function loadDuplicates(mode = state.dupMode) {
   state.dupMode = mode;
-  const data = await api(`/api/duplicates?mode=${encodeURIComponent(mode)}`);
-  state.dupGroups = data.groups || [];
-  renderDuplicates(state.dupGroups);
   setDups(true);
+  document.querySelectorAll(".dup-mode").forEach((button) => {
+    button.classList.toggle("active", button.dataset.dupMode === mode);
+  });
+  const cached = state.dupCache[mode];
+  if (cached) {
+    state.dupGroups = cached;
+    renderDuplicates(cached);
+  } else {
+    state.dupGroups = [];
+    $("dups-body").innerHTML = "";
+  }
+  if (dupStream) dupStream.abort();
+  const controller = new AbortController();
+  dupStream = controller;
+  showDupProgress(0, 0);
+  try {
+    const response = await fetch(
+      `/api/duplicates/stream?mode=${encodeURIComponent(mode)}`,
+      { signal: controller.signal },
+    );
+    if (!response.ok || !response.body) {
+      throw new Error(response.statusText || "duplicates failed");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let cut = buffer.indexOf("\n");
+      while (cut >= 0) {
+        const line = buffer.slice(0, cut).trim();
+        buffer = buffer.slice(cut + 1);
+        cut = buffer.indexOf("\n");
+        if (!line) continue;
+        const event = JSON.parse(line);
+        if (event.type === "progress") {
+          if (state.dupMode === mode) showDupProgress(event.done, event.total);
+        } else if (event.type === "done") {
+          const groups = event.groups || [];
+          state.dupCache[mode] = groups;
+          if (state.dupMode === mode) {
+            state.dupGroups = groups;
+            renderDuplicates(groups);
+          }
+        } else if (event.type === "error") {
+          throw new Error(event.error || "duplicates failed");
+        }
+      }
+    }
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      toast(t("toast.failed", { error: error.message }));
+    }
+  } finally {
+    if (dupStream === controller) {
+      dupStream = null;
+      hideDupProgress();
+    }
+  }
 }
 
 function selectedDupIds() {
@@ -3012,16 +3094,8 @@ function closeConfirm() {
   $("confirm-yes").disabled = false;
 }
 
-$("dups-btn").addEventListener("click", async () => {
-  const button = $("dups-btn");
-  button.disabled = true;
-  try {
-    await loadDuplicates();
-  } catch (error) {
-    toast(t("toast.failed", { error: error.message }));
-  } finally {
-    button.disabled = false;
-  }
+$("dups-btn").addEventListener("click", () => {
+  loadDuplicates();
 });
 
 function setAllDups(checked) {
@@ -3048,9 +3122,7 @@ $("dups-smart").addEventListener("click", () => {
 $("dups-mode").addEventListener("click", (event) => {
   const button = event.target.closest("[data-dup-mode]");
   if (!button || button.dataset.dupMode === state.dupMode) return;
-  loadDuplicates(button.dataset.dupMode).catch((error) => {
-    toast(t("toast.failed", { error: error.message }));
-  });
+  loadDuplicates(button.dataset.dupMode);
 });
 
 $("dups-delete").addEventListener("click", () => {
@@ -3078,6 +3150,7 @@ $("confirm-yes").addEventListener("click", async () => {
     });
     closeConfirm();
     toast(t("toast.deleted", { n: result.deleted }));
+    state.dupCache = {};
     await loadDuplicates();
   } catch (error) {
     button.disabled = false;

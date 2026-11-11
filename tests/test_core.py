@@ -700,6 +700,17 @@ class DocumentDuplicateTests(unittest.TestCase):
             names = {Path(item["path"]).name for item in groups[0]["items"]}
             self.assertEqual(names, {"plan.txt", "plan-copy.md"})
             self.assertIn(groups[0]["keep"], {item["file_id"] for item in groups[0]["items"]})
+
+            # The streaming endpoint turns these callbacks into percentages, so
+            # the count must start at zero, only grow, and finish at the total.
+            events = []
+            store.duplicate_documents(
+                progress=lambda done, total: events.append((done, total))
+            )
+            self.assertEqual(events[0], (0, 3))
+            self.assertEqual(events[-1], (3, 3))
+            self.assertEqual(events, sorted(events))
+            self.assertTrue(all(total == 3 for _, total in events))
             store.close()
 
 
