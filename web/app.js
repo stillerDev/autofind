@@ -2114,6 +2114,7 @@ function updateRailActive() {
 }
 
 function setPanel(open) {
+  if (open) setDups(false);  // the two drawers are mutually exclusive
   const drawer = $("panel");
   $("panel").classList.toggle("open", open);
   $("scrim").classList.toggle("show", open);
@@ -2930,6 +2931,7 @@ $("watch-btn").addEventListener("click", toggleWatch);
    on every row marks a copy for deletion; the bin in the header deletes the
    checked files after one confirmation. */
 function setDups(open) {
+  if (open) setPanel(false);  // the two drawers are mutually exclusive
   $("dups-drawer").classList.toggle("open", open);
   $("dups-drawer").setAttribute("aria-hidden", String(!open));
   $("scrim").classList.toggle("show", open);
