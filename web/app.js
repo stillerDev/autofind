@@ -1938,8 +1938,6 @@ async function pollSeal() {
 
 $("seal-btn").addEventListener("click", async () => {
   const action = state.seal && state.seal.sealed ? "off" : "on";
-  const confirmText = action === "on" ? t("panel.sealBtn") : t("panel.unsealBtn");
-  if (!window.confirm(confirmText + "?")) return;
   try {
     await api("/api/seal", { method: "POST", body: JSON.stringify({ action }) });
   } catch (error) {

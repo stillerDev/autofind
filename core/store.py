@@ -1763,7 +1763,7 @@ class Store:
                 self.conn.execute(
                     "UPDATE images SET " + ", ".join(sets) + " WHERE id = ?", vals
                 )
-        rows = self.conn.execute("SELECT rowid, text FROM symbols").fetchall()
+        rows = self.conn.execute("SELECT rowid AS _rid, text FROM symbols").fetchall()
         for row in rows:
             done += 1
             _tick(done, total, "seal")
@@ -1772,7 +1772,7 @@ class Store:
                 continue
             self.conn.execute(
                 "UPDATE symbols SET text = ? WHERE rowid = ?",
-                (vault.seal(text.encode("utf-8")), int(row["rowid"])),
+                (vault.seal(text.encode("utf-8")), int(row["_rid"])),
             )
         _set_meta(self.conn, "sealed", "1")
         self.conn.commit()
@@ -1832,7 +1832,7 @@ class Store:
                 self.conn.execute(
                     "UPDATE images SET " + ", ".join(sets) + " WHERE id = ?", vals
                 )
-        rows = self.conn.execute("SELECT rowid, text FROM symbols").fetchall()
+        rows = self.conn.execute("SELECT rowid AS _rid, text FROM symbols").fetchall()
         for row in rows:
             done += 1
             _tick(done, total, "unseal")
@@ -1840,7 +1840,7 @@ class Store:
             if isinstance(text, (bytes, bytearray)) and vault.is_sealed(text):
                 self.conn.execute(
                     "UPDATE symbols SET text = ? WHERE rowid = ?",
-                    (vault.open_bytes(bytes(text)).decode("utf-8", "replace"), int(row["rowid"])),
+                    (vault.open_bytes(bytes(text)).decode("utf-8", "replace"), int(row["_rid"])),
                 )
         _set_meta(self.conn, "sealed", "0")
         self.conn.commit()
