@@ -18,7 +18,8 @@ CLI и каталог индекса по-прежнему называются 
 чтобы быть отрезанным чёрным списком. Акцент — бело-серый: оранжевая кнопка
 читалась как предупреждение на фоне тумана.
 бренч autofind против kensaku 
-![Uploading image.png…]()
+<img width="1042" height="699" alt="image" src="https://github.com/user-attachments/assets/a9350119-5bff-4944-81bd-dec08429c9c7" />
+
 
 ## Статус
 
