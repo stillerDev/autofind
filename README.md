@@ -27,7 +27,7 @@ with no model downloads:
 |---|---|---|
 | Text (PDF, DOCX, PPTX, XLSX, EPUB, ODT, RTF, TXT/MD, code) | works | built-in extractors, no deps |
 | Screenshots: OCR | works | 3 tiers, 66 languages here: Windows packs → PP-OCRv6 multi → PP-OCRv5 per script |
-| Screenshots: visual similarity | works | 228-dim layout/colour descriptor |
+| Screenshots: visual similarity | works | 228-dim layout/colour descriptor + perceptual-hash gate |
 | Search | works | fuzzy names + BM25 + vectors, fused with RRF |
 | Name search | works | in-memory name index, 1.7 ms at 100k names |
 | Vectors | works | memory-mapped pack, ~40 ms warm, no 333 MB matrix |
@@ -195,6 +195,14 @@ Screenshots land in the same `chunks` table as documents, so one query returns
 a PDF and a screenshot side by side. Each screenshot also gets a thumbnail and
 a visual vector, which powers "similar screenshots" in the UI.
 
+**"Similar" is filtered, not padded.** The layout cosine only nominates
+candidates; a candidate is returned when it is within 8 bits of the source's
+63-bit perceptual hash or scores at least 0.99 on the cosine. The descriptor is
+non-negative, so unrelated screenshots still score ~0.9 and the nearest twelve
+always existed whether or not any of them resembled the source. Now a click
+returns the genuine matches and says "no similar images" when there are none,
+rather than filling the modal with whatever ranked highest.
+
 **Three channels, one ranking.** Fuzzy name matching (a 64-bit character bloom
 rejects most of the corpus before the matcher runs, so `rdme` finds `README.md`),
 BM25 over chunk text, and cosine over the chunk vectors. The fused score is
@@ -272,6 +280,12 @@ the window edge, rounded on all four corners — so it reads as a card laid over
 the results rather than as a wall attached to the side of the window. Everything
 the column held is still there — counts, roots, watch state, privacy, engines,
 shortcuts.
+
+**Results arrive one at a time.** A new result list fades and lifts each card in
+38 ms steps, capped at the thirteenth, instead of flashing a fully formed page;
+`prefers-reduced-motion` turns the cascade off. The duplicates report in the same
+drawer is memoised per index stamp, so reopening it is instant, and its first
+scan streams a percentage instead of leaving a spinner.
 
 **Every word is a key.** `web/i18n.js` holds two dictionaries, English as the
 source language, and the markup carries `data-i18n` attributes; anything drawn
