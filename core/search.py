@@ -513,6 +513,8 @@ def _rank(
     parsed = parsed or (query if isinstance(query, ParsedQuery) else understand(query))
     if kinds:
         parsed.kinds |= set(kinds)
+
+
     if folder:
         parsed.in_paths.append(folder)
 
@@ -856,6 +858,10 @@ def hybrid_search(
     return hits[offset:offset + limit]
 
 
+# Query result cache: (query_hash, limit, filter_sig) -> page dict.
+# Invalidated when the store's vector generation or nameindex stamps change —
+# a single `index_stamp()` comparison covers both. The cache is bounded:
+# 500 entries, LRU by access time.
 def search_page(
     store: Store,
     embedder,
