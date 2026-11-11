@@ -1975,7 +1975,7 @@ def _prewarm(db_path: Path, config: IndexConfig) -> None:
             if pack is not None:
                 pack.search(np.zeros(store.dim, dtype=np.float32), 1)
         else:
-            store.vector_index()
+            store.packed_index()
         # Warm pages faulted in; the checkout goes back so a future rebuild can
         # replace the file. The pack itself stays cached and warm — the checkout
         # only protected it from being closed mid-search.

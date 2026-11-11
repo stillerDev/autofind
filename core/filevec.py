@@ -84,3 +84,27 @@ def build(conn, dim: int) -> tuple[np.ndarray, np.ndarray]:
 def packed_size(dim: int) -> int:
     """Bytes one packed vector occupies, padding included."""
     return (dim + BITS_PER_BYTE - 1) // BITS_PER_BYTE
+
+
+def lut_scores(bits: np.ndarray, query: np.ndarray) -> np.ndarray:
+    """Exact asymmetric dot against packed ±1 rows, with no ±1 matrix in RAM.
+
+    The float32 matrix this replaces is 154 MB at 100k files; the packed rows
+    are 4.8 MB. Each stored byte contributes one value from a 256-entry table
+    built out of the query, so a row's score is 48 table gathers. The numbers
+    are the same dot product `matrix()` computes, up to float summation order.
+    """
+    rows, cols = bits.shape
+    q = np.asarray(query, dtype=np.float32).reshape(-1)
+    if not rows or cols * 8 < q.shape[0]:
+        return np.zeros(rows, dtype=np.float32)
+    padded = np.zeros(cols * 8, dtype=np.float32)
+    padded[: q.shape[0]] = q
+    patterns = np.arange(256, dtype=np.uint8)
+    # MSB first: bit d of byte b is dimension 8*b + d, matching np.unpackbits.
+    signs = (((patterns[:, None] >> (7 - np.arange(8))) & 1).astype(np.float32) * 2.0) - 1.0
+    tables = (signs @ padded.reshape(cols, 8).T).T  # (cols, 256)
+    scores = np.zeros(rows, dtype=np.float32)
+    for b in range(cols):
+        scores += tables[b][bits[:, b]]
+    return scores

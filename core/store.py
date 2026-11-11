@@ -38,11 +38,10 @@ from .chunker import chunk_spans, normalize
 _BM25: dict = {"key": None, "index": None, "building": None}
 _BM25_LOCK = threading.Lock()
 
-# One ±1 float32 matrix per database, shared process-wide. The API server
-# opens a short-lived Store per request; without this cache every request
-# unpacked 100k bit rows into a fresh ~154 MB matrix and freed it again, and
-# the heap fragments grew faster than the GC could return them.
-_FILEVEC_CACHE: dict = {"key": None, "ids": None, "matrix": None}
+# One packed-bits array per database, shared process-wide: 4.8 MB at 100k
+# files. `knn` scores these rows through per-byte lookup tables, so the ±1
+# float32 matrix (154 MB at 100k files) never needs to exist in RAM.
+_FILEVEC_CACHE: dict = {"key": None, "ids": None, "bits": None}
 _FILEVEC_LOCK = threading.Lock()
 
 # The in-RAM BM25 is a trade, not a free win: on a 298k-chunk index it took
@@ -905,8 +904,6 @@ class Store:
             self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.create_function("regexp", 2, _regexp, deterministic=True)
-        self._vec_ids: np.ndarray | None = None
-        self._vec_matrix: np.ndarray | None = None
         self._vec_key: tuple | None = None
         self._vec_gen = 0  # bumped by `_invalidate_vectors`, part of that key
         self._file_key: tuple[int, int] | None = None
@@ -1639,7 +1636,11 @@ class Store:
                 best = (ratio, candidate)
         return best[1] if best else None
 
-    def vector_index(self) -> tuple[np.ndarray, np.ndarray]:
+    def packed_index(self) -> tuple[np.ndarray, np.ndarray]:
+        """Every file's packed sign bits as one (rows, bytes) uint8 array,
+        shared process-wide. `knn` scores these rows through per-byte lookup
+        tables, so the ±1 float32 matrix (154 MB at 100k files) never needs
+        to exist in RAM."""
         if self.cache is not None:
             return self.cache.get(self)
         return self._load_vectors()
@@ -1661,40 +1662,49 @@ class Store:
         # module-level: this Store dies with the request, the matrix must not.
         key = (str(self.path), *self._stamps(), self._vec_gen)
         cached = _FILEVEC_CACHE
-        if cached["key"] == key and cached["matrix"] is not None:
-            return cached["ids"], cached["matrix"]
+        if cached["key"] == key and cached["bits"] is not None:
+            return cached["ids"], cached["bits"]
         with _FILEVEC_LOCK:
-            if _FILEVEC_CACHE["key"] == key and _FILEVEC_CACHE["matrix"] is not None:
-                return _FILEVEC_CACHE["ids"], _FILEVEC_CACHE["matrix"]
+            if _FILEVEC_CACHE["key"] == key and _FILEVEC_CACHE["bits"] is not None:
+                return _FILEVEC_CACHE["ids"], _FILEVEC_CACHE["bits"]
             rows = self.conn.execute(
                 "SELECT file_id, bits FROM file_vectors WHERE dim = ? ORDER BY file_id",
                 (int(self.dim),),
             ).fetchall()
             if not rows:
                 ids = np.zeros(0, dtype=np.int64)
-                matrix = np.zeros((0, self.dim), dtype=np.float32)
+                bits = np.zeros((0, 0), dtype=np.uint8)
             else:
                 # `np.fromiter` skips the intermediate 100k-element Python list
                 # `np.array([int(...) ...])` builds; ~2 ms of a cold load.
                 ids = np.fromiter(
                     (int(row[0]) for row in rows), dtype=np.int64, count=len(rows)
                 )
-                matrix = filevec.matrix([row[1] for row in rows], int(self.dim))
+                bits = np.frombuffer(
+                    b"".join(row[1] for row in rows), dtype=np.uint8
+                ).reshape(len(rows), -1)
             _FILEVEC_CACHE["key"] = key
             _FILEVEC_CACHE["ids"] = ids
-            _FILEVEC_CACHE["matrix"] = matrix
+            _FILEVEC_CACHE["bits"] = bits
             self._vec_key = key
-            self._vec_ids, self._vec_matrix = ids, matrix
-            return ids, matrix
+            return ids, bits
 
     def knn(self, query_vector: np.ndarray, limit: int) -> list[tuple[int, float]]:
         """Nearest files to a query vector.
 
-        The stored rows are ±1 sign patterns and the query stays float32, so
-        this is one matvec over ~14 000 rows — a millisecond, with no index to
-        build or keep fresh.
-        """
-        return _top_k(*self.vector_index(), query_vector, limit)
+        Stored rows are ±1 sign patterns packed 48 bytes per file; the score
+        is the same asymmetric dot the float32 matrix computed, assembled from
+        per-byte lookup tables — the matrix itself never exists in RAM."""
+        ids, bits = self.packed_index()
+        if not len(ids) or bits.size == 0:
+            return []
+        if bits.shape[1] * 8 < int(query_vector.shape[0]):
+            return []
+        scores = filevec.lut_scores(bits, query_vector)
+        take = min(limit, len(ids))
+        top = np.argpartition(-scores, take - 1)[:take]
+        top = top[np.argsort(-scores[top])]
+        return [(int(ids[i]), float(scores[i])) for i in top]
 
     def pack(self):
         """The memory-mapped matrix, shared process-wide and kept open.
@@ -2290,8 +2300,6 @@ class Store:
     def _invalidate_vectors(self) -> None:
         self._vec_gen += 1
         self._vec_key = None
-        self._vec_ids = None
-        self._vec_matrix = None
         self._pack_key = None
         self._pack = None
 
