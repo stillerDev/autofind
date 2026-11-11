@@ -17,8 +17,13 @@ with a single vertical veil over the whole window and translucent glass panels
 on top, so results sit *on* the image and it shows through the gaps instead of
 being cut off by a black list. The accent is white-grey: an orange button read as
 a warning against fog.
+
+
+
 brench autofind vs kensaku
 <img width="1046" height="692" alt="image" src="https://github.com/user-attachments/assets/1de83f46-b6d7-4c39-9b0a-ca0a7c5894a7" />
+
+
 
 ## Status
 
