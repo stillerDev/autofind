@@ -1828,6 +1828,10 @@ async function loadStats() {
     renderPrivacy(privacy);
     renderWatch(watch);
     if (seal) renderSeal(seal);
+    // extra data for the index tab
+    const set = (id, value) => { const el = $(id); if (el) el.textContent = value; };
+    set("s-texts", stats.texts ?? 0);
+    set("s-sealed", stats.texts_sealed ?? 0);
 
     if (!$("roots").value.trim() && status.default_roots?.length) {
       $("roots").value = status.default_roots.join("\n");
@@ -1890,7 +1894,10 @@ function renderSeal(seal) {
   button.disabled = Boolean(seal.working);
   const bar = $("seal-progress");
   const total = seal.total || 1;
-  const percent = Math.min(100, Math.round(((seal.done || 0) / total) * 100));
+  // 100% показывается только когда воркер закончил - reseal поискового
+  // индекса входит в job, поэтому до его завершения максимум 99%.
+  const percent = Math.min(seal.working ? 99 : 100,
+    Math.round(((seal.done || 0) / total) * 100));
   if (seal.working) {
     bar.hidden = false;
     $("seal-progress-fill").style.width = `${percent}%`;
@@ -1903,6 +1910,7 @@ function renderSeal(seal) {
     return;
   }
   bar.hidden = true;
+  $("seal-progress-fill").style.width = "100%";
   if (seal.error) {
     $("seal-warn").hidden = false;
     $("seal-warn").textContent = seal.error;
@@ -1910,6 +1918,12 @@ function renderSeal(seal) {
   }
   $("seal-warn").hidden = !seal.sealed;
   if (seal.sealed) $("seal-warn").textContent = t("panel.sealWarn");
+  // live extra data for the encryption tab
+  const texts = state.stats || {};
+  const sealedTexts = $("s-sealed");
+  if (sealedTexts && typeof seal.texts_total === "number") {
+    sealedTexts.textContent = `${seal.texts_sealed ?? 0}/${seal.texts_total}`;
+  }
 }
 
 async function pollSeal() {
@@ -3241,24 +3255,34 @@ $("preview").addEventListener("click", (event) => {
    encryption slide the drawer and scroll to their section; duplicates opens
    its own drawer; search and hotkeys live in the drawer since the settings
    modal gave them up. */
-function openPanelAt(sectionId) {
+function setDrawerTab(name) {
   setPanel(true);
-  const section = $(sectionId);
-  if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
+  document.querySelectorAll("#drawer-tabs .drawer-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.drawerTab === name);
+  });
+  document.querySelectorAll("#panel .drawer-pane").forEach((pane) => {
+    pane.classList.toggle("active", pane.dataset.drawerPane === name);
+  });
+  const titles = { index: "rail.index", privacy: "rail.privacy", encryption: "rail.encryption",
+                   search: "rail.searchTitle", keys: "hotkeys.title" };
+  $("drawer-title").setAttribute("data-i18n", titles[name] || "rail.index");
+  applyStaticText();
+  if (name === "search") {
+    loadPersonal().then(renderAliases);
+    loadTypes(true).then(() => { renderTypes(); renderTypeTabs(); });
+  }
+  if (name === "keys") loadHotkeys().then(renderHotkeys);
 }
 
 $("rail-dups").addEventListener("click", () => setDups(true));
-$("rail-index").addEventListener("click", () => openPanelAt("panel-index"));
-$("rail-privacy").addEventListener("click", () => openPanelAt("panel-privacy"));
-$("rail-seal").addEventListener("click", () => openPanelAt("panel-encryption"));
-$("rail-search").addEventListener("click", () => {
-  openPanelAt("panel-search");
-  loadPersonal().then(renderAliases);
-  loadTypes(true).then(() => { renderTypes(); renderTypeTabs(); });
-});
-$("rail-keys").addEventListener("click", () => {
-  openPanelAt("panel-keys");
-  loadHotkeys().then(renderHotkeys);
+$("rail-index").addEventListener("click", () => setDrawerTab("index"));
+$("rail-privacy").addEventListener("click", () => setDrawerTab("privacy"));
+$("rail-seal").addEventListener("click", () => setDrawerTab("encryption"));
+$("rail-search").addEventListener("click", () => setDrawerTab("search"));
+$("rail-keys").addEventListener("click", () => setDrawerTab("keys"));
+$("drawer-tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-drawer-tab]");
+  if (tab) setDrawerTab(tab.dataset.drawerTab);
 });
 $("panel-close").addEventListener("click", () => {
   setPanel(false);

@@ -1729,11 +1729,16 @@ class Store:
             if progress:
                 progress(done, total, stage)
 
-        total = (
+        # One unit of work is reserved for the reseal: the bar must not read
+        # 100% while the search index (BM25) is still being re-encrypted -
+        # that rebuild is part of the job, not an afterthought.
+        reseal_weight = 1
+        rows_total = (
             self.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0]
             + self.conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
             + self.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
         )
+        total = rows_total + reseal_weight
         done = 0
         rows = self.conn.execute("SELECT hash, data FROM file_texts").fetchall()
         for row in rows:
@@ -1782,11 +1787,13 @@ class Store:
         self.conn.execute("DROP TABLE IF EXISTS chunks_vocab")
         self.conn.execute("DROP VIEW IF EXISTS chunks_vocab")
         self.conn.commit()
-        _tick(total, total, "reseal")
+        _tick(rows_total, total, "reseal")
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.conn.execute("VACUUM")
         self.conn.commit()
         self.reseal_bm25()
+        # The search index is re-encrypted: only now the job reads 100%.
+        _tick(total, total, "reseal")
 
     def unseal_index(self, progress=None) -> None:
         """Decrypt everything back and rebuild FTS (paranoid mode off)."""
@@ -1798,11 +1805,13 @@ class Store:
             if progress:
                 progress(done, total, stage)
 
-        total = (
+        fts_weight = 1
+        rows_total = (
             self.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0]
             + self.conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
             + self.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
         )
+        total = rows_total + fts_weight
         done = 0
         rows = self.conn.execute("SELECT hash, data FROM file_texts").fetchall()
         for row in rows:
@@ -1844,8 +1853,9 @@ class Store:
                 )
         _set_meta(self.conn, "sealed", "0")
         self.conn.commit()
-        _tick(total, total, "fts")
+        _tick(rows_total, total, "fts")
         _rebuild_fts(self.conn)
+        _tick(total, total, "fts")
         self.conn.commit()
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.conn.execute("VACUUM")
@@ -2587,12 +2597,20 @@ class Store:
         def scalar(sql: str) -> int:
             return int(self.conn.execute(sql).fetchone()[0])
 
+        texts = scalar("SELECT COUNT(*) FROM file_texts")
         return {
             "files": scalar("SELECT COUNT(*) FROM files"),
             "chunks": scalar("SELECT COUNT(*) FROM chunks"),
             "vectors": scalar("SELECT COUNT(*) FROM file_vectors"),
             "images": scalar("SELECT COUNT(*) FROM images"),
             "ocr_images": scalar("SELECT COUNT(*) FROM images WHERE ocr_text IS NOT NULL AND ocr_text != ''"),
+            # document texts stored once per content hash; a sealed row is one
+            # whose blob carries the AFS1 prefix
+            "texts": texts,
+            "texts_sealed": scalar(
+                "SELECT COUNT(*) FROM file_texts WHERE substr(data, 1, 4) = 'AFS1'"
+            ) if self.sealed else 0,
+            "symbols": scalar("SELECT COUNT(*) FROM symbols"),
             "db_bytes": self.path.stat().st_size if self.path.exists() else 0,
         }
 

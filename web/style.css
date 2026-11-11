@@ -1949,7 +1949,7 @@ main {
   left: 66px;
   bottom: 10px;
   z-index: 46;
-  width: min(360px, calc(92vw - 76px));
+  width: min(1080px, calc(92vw - 76px));
   display: flex;
   flex-direction: column;
   padding: 14px 16px 16px;
@@ -3941,4 +3941,47 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   .hk-row { grid-template-columns: 1fr; gap: 6px; }
   .hk-slots { justify-content: flex-start; }
   .card { grid-template-columns: 18px 32px minmax(0, 1fr); gap: 10px; }
+}
+
+
+/* Drawer tabs: the rail functions read as tabs now, the duplicates mode bar
+   set the style and the drawer follows it. */
+.drawer-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 0 2px 12px;
+  flex-wrap: wrap;
+}
+
+.drawer-tab {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.drawer-tab:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.drawer-tab.active {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.drawer-pane {
+  display: none;
+}
+
+.drawer-pane.active {
+  display: block;
+}
+
+.moved-pane .settings-section {
+  padding: 0 0 14px;
 }

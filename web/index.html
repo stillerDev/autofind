@@ -521,10 +521,24 @@
 
 <aside class="drawer" id="panel" aria-hidden="true">
   <div class="drawer-head">
-    <h3 data-i18n="panel.index">Index</h3>
+    <h3 id="drawer-title" data-i18n="rail.index">Index</h3>
     <button class="drawer-close" id="panel-close" type="button" data-i18n-aria="preview.close">×</button>
   </div>
 
+  <div class="drawer-tabs" id="drawer-tabs" role="tablist">
+    <button type="button" class="drawer-tab active" data-drawer-tab="index"
+            role="tab" data-i18n="rail.indexShort">Index</button>
+    <button type="button" class="drawer-tab" data-drawer-tab="privacy"
+            role="tab" data-i18n="rail.privacyShort">Privacy</button>
+    <button type="button" class="drawer-tab" data-drawer-tab="encryption"
+            role="tab" data-i18n="rail.encryptionShort">Encryption</button>
+    <button type="button" class="drawer-tab" data-drawer-tab="search"
+            role="tab" data-i18n="rail.searchShort">Search</button>
+    <button type="button" class="drawer-tab" data-drawer-tab="keys"
+            role="tab" data-i18n="rail.keysShort">Keys</button>
+  </div>
+
+  <div class="drawer-pane active" data-drawer-pane="index">
   <div class="panel" id="panel-index">
     <div class="stat-grid">
       <div class="stat"><span data-i18n="panel.files">files</span><b id="s-files">—</b></div>
@@ -563,6 +577,21 @@
     </div>
   </div>
 
+    <div class="panel" id="panel-jobstatus">
+      <h3 data-i18n="panel.jobStatus">Status</h3>
+      <div class="status-line" style="margin-bottom:8px">
+        <span class="progress-label" id="job-stage" data-i18n="panel.jobIdle">idle</span>
+      </div>
+      <div class="stat-grid">
+        <div class="stat"><span data-i18n="panel.docTexts">doc texts</span><b id="s-texts">—</b></div>
+        <div class="stat"><span data-i18n="panel.docSealed">sealed</span><b id="s-sealed">—</b></div>
+        <div class="stat"><span data-i18n="panel.definitions">definitions</span><b id="s-symbols">—</b></div>
+      </div>
+      <div class="progress"><div id="job-bar"></div></div>
+    </div>
+  </div>
+
+  <div class="drawer-pane" data-drawer-pane="privacy">
   <div class="panel" id="panel-privacy">
     <h3 data-i18n="panel.privacy">Privacy</h3>
     <label class="stat-row privacy-master">
@@ -586,6 +615,9 @@
     <p class="panel-note" data-i18n="panel.privacyNote"></p>
   </div>
 
+  </div>
+
+  <div class="drawer-pane" data-drawer-pane="encryption">
   <div class="panel" id="panel-encryption">
     <h3 data-i18n="panel.encryption">Encryption</h3>
     <p class="panel-note" data-i18n="panel.encryptionNote"></p>
@@ -601,6 +633,9 @@
   </div>
 
 
+  </div>
+
+  <div class="drawer-pane" data-drawer-pane="search">
   <div class="panel" id="panel-search">
     <h3 data-i18n="panel.searchTitle">Search</h3>
       <div class="moved-pane">
@@ -628,6 +663,9 @@
       </div>
   </div>
 
+  </div>
+
+  <div class="drawer-pane" data-drawer-pane="keys">
   <div class="panel" id="panel-keys">
     <h3 data-i18n="hotkeys.title">Keyboard shortcuts</h3>
       <div class="moved-pane">
@@ -642,6 +680,8 @@
           </div>
         </section>
       </div>
+  </div>
+
   </div>
 
   <div class="side-foot">
