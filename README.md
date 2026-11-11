@@ -453,6 +453,24 @@ Two numbers the plan should have known:
   float32 vectors, not text. Deduplicating identical chunks across the tree
   would cut it substantially.
 
+### Against Kensaku
+
+Measured side by side with Kensaku-new 1.0.17 on the same machine and the same
+20 461-file index. Medians over the query set; CLI is 7 queries × 5 runs, HTTP
+is 7 queries × 25 runs.
+
+| Metric | AutoFind v9 | Kensaku-new 1.0.17 | Result |
+|---|---|---|---|
+| Cold CLI | 170.3 ms | 217.8 ms | 28% faster |
+| Warm HTTP | 7.3 ms | 13.7 ms | 47% faster |
+| Search (median) | 27.9 s | 31.1 s | 10% faster |
+| Index on disk | 222.3 MB | 226.5 MB | ≈ same |
+| Memory | 102.9 MB | 104.9 MB | overlap |
+| Index coverage | 20 461 files, 311 235 chunks | 18 745 files, 8 447 full-text docs | wider coverage |
+
+Chunks and full-text documents are different units, so the last row is about
+reach rather than a like-for-like count.
+
 ## Scaling past 100k files
 
 Three things used to grow with the corpus in a way that would have broken at
