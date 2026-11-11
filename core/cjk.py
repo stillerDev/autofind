@@ -8,7 +8,9 @@ space-separated overlapping pairs (`数据库索引` -> `数据 据库 库索 �
 at query time a run becomes a phrase of the same pairs, so adjacency — the only
 thing bigrams preserve — is checked by FTS5 itself.
 
-Only the auxiliary `chunks_cjk` table sees the transformed text; `chunks.text`
+Only the full-text index sees the transformed text: since schema v9 the
+bigrams are written into the single contentless FTS table alongside the latin
+words, so there is no separate CJK copy of the corpus. The stored document text
 and every snippet stay exactly as written.
 """
 

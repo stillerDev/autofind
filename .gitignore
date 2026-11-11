@@ -15,6 +15,13 @@ index.db-shm
 .DS_Store
 node_modules/
 
+# Runtime data: only lands in the checkout if AUTOFIND_HOME is pointed here.
+privacy.json
+types.json
+hotkeys.json
+onboarding.json
+mcp_token
+
 # Personal editor settings and machine-specific build/debug artifacts.
 .vscode/
 _diag.py

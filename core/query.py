@@ -23,6 +23,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from fnmatch import fnmatchcase
 
 # ---------------------------------------------------------------- vocabularies
 
@@ -44,6 +45,9 @@ TYPE_KINDS = {
     "odt": {"odt"},
     "pptx": {"pptx"},
     "xlsx": {"xlsx"},
+    "email": {"email"},
+    "mail": {"email"},
+    "archive": {"archive"},
 }
 TYPE_EXTS = {
     "sheet": {".xlsx", ".xls", ".ods", ".csv", ".tsv"},
@@ -152,6 +156,8 @@ CHIP_TEMPLATES: dict[str, str] = {
     "place": "in folder: {value}",
     "filter": "regex {value}",
     "exclude": "without “{value}”",
+    "tag": "tag: {value}",
+    "collection": "collection: {value}",
 }
 
 WEEKDAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -215,6 +221,9 @@ class ParsedQuery:
     terms: list[Term] = field(default_factory=list)
     kinds: set[str] = field(default_factory=set)
     exts: set[str] = field(default_factory=set)
+    # A user-defined type: basename globs such as `*.jpg`. Empty means the
+    # chosen type exists but constrains nothing.
+    masks: list[str] = field(default_factory=list)
     in_paths: list[str] = field(default_factory=list)
     not_paths: list[str] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
@@ -222,6 +231,10 @@ class ParsedQuery:
     regexes: list[str] = field(default_factory=list)
     # `sym:name` — a definition, not a mention. Served by the symbols table.
     symbols: list[str] = field(default_factory=list)
+    # The user's own labels. Tags are AND; collections are a union (a file can
+    # live in several, and asking for two collections means "either").
+    tags: list[str] = field(default_factory=list)
+    collections: list[str] = field(default_factory=list)
     modified: Range | None = None
     size: Range | None = None
     mode: str = "ranked"
@@ -246,8 +259,10 @@ class ParsedQuery:
     @property
     def has_filters(self) -> bool:
         return bool(
-            self.kinds or self.exts or self.in_paths or self.not_paths or self.names
-            or self.contents or self.regexes or self.symbols or self.modified or self.size
+            self.kinds or self.exts or self.masks or self.in_paths or self.not_paths
+            or self.names or self.contents or self.regexes or self.symbols
+            or self.tags or self.collections
+            or self.modified or self.size
         )
 
     @property
@@ -266,6 +281,10 @@ class ParsedQuery:
             dot = lowered.rfind(".")
             slash = max(lowered.rfind("\\"), lowered.rfind("/"))
             if dot <= slash or lowered[dot:] not in self.exts:
+                return False
+        if self.masks:
+            base = _basename(lowered)
+            if not any(fnmatchcase(base, mask) for mask in self.masks):
                 return False
         for prefix in self.in_paths:
             if not lowered.startswith(prefix.lower()):
@@ -516,6 +535,26 @@ def _apply_key(query: ParsedQuery, token: Token, now: float | None) -> None:
     if key == "content":
         query.contents.append(value)
         query.terms.append(Term(value, field="content", phrase=token.quoted))
+        return
+
+    if key in ("tag", "tags"):
+        clean = " ".join(value.split())[:64]
+        if clean:
+            query.tags.append(clean)
+            source = f'{token.key}:"{clean}"' if (" " in clean or token.quoted) else literal
+            query.chips.append(Chip("tag", clean, source, source))
+            return
+        query.terms.append(Term(literal))
+        return
+
+    if key in ("collection", "col", "set"):
+        clean = " ".join(value.split())[:96]
+        if clean:
+            query.collections.append(clean)
+            source = f'{token.key}:"{clean}"' if (" " in clean or token.quoted) else literal
+            query.chips.append(Chip("collection", clean, source, source))
+            return
+        query.terms.append(Term(literal))
         return
 
     if key == "modified":

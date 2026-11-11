@@ -1,4 +1,8 @@
-"""The CJK bigram table and the trigram typo tier: transforms, queries, e2e."""
+"""The CJK bigram transform: index form, query phrases and an end-to-end search.
+
+Since v9 the bigrams live in the one contentless FTS tier, so the hit arrives
+on the `bm25` channel and there is no separate table to check.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,7 @@ from core.cjk import cjk_bigrams, cjk_query_phrase, has_cjk
 from core.config import IndexConfig
 from core.embed import HashingEmbedder
 from core.query import understand
-from core.search import build_match_query, build_tri_query, search_page
+from core.search import build_match_query, search_page
 from core.store import Store
 
 
@@ -51,16 +55,6 @@ class MatchQueryTests(unittest.TestCase):
         self.assertIn('"数据"', query)
 
 
-class TriQueryTests(unittest.TestCase):
-    def test_long_terms_break_into_grams(self):
-        query = build_tri_query("invoive")
-        for gram in ("inv", "nvo", "voi", "oiv", "ive"):
-            self.assertIn(f'"{gram}"', query)
-
-    def test_short_terms_are_skipped(self):
-        self.assertIsNone(build_tri_query("ab cd"))
-
-
 class EndToEndTests(unittest.TestCase):
     def _store(self, tmp: str) -> Store:
         config = IndexConfig()
@@ -68,6 +62,8 @@ class EndToEndTests(unittest.TestCase):
         return Store(Path(tmp) / "index.db", "hashing-384", 384)
 
     def test_cjk_query_finds_what_bm25_cannot(self):
+        # Since v9 the CJK bigrams live in the one FTS index, so the hit comes
+        # back on the `bm25` channel instead of a separate `cjk` table.
         embedder = HashingEmbedder()
         with tempfile.TemporaryDirectory() as tmp:
             store = self._store(tmp)
@@ -78,7 +74,7 @@ class EndToEndTests(unittest.TestCase):
                 page = search_page(store, embedder, "索引", limit=5, offset=0, sort=None,
                                    parsed=understand("索引"), usage={}, applied=False)
                 self.assertEqual([hit.name for hit in page.hits], ["db.txt"])
-                self.assertIn("cjk", page.hits[0].channels)
+                self.assertIn("bm25", page.hits[0].channels)
             finally:
                 store.close()
 

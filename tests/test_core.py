@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import tempfile
 import unittest
 import zipfile
@@ -12,18 +13,30 @@ from PIL import Image, ImageDraw, ImageFont
 
 from core.chunker import chunk_text
 from core.config import IndexConfig, save_privacy_prefs
+from core.custom_types import coerce_types, find_type, normalise_mask, read_types, save_types
 from core.doctor import estimate_bundle
 from core.embed import HashingEmbedder
 from core.embed.visual import LAYOUT_DIM, LayoutEmbedder
 from core.evaluate import evaluate, matches
 from core.extract import extract_text
+from core.extract.archive import extract_archive
+from core.extract.email import extract_eml, extract_mbox
+from core.hotkeys import (
+    DEFAULTS,
+    coerce_hotkeys,
+    conflicts,
+    normalize_chord,
+    read_hotkeys,
+    save_hotkeys,
+)
 from core.images import preprocess_for_ocr, thumbnail_bytes, visual_features
 from core.indexer import run_index
 from core.ocr import available_engines, ocr_image
 from core.privacy import match_reason, purge_indexed
+from core.query import ParsedQuery, understand
 from core.scanner import iter_entries, kind_for
 from core.search import build_match_query, hybrid_search, similar_images
-from core.store import Store
+from core.store import Store, _best_copy, _simhash
 from core.watch import Watcher
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -454,6 +467,54 @@ class WatcherTests(unittest.TestCase):
             store.close()
 
 
+class CustomTypeTests(unittest.TestCase):
+    def test_masks_become_lowercase_basename_globs(self):
+        self.assertEqual(normalise_mask("jpg"), "*.jpg")
+        self.assertEqual(normalise_mask(" .JPG "), "*.jpg")
+        self.assertEqual(normalise_mask("C:\\pics\\*.PNG"), "*.png")
+        self.assertEqual(normalise_mask("*.tar.gz"), "*.tar.gz")
+        self.assertIsNone(normalise_mask(""))
+        self.assertIsNone(normalise_mask("*"))
+        self.assertIsNone(normalise_mask("*.*"))
+        self.assertIsNone(normalise_mask("."))
+
+    def test_catalog_round_trips_through_a_temp_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            rows = coerce_types(
+                [
+                    {"name": "Photos", "masks": ["JPG", "*.png", "jpg", "*"]},
+                    {"name": "", "masks": ["*.gif"]},
+                ]
+            )
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].masks, ["*.jpg", "*.png"])
+            save_types(home, rows)
+
+            again = read_types(home)
+            self.assertEqual([item.name for item in again], ["Photos"])
+            self.assertEqual(again[0].masks, ["*.jpg", "*.png"])
+            found = find_type(again, again[0].id)
+            self.assertIsNotNone(found)
+            self.assertIsNone(find_type(again, "missing"))
+
+    def test_two_types_with_the_same_name_get_distinct_ids(self):
+        rows = coerce_types(
+            [{"name": "Photos", "masks": ["*.jpg"]}, {"name": "Photos", "masks": ["*.png"]}]
+        )
+        self.assertEqual(len({item.id for item in rows}), 2)
+
+    def test_masks_filter_by_basename(self):
+        parsed = ParsedQuery(masks=["*.jpg", "*.png"])
+        self.assertTrue(parsed.matches("C:\\pics\\Holiday.JPG", "image", 10, 0.0))
+        self.assertTrue(parsed.matches("/home/me/notes.png", "image", 10, 0.0))
+        self.assertFalse(parsed.matches("/home/me/report.pdf", "pdf", 10, 0.0))
+        # A directory that looks like a match does not make every file inside it one.
+        self.assertFalse(parsed.matches("/home/me/holiday.jpg/report.pdf", "pdf", 10, 0.0))
+        self.assertTrue(parsed.has_filters)
+        self.assertFalse(ParsedQuery(masks=["*.jpg"]).matches("x.gif", "image", 1, 0.0))
+
+
 class EvalTests(unittest.TestCase):
     def test_matches_accepts_basename_and_fragment(self):
         self.assertTrue(matches("/home/me/docs/plan.docx", "plan.docx"))
@@ -496,6 +557,210 @@ class DoctorTests(unittest.TestCase):
             self.assertAlmostEqual(bundle["total_mb"], total, places=1)
             self.assertEqual(bundle["fits"], bundle["total_mb"] <= bundle["budget_mb"])
             self.assertTrue(any(part["part"].startswith("model:") for part in bundle["parts"]))
+
+
+class HotkeyTests(unittest.TestCase):
+    def test_chords_are_canonical(self):
+        self.assertEqual(normalize_chord("Shift + Ctrl + D"), "ctrl+shift+d")
+        self.assertEqual(normalize_chord("CTRL+K"), "ctrl+k")
+        self.assertEqual(normalize_chord("Return"), "enter")
+        self.assertEqual(normalize_chord("Space"), "space")
+        self.assertEqual(normalize_chord("Spacebar"), "space")
+        self.assertEqual(normalize_chord("+"), "plus")
+        # A lone modifier is not a shortcut, and two keys is not a chord.
+        self.assertIsNone(normalize_chord("ctrl"))
+        self.assertIsNone(normalize_chord("ctrl+a+b"))
+        self.assertIsNone(normalize_chord(""))
+
+    def test_coerce_keeps_defaults_and_empty_disables(self):
+        clean = coerce_hotkeys({"open": [], "reveal": ["Shift+Enter"]})
+        self.assertEqual(clean["open"], [])
+        self.assertEqual(clean["reveal"], ["shift+enter"])
+        self.assertEqual(clean["focus"], DEFAULTS["focus"])
+
+    def test_round_trip_through_a_temp_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.assertEqual(read_hotkeys(home), DEFAULTS)
+            saved = save_hotkeys(home, {"export": ["Ctrl+Shift+E", "ctrl+shift+e"]})
+            self.assertEqual(saved["export"], ["ctrl+shift+e"])
+            self.assertEqual(read_hotkeys(home)["export"], ["ctrl+shift+e"])
+
+    def test_conflicts_report_duplicates_and_similar_pairs(self):
+        hotkeys = {action: list(combos) for action, combos in DEFAULTS.items()}
+        hotkeys["open"] = ["ctrl+shift+d"]
+        hotkeys["select"] = ["ctrl+d"]
+        found = conflicts(hotkeys)
+        kinds = {(row["type"], row["a"]["action"], row["b"]["action"]) for row in found}
+        self.assertIn(("duplicate", "duplicates", "open"), kinds)
+        self.assertTrue(any(row["type"] == "similar" for row in found))
+
+
+class TagCollectionTests(unittest.TestCase):
+    def _store_with_files(self, tmp: str, names: list[str]) -> tuple[Store, list[int]]:
+        root = Path(tmp) / "corpus"
+        root.mkdir()
+        for name in names:
+            (root / name).write_text(f"{name} содержит общий текст для поиска", encoding="utf-8")
+        config = IndexConfig(home=Path(tmp) / "home")
+        embedder = HashingEmbedder()
+        store = Store(Path(tmp) / "index.db", embedder.name, embedder.dim)
+        run_index([root], config, store, embedder)
+        ids = [int(row["id"]) for row in store.conn.execute("SELECT id FROM files ORDER BY path")]
+        return store, ids
+
+    def test_tags_are_per_file_and_and_filtered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, ids = self._store_with_files(tmp, ["a.txt", "b.txt", "c.txt"])
+            store.set_tag(ids[0], "Work")
+            store.set_tag(ids[0], "Urgent")
+            store.set_tag(ids[1], "work")
+            self.assertEqual(store.tags_for(ids[:2])[ids[0]], ["Urgent", "Work"])
+            self.assertEqual(store.file_ids_for_tags(["WORK"]), {ids[0], ids[1]})
+            self.assertEqual(store.file_ids_for_tags(["work", "urgent"]), {ids[0]})
+            counts = {row["tag"]: row["count"] for row in store.all_tags()}
+            self.assertEqual(counts, {"Urgent": 1, "Work": 2})
+            store.set_tag(ids[0], "urgent", on=False)
+            self.assertNotIn("Urgent", store.tags_for([ids[0]])[ids[0]])
+            store.close()
+
+    def test_collections_are_union_and_names_are_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, ids = self._store_with_files(tmp, ["a.txt", "b.txt", "c.txt"])
+            first = store.create_collection("Projects")
+            again = store.create_collection("projects")
+            self.assertEqual(first, again)
+            second = store.create_collection("Archive")
+            store.add_to_collection(first, [ids[0], ids[1]])
+            store.add_to_collection(second, [ids[2]])
+            self.assertEqual(store.collection_ids_for_names(["PROJECTS"]), {ids[0], ids[1]})
+            self.assertEqual(
+                store.collection_ids_for_names(["Projects", "Archive"]), set(ids)
+            )
+            names = {row["name"]: row["count"] for row in store.collections()}
+            self.assertEqual(names, {"Archive": 1, "Projects": 2})
+            store.close()
+
+    def test_query_understands_tag_and_collection_filters(self):
+        parsed = understand('отчёт tag:work tag:"важное" collection:"Проекты"')
+        self.assertEqual(parsed.tags, ["work", "важное"])
+        self.assertEqual(parsed.collections, ["Проекты"])
+        self.assertIn(("tag", "work"), {(chip.kind, chip.value) for chip in parsed.chips})
+        self.assertTrue(parsed.has_filters)
+
+
+class DocumentDuplicateTests(unittest.TestCase):
+    def test_simhash_is_stable_and_separates_different_text(self):
+        text = "один два три четыре пять шесть семь восемь девять десять одиннадцать двенадцать"
+        self.assertEqual(_simhash(text), _simhash(text))
+        self.assertNotEqual(
+            _simhash(text),
+            _simhash("совершенно другой набор слов про погоду море солнце пляж отпуск лето"),
+        )
+        # Too little text cannot be fingerprinted, so it never groups by accident.
+        self.assertEqual(_simhash("короткий текст"), 0)
+
+    def test_best_copy_prefers_a_shallow_recent_file(self):
+        items = [
+            {"file_id": 1, "path": "/home/me/Temp/plan.docx", "size": 10, "mtime": 99.0},
+            {"file_id": 2, "path": "/home/me/docs/plan.docx", "size": 10, "mtime": 50.0},
+        ]
+        self.assertEqual(_best_copy(items)["file_id"], 2)
+        # For documents the larger copy wins when everything else ties.
+        items = [
+            {"file_id": 3, "path": "/home/me/docs/a", "size": 10, "mtime": 5.0},
+            {"file_id": 4, "path": "/home/me/docs/b", "size": 40, "mtime": 5.0},
+        ]
+        self.assertEqual(_best_copy(items, prefer_size=True)["file_id"], 4)
+
+    def test_near_identical_documents_are_grouped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir()
+            body = (
+                "Инсталлятор не должен превышать сто пятьдесят мегабайт. "
+                "Сборка запускается одной командой, а журнал пишется рядом с архивом. "
+                "Перед установкой проверяется свободное место и версия системы. "
+                "После распаковки приложение само открывает окно приветствия."
+            )
+            (root / "plan.txt").write_text(body, encoding="utf-8")
+            (root / "plan-copy.md").write_text(body, encoding="utf-8")
+            (root / "other.txt").write_text(
+                "Совершенно другой документ про погоду, море, солнце, пляж и отпуск. "
+                "Здесь нет ни слова про инсталлятор, сборку, журнал или распаковку. "
+                "Поэтому отпечаток текста обязан отличаться от предыдущего документа.",
+                encoding="utf-8",
+            )
+            config = IndexConfig(home=Path(tmp) / "home")
+            embedder = HashingEmbedder()
+            store = Store(Path(tmp) / "index.db", embedder.name, embedder.dim)
+            run_index([root], config, store, embedder)
+            groups = store.duplicate_documents()
+            self.assertEqual(len(groups), 1)
+            names = {Path(item["path"]).name for item in groups[0]["items"]}
+            self.assertEqual(names, {"plan.txt", "plan-copy.md"})
+            self.assertIn(groups[0]["keep"], {item["file_id"] for item in groups[0]["items"]})
+            store.close()
+
+
+class ArchiveEmailTests(unittest.TestCase):
+    def test_zip_and_gzip_text_are_extracted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "notes.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("readme.txt", "внутри архива лежит важный текст")
+                bundle.writestr("image.png", b"\x89PNG\r\n\x1a\n\x00\x00")
+            text = extract_archive(archive)
+            self.assertIn("важный текст", text)
+            self.assertIn("readme.txt", text)
+            self.assertNotIn("PNG", text)
+
+            single = root / "lines.txt.gz"
+            with gzip.open(single, "wb") as handle:
+                handle.write("сжатая строка с текстом".encode("utf-8"))
+            self.assertIn("сжатая строка", extract_archive(single))
+
+    def test_eml_reduces_html_to_readable_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mail.eml"
+            path.write_bytes(
+                "Subject: Счёт за август\r\n"
+                "From: billing@example.com\r\n"
+                "To: me@example.com\r\n"
+                "Content-Type: text/html; charset=utf-8\r\n"
+                "\r\n"
+                "<html><body><p>К оплате <b>1200</b> рублей.</p>"
+                "<style>.x{display:none}</style></body></html>\r\n".encode("utf-8")
+            )
+            text = extract_eml(path)
+            self.assertIn("Счёт за август", text)
+            self.assertIn("billing@example.com", text)
+            self.assertIn("1200", text)
+            self.assertNotIn("<b>", text)
+            self.assertNotIn("display:none", text)
+
+    def test_mbox_reads_every_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "box.mbox"
+            path.write_text(
+                "From sender@example.com Mon Jan  1 00:00:00 2024\n"
+                "Subject: Первое письмо\n"
+                "From: a@example.com\n"
+                "\n"
+                "текст первого письма\n"
+                "\n"
+                "From sender@example.com Mon Jan  2 00:00:00 2024\n"
+                "Subject: Второе письмо\n"
+                "From: b@example.com\n"
+                "\n"
+                "текст второго письма\n",
+                encoding="utf-8",
+            )
+            text = extract_mbox(path)
+            self.assertIn("Первое письмо", text)
+            self.assertIn("Второе письмо", text)
+            self.assertIn("текст второго письма", text)
 
 
 if __name__ == "__main__":

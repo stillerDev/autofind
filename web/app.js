@@ -3,7 +3,15 @@ const state = {
   query: "", kind: "", folder: "", since: "", sort: "best", docdate: false,
   timer: null, jobTimer: null,
   hits: [], total: 0, nextOffset: null, approx: false, selected: -1, chips: [],
-  stats: null, status: null,
+  stats: null, status: null, types: [], typesLoaded: false,
+  // Multi-select is a set of file ids, not row indexes: it survives "more"
+  // and a redraw, and a file that scrolls off the page stays selected.
+  picked: new Set(),
+  tags: [], collections: [], metaLoaded: false,
+  hotkeys: {}, hotkeyDefaults: {}, hotkeyConflicts: [],
+  preview: null,
+  dupMode: "images", dupGroups: [],
+  watchAdded: -1, watchTimer: null,
 };
 
 // The three letters inside the file-type tile. Abbreviations of extensions, not
@@ -11,6 +19,7 @@ const state = {
 const KIND_LABEL = {
   pdf: "pdf", docx: "docx", code: "code", text: "txt", image: "img",
   pptx: "pptx", xlsx: "xlsx", epub: "epub", odt: "odt", rtf: "rtf",
+  email: "eml", archive: "zip",
 };
 
 const WEEKDAYS = [
@@ -63,6 +72,561 @@ async function api(path, options) {
     throw new Error(detail);
   }
   return response.json();
+}
+
+/* --------------------------------------------------------------- hotkeys */
+
+/* The defaults mirror `core/hotkeys.py`; the file on disk wins once it is
+   loaded. A shortcut is a chord in canonical order (`ctrl+shift+d`), which is
+   the same shape the server stores, so the two can be compared without guesswork. */
+const FALLBACK_HOTKEYS = {
+  focus: ["/"], search: ["ctrl+k"], settings: ["ctrl+,"], panel: ["ctrl+shift+i"],
+  duplicates: ["ctrl+shift+d"], preview: ["space"], open: ["enter"],
+  reveal: ["shift+enter"], next: ["down"], prev: ["up"], select: ["x"],
+  export: ["ctrl+shift+e"],
+};
+const HOTKEY_ACTIONS = Object.keys(FALLBACK_HOTKEYS);
+const MODIFIER_KEYS = new Set(["control", "alt", "shift", "meta"]);
+const KEY_NAMES = {
+  " ": "space", escape: "escape", esc: "escape", arrowup: "up", arrowdown: "down",
+  arrowleft: "left", arrowright: "right", return: "enter", delete: "delete",
+  backspace: "backspace", insert: "insert", "+": "plus",
+};
+
+function chordOfEvent(event) {
+  const raw = String(event.key || "").toLowerCase();
+  if (!raw || MODIFIER_KEYS.has(raw)) return "";
+  const key = KEY_NAMES[raw] || raw;
+  const mods = [];
+  if (event.ctrlKey) mods.push("ctrl");
+  if (event.altKey) mods.push("alt");
+  if (event.shiftKey) mods.push("shift");
+  if (event.metaKey) mods.push("meta");
+  return [...mods, key].join("+");
+}
+
+function hotkeyLabel(chord) {
+  return chord.split("+").map((part) => (
+    part.length === 1 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1)
+  )).join(" + ");
+}
+
+function chordParts(chord) {
+  const parts = chord.split("+");
+  return [parts.slice(0, -1), parts[parts.length - 1]];
+}
+
+/* Mirror of `core/hotkeys.conflicts`: a duplicate is the same chord on two
+   actions; a similar pair is the same key with a modifier subset. The UI paints
+   both red because both are the pair people press by mistake. */
+function computeHotkeyConflicts(hotkeys) {
+  const flat = [];
+  for (const action of HOTKEY_ACTIONS) {
+    for (const chord of hotkeys[action] || []) flat.push({ action, chord });
+  }
+  const rows = [];
+  for (let i = 0; i < flat.length; i += 1) {
+    for (let j = i + 1; j < flat.length; j += 1) {
+      const first = flat[i];
+      const second = flat[j];
+      if (first.action === second.action) continue;
+      if (first.chord === second.chord) {
+        rows.push({ a: first, b: second, type: "duplicate" });
+        continue;
+      }
+      const [firstMods, firstKey] = chordParts(first.chord);
+      const [secondMods, secondKey] = chordParts(second.chord);
+      if (firstKey !== secondKey) continue;
+      const short = firstMods.length <= secondMods.length ? firstMods : secondMods;
+      const long = firstMods.length <= secondMods.length ? secondMods : firstMods;
+      if (short.every((mod) => long.includes(mod)) && short.length < long.length) {
+        rows.push({ a: first, b: second, type: "similar" });
+      }
+    }
+  }
+  return rows;
+}
+
+async function loadHotkeys() {
+  try {
+    const data = await api("/api/hotkeys");
+    state.hotkeys = data.hotkeys || {};
+    state.hotkeyDefaults = data.defaults || FALLBACK_HOTKEYS;
+    state.hotkeyConflicts = data.conflicts || computeHotkeyConflicts(state.hotkeys);
+  } catch (error) {
+    state.hotkeys = JSON.parse(JSON.stringify(FALLBACK_HOTKEYS));
+    state.hotkeyDefaults = JSON.parse(JSON.stringify(FALLBACK_HOTKEYS));
+    state.hotkeyConflicts = computeHotkeyConflicts(state.hotkeys);
+  }
+}
+
+function hotkeyActionFor(chord) {
+  if (!chord) return null;
+  for (const action of HOTKEY_ACTIONS) {
+    if ((state.hotkeys[action] || []).includes(chord)) return action;
+  }
+  return null;
+}
+
+function focusHotkeyConflict() {
+  const slot = document.querySelector("#hotkeys-list .hk-slot.clash");
+  if (!slot) return;
+  slot.scrollIntoView({ block: "center" });
+  slot.focus({ preventScroll: true });
+}
+
+function renderHotkeys() {
+  const host = $("hotkeys-list");
+  if (!host) return;
+  const clashes = new Set();
+  for (const row of state.hotkeyConflicts) {
+    clashes.add(`${row.a.action}|${row.a.chord}`);
+    clashes.add(`${row.b.action}|${row.b.chord}`);
+  }
+  host.innerHTML = HOTKEY_ACTIONS.map((action) => {
+    const chords = (state.hotkeys[action] || []).filter(Boolean).slice();
+    const slots = chords.map((chord, index) => `
+      <button type="button" class="hk-slot${clashes.has(`${action}|${chord}`) ? " clash" : ""}"
+              data-hk-action="${action}" data-hk-index="${index}"
+              title="${esc(t("hotkeys.clearHint"))}">${esc(hotkeyLabel(chord))}</button>`).join("");
+    // The trailing empty slot is where the next chord goes. It is the "press
+    // more keys and another field appears" behaviour, made visible.
+    return `<div class="hk-row" data-hk-row="${action}">
+      <span class="hk-label">${esc(t(`hotkeys.action.${action}`))}</span>
+      <div class="hk-slots">
+        ${slots}
+        <button type="button" class="hk-slot hk-empty"
+                data-hk-action="${action}" data-hk-index="${chords.length}"
+                title="${esc(t("hotkeys.recordHint"))}"
+                aria-label="${esc(t("hotkeys.recordHint"))}">+</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  const status = $("hotkeys-status");
+  if (status) {
+    status.textContent = state.hotkeyConflicts.length ? t("hotkeys.conflict") : "";
+    status.classList.toggle("bad", state.hotkeyConflicts.length > 0);
+  }
+}
+
+let hotkeyTimer = null;
+
+async function saveHotkeys() {
+  state.hotkeyConflicts = computeHotkeyConflicts(state.hotkeys);
+  renderHotkeys();
+  if (state.hotkeyConflicts.length) setTimeout(focusHotkeyConflict, 0);
+  clearTimeout(hotkeyTimer);
+  hotkeyTimer = setTimeout(async () => {
+    try {
+      const data = await api("/api/hotkeys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hotkeys: state.hotkeys }),
+      });
+      state.hotkeys = data.hotkeys || state.hotkeys;
+      state.hotkeyDefaults = data.defaults || state.hotkeyDefaults;
+      state.hotkeyConflicts = data.conflicts || [];
+      renderHotkeys();
+      if (state.hotkeyConflicts.length) focusHotkeyConflict();
+    } catch (error) {
+      toast(t("toast.failed", { error: error.message }));
+    }
+  }, 300);
+}
+
+/* Recording: the focused slot swallows the next chord. Modifier-only presses
+   are ignored so the user can hold Ctrl before the letter without the slot
+   committing to "ctrl" alone. Backspace clears a binding. */
+function recordHotkey(slot, event) {
+  const action = slot.dataset.hkAction;
+  const index = Number(slot.dataset.hkIndex);
+  if (event.key === "Backspace" || event.key === "Delete" || event.key === "Escape") {
+    const list = (state.hotkeys[action] || []).slice();
+    list.splice(index, 1);
+    state.hotkeys[action] = list.filter(Boolean);
+    saveHotkeys();
+    return;
+  }
+  const chord = chordOfEvent(event);
+  if (!chord) return;
+  const list = (state.hotkeys[action] || []).slice();
+  while (list.length < index) list.push("");
+  list[index] = chord;
+  state.hotkeys[action] = list.filter(Boolean);
+  saveHotkeys();
+  // Focus the slot that is about to become the next empty one.
+  setTimeout(() => {
+    const next = document.querySelector(
+      `#hotkeys-list [data-hk-action="${action}"][data-hk-index="${state.hotkeys[action].length}"]`,
+    );
+    next?.focus({ preventScroll: true });
+  }, 0);
+}
+
+/* --------------------------------------------------------- why found/tags */
+
+const CHANNEL_REASON = {
+  bm25: "why.text", vector: "why.semantic", fuzzy: "why.name", cjk: "why.cjk",
+  tri: "why.typo", regex: "why.regex", symbol: "why.definition", filter: "why.filter",
+};
+
+function whyFound(hit) {
+  if (!hit) return [];
+  const reasons = [];
+  for (const channel of hit.channels || []) {
+    reasons.push(t(CHANNEL_REASON[channel] || "why.text"));
+  }
+  if (hit.pinned) reasons.push(t("why.pinned"));
+  if (hit.tags && hit.tags.length) reasons.push(t("why.tagged", { tags: hit.tags.join(", ") }));
+  if (hit.opens) reasons.push(t("why.opened", { n: hit.opens }));
+  if (hit.last_open) reasons.push(t("why.lastOpen", { date: dateLabel(hit.last_open) }));
+  if (hit.group_size > 1) reasons.push(t("why.grouped", { n: hit.group_size }));
+  if (!reasons.length) reasons.push(t("why.listed"));
+  return reasons;
+}
+
+function showWhy(button) {
+  const card = button.closest(".card");
+  const hit = state.hits[Number(card?.dataset.index)];
+  if (!card || !hit) return;
+  const existing = card.querySelector(".why-list");
+  if (existing) { existing.remove(); button.classList.remove("open"); return; }
+  button.classList.add("open");
+  card.insertAdjacentHTML("beforeend",
+    `<ul class="why-list">${whyFound(hit).map((reason) => `<li>${esc(reason)}</li>`).join("")}</ul>`);
+}
+
+/* ------------------------------------------------------- tags/collections */
+
+async function loadMeta(force = false) {
+  if (state.metaLoaded && !force) return;
+  try {
+    const [tags, collections] = await Promise.all([api("/api/tags"), api("/api/collections")]);
+    state.tags = tags.tags || [];
+    state.collections = collections.collections || [];
+    state.metaLoaded = true;
+  } catch (error) {
+    /* the personal layer must never break the screen */
+  }
+}
+
+function runToken(token) {
+  const base = $("q").value.trim();
+  $("q").value = base.includes(token) ? base : (base ? `${base} ${token}` : token);
+  clearTimeout(state.timer);
+  runSearch();
+  $("q").focus();
+}
+
+function runTag(tag) { runToken(`tag:"${tag}"`); }
+function runCollection(name) { runToken(`collection:"${name}"`); }
+
+const ANNOTATE = { kind: "tag", ids: [] };
+
+function openAnnotate(kind, ids) {
+  const list = [...new Set(ids.map(Number).filter(Boolean))];
+  if (!list.length) { toast(t("bulk.nothing")); return; }
+  ANNOTATE.kind = kind;
+  ANNOTATE.ids = list;
+  const isTag = kind === "tag";
+  $("annotate-title").textContent = t(isTag ? "annotate.tagTitle" : "annotate.collectionTitle", { n: list.length });
+  const chips = isTag
+    ? (state.tags || []).map((item) => `
+        <button type="button" class="annotate-chip" data-annotate-tag="${esc(item.tag)}">
+          #${esc(item.tag)} <b>${item.count}</b></button>`).join("")
+    : (state.collections || []).map((item) => `
+        <button type="button" class="annotate-chip" data-annotate-collection="${item.id}">
+          ${esc(item.name)} <b>${item.count}</b></button>`).join("");
+  $("annotate-body").innerHTML = `
+    <div class="annotate-add">
+      <input id="annotate-input" autocomplete="off" spellcheck="false"
+             placeholder="${esc(t(isTag ? "annotate.tagPlaceholder" : "annotate.collectionPlaceholder"))}">
+      <button class="btn mini primary" type="button" id="annotate-add">${esc(t("annotate.add"))}</button>
+    </div>
+    <div class="annotate-chips">${chips || `<p class="settings-note">${esc(t("annotate.empty"))}</p>`}</div>
+    <p class="annotate-note" data-i18n="${isTag ? "annotate.tagNote" : "annotate.collectionNote"}"></p>`;
+  applyStaticText();
+  $("annotate").hidden = false;
+  $("annotate-input")?.focus();
+}
+
+function closeAnnotate() {
+  $("annotate").hidden = true;
+}
+
+async function applyTag(tag, ids) {
+  const clean = String(tag || "").trim();
+  if (!clean) { $("annotate-input")?.focus(); return; }
+  try {
+    await api("/api/tag", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag: clean, ids, on: true }),
+    });
+    for (const id of ids) {
+      const hit = state.hits.find((item) => item.file_id === id);
+      if (hit) hit.tags = [...new Set([...(hit.tags || []), clean])].sort();
+    }
+    await loadMeta(true);
+    refreshResults();
+    paintPersonal();
+    closeAnnotate();
+    toast(t("annotate.tagged", { tag: clean, n: ids.length }));
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
+}
+
+async function applyCollection(collectionId, name, ids) {
+  try {
+    let id = Number(collectionId) || 0;
+    if (!id) {
+      const created = await api("/api/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "create", name }),
+      });
+      id = Number(created.id) || 0;
+    }
+    if (!id) return;
+    await api("/api/collections", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "add", id, ids }),
+    });
+    await loadMeta(true);
+    paintPersonal();
+    closeAnnotate();
+    toast(t("annotate.added", { n: ids.length }));
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
+}
+
+/* ------------------------------------------------------------- multi-select */
+
+function paintBulk() {
+  const bar = $("bulk-bar");
+  if (!bar) return;
+  const count = state.picked.size;
+  bar.hidden = count === 0;
+  $("bulk-count").textContent = t("bulk.count", { n: count });
+}
+
+function togglePick(fileId, wanted) {
+  const id = Number(fileId);
+  const on = wanted === undefined ? !state.picked.has(id) : Boolean(wanted);
+  if (on) state.picked.add(id); else state.picked.delete(id);
+  document.querySelectorAll(`[data-pick="${id}"]`).forEach((box) => { box.checked = on; });
+  document.querySelectorAll(`.card[data-file="${id}"]`).forEach((card) => {
+    card.classList.toggle("picked", on);
+  });
+  paintBulk();
+}
+
+function clearPicks() {
+  state.picked.clear();
+  document.querySelectorAll("[data-pick]").forEach((box) => { box.checked = false; });
+  document.querySelectorAll(".card.picked").forEach((card) => card.classList.remove("picked"));
+  paintBulk();
+}
+
+function pickedHits() {
+  return state.hits.filter((hit) => state.picked.has(hit.file_id));
+}
+
+/* --------------------------------------------------------------- filters */
+
+function stripTokens(text, tokens) {
+  let out = String(text || "");
+  for (const token of tokens) out = out.split(token).join(" ");
+  return out.replace(/\s+/g, " ").trim();
+}
+
+function paintFilters() {
+  const type = $("f-type");
+  if (!type) return;
+  // Custom types are a kind tab, not a grammar token; they still belong in the
+  // builder because that is where a person looks for "only my kind of file".
+  const current = type.value;
+  type.querySelectorAll("[data-custom-option]").forEach((node) => node.remove());
+  for (const custom of state.types || []) {
+    if (!custom.id || !custom.name) continue;
+    const option = document.createElement("option");
+    option.value = `custom:${custom.id}`;
+    option.textContent = custom.name;
+    option.dataset.customOption = "1";
+    type.appendChild(option);
+  }
+  if (current) type.value = current;
+
+  const tagList = $("filter-tag-list");
+  if (tagList) {
+    tagList.innerHTML = (state.tags || [])
+      .map((item) => `<option value="${esc(item.tag)}"></option>`).join("");
+  }
+  const collections = $("f-collection");
+  if (collections) {
+    const value = collections.value;
+    collections.querySelectorAll("[data-dynamic-option]").forEach((node) => node.remove());
+    for (const item of state.collections || []) {
+      const option = document.createElement("option");
+      option.value = item.name;
+      option.textContent = `${item.name} (${item.count})`;
+      option.dataset.dynamicOption = "1";
+      collections.appendChild(option);
+    }
+    if (value) collections.value = value;
+  }
+  syncFilterPickers();
+}
+
+function builtFilterTokens() {
+  const tokens = [];
+  const type = $("f-type")?.value || "";
+  if (type && !type.startsWith("custom:")) tokens.push(`type:${type}`);
+  const folder = $("f-folder")?.value.trim();
+  if (folder) tokens.push(`in:"${folder.replace(/"/g, "")}"`);
+  const min = Number($("f-size-min")?.value);
+  const max = Number($("f-size-max")?.value);
+  const minUnit = $("f-size-min-unit")?.value || "mb";
+  const maxUnit = $("f-size-max-unit")?.value || "mb";
+  if (min > 0) tokens.push(`size:>=${min}${minUnit}`);
+  if (max > 0) tokens.push(`size:<${max}${maxUnit}`);
+  const period = $("f-period")?.value;
+  if (period) tokens.push(`modified:${period}`);
+  const tag = $("f-tag")?.value.trim();
+  if (tag) tokens.push(`tag:"${tag.replace(/"/g, "")}"`);
+  const collection = $("f-collection")?.value;
+  if (collection) tokens.push(`collection:"${collection.replace(/"/g, "")}"`);
+  return tokens;
+}
+
+function paintFilterPreview() {
+  const preview = $("filter-preview");
+  if (!preview) return;
+  preview.textContent = builtFilterTokens().join(" ");
+}
+
+function openFilters(open) {
+  const box = $("filter-builder");
+  if (!box) return;
+  box.hidden = !open;
+  $("filters-btn").setAttribute("aria-expanded", String(open));
+  if (open) {
+    box.style.left = "";
+    box.style.top = "";
+    box.style.right = "";
+    paintFilters();
+    paintFilterPreview();
+  } else {
+    document.querySelectorAll(".unit-picker").forEach((picker) => setUnitMenu(picker, false));
+    document.querySelectorAll(".filter-picker").forEach((picker) => setFilterPicker(picker, false));
+  }
+}
+
+function applyFilters() {
+  const custom = $("f-type")?.value || "";
+  if (custom.startsWith("custom:")) {
+    // A custom type is a tab, not a grammar token; select the tab so the same
+    // filter can also be seen and undone in the header.
+    state.kind = custom;
+    state.filterCustom = custom;
+    document.querySelectorAll(".menu .chip").forEach((chip) => {
+      chip.classList.toggle("active", chip.dataset.kind === state.kind);
+    });
+  } else if (state.filterCustom) {
+    // Switching the builder away from a custom type must not leave its tab
+    // filtering the results behind a `type:` token that says otherwise.
+    if (state.kind === state.filterCustom) {
+      state.kind = "";
+      document.querySelectorAll(".menu .chip").forEach((chip) => {
+        chip.classList.toggle("active", chip.dataset.kind === "");
+      });
+    }
+    state.filterCustom = null;
+  }
+  const tokens = builtFilterTokens();
+  const base = stripTokens($("q").value, state.filterTokens || []);
+  $("q").value = [base, ...tokens].filter(Boolean).join(" ");
+  state.filterTokens = tokens;
+  $("save-btn").classList.toggle("show", Boolean($("q").value.trim()));
+  openFilters(false);
+  runSearch();
+  $("q").focus();
+}
+
+function clearFilters() {
+  $("f-type").value = "";
+  $("f-folder").value = "";
+  $("f-size-min").value = "";
+  $("f-size-max").value = "";
+  $("f-size-min-unit").value = "mb";
+  $("f-size-max-unit").value = "mb";
+  document.querySelectorAll(".unit-picker").forEach(paintUnit);
+  $("f-period").value = "";
+  $("f-tag").value = "";
+  $("f-collection").value = "";
+  syncFilterPickers();
+  $("q").value = stripTokens($("q").value, state.filterTokens || []);
+  state.filterTokens = [];
+  if (state.filterCustom && state.kind === state.filterCustom) {
+    state.kind = "";
+    document.querySelectorAll(".menu .chip").forEach((chip) => {
+      chip.classList.toggle("active", chip.dataset.kind === "");
+    });
+  }
+  state.filterCustom = null;
+  $("save-btn").classList.toggle("show", Boolean($("q").value.trim()));
+  paintFilterPreview();
+  if ($("q").value.trim()) runSearch(); else renderIdle();
+}
+
+/* ---------------------------------------------------------------- export */
+
+function downloadUrl(url, filename) {
+  const link = document.createElement("a");
+  link.href = url;
+  if (filename) link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function exportResults(format) {
+  const query = (state.query || $("q").value).trim();
+  if (!query) { toast(t("export.empty")); return; }
+  const params = new URLSearchParams({ q: query, format });
+  if (state.kind) params.set("kind", state.kind);
+  if (state.folder) params.set("folder", state.folder);
+  if (state.since) params.set("since", state.since);
+  if (state.docdate) params.set("docdate", "1");
+  if (state.sort && state.sort !== "best") params.set("sort", state.sort);
+  downloadUrl(`/api/export?${params}`);
+  $("export-menu").hidden = true;
+  $("export-btn").setAttribute("aria-expanded", "false");
+  toast(t("export.started"));
+}
+
+function exportPicked() {
+  const hits = pickedHits();
+  if (!hits.length) { toast(t("bulk.nothing")); return; }
+  const rows = [["name", "path", "kind", "size", "modified", "score", "tags"]];
+  for (const hit of hits) {
+    rows.push([
+      hit.name, hit.path, hit.kind, hit.size,
+      new Date(hit.mtime * 1000).toISOString(),
+      Number(hit.score || 0).toFixed(6),
+      (hit.tags || []).join("; "),
+    ]);
+  }
+  const csv = rows.map((row) => row
+    .map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  downloadUrl(url, "autofind-selection.csv");
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
 /* ----------------------------------------------------------------- calendar */
@@ -168,11 +732,17 @@ async function runSearch(options = {}) {
     state.hits = [];
     state.total = 0;
     state.nextOffset = null;
+    clearPicks();
     renderIdle();
     $("meta").textContent = "";
     return;
   }
   const offset = append ? (state.nextOffset ?? 0) : 0;
+  // "show more" is the request's own UI: it leaves the moment it is clicked,
+  // and the appended page puts a fresh one back at the bottom. If the request
+  // fails there is nothing new below, so the old button returns where it was.
+  const moreBtn = append ? $("more-btn") : null;
+  if (moreBtn) moreBtn.remove();
   const params = new URLSearchParams({ q: query, limit: "12", offset: String(offset) });
   if (state.kind) params.set("kind", state.kind);
   if (state.folder) params.set("folder", state.folder);
@@ -187,7 +757,8 @@ async function runSearch(options = {}) {
     state.nextOffset = data.next_offset ?? null;
     state.approx = Boolean(data.approx);
     state.chips = data.chips || [];
-    if (!append) rememberQuery(query);
+    state.facets = data.facets || {};
+    if (!append) { rememberQuery(query); clearPicks(); }
     renderResults(data, append);
     const shown = state.hits.length;
     $("meta").textContent = shown
@@ -196,6 +767,7 @@ async function runSearch(options = {}) {
       })
       : `${data.ms} ${t("unit.ms")}`;
   } catch (error) {
+    if (moreBtn) $("content").appendChild(moreBtn);
     toast(t("search.failed", { error: error.message }));
   }
 }
@@ -226,8 +798,20 @@ function renderIdle() {
         <div class="recent" id="recent" hidden></div>
       </div>
     </div>`;
-  loadPersonal().then(paintPersonal);
+  Promise.all([loadPersonal(), loadMeta()]).then(paintPersonal);
   loadRecent();
+}
+
+/* Re-render the cards from the data already in `state`, without refetching:
+   a tag added on the page shows up immediately and the scroll position stays. */
+function refreshResults() {
+  if (!state.hits.length) { renderIdle(); return; }
+  renderResults({
+    query: state.query,
+    chips: state.chips || [],
+    facets: state.facets || {},
+    images: [],
+  }, false);
 }
 
 /* ------------------------------------------------------------------ theme */
@@ -576,6 +1160,22 @@ function paintPersonal() {
           ? `<div class="saved-list">${saved.map(savedChip).join("")}</div>`
           : `<p class="personal-empty">${esc(t("idle.savedEmpty"))}</p>`}
       </div>`,
+    `<div class="personal-block">
+        <h3>${esc(t("idle.tags"))}</h3>
+        ${(state.tags || []).length
+          ? `<div class="tag-cloud">${state.tags.map((item) => `
+              <button class="tag-chip" type="button" data-tag-run="${esc(item.tag)}">
+                #${esc(item.tag)} <b>${item.count}</b></button>`).join("")}</div>`
+          : `<p class="personal-empty">${esc(t("idle.tagsEmpty"))}</p>`}
+      </div>`,
+    `<div class="personal-block">
+        <h3>${esc(t("idle.collections"))}</h3>
+        ${(state.collections || []).length
+          ? `<div class="tag-cloud">${state.collections.map((item) => `
+              <button class="tag-chip" type="button" data-collection-run="${esc(item.name)}">
+                ${esc(item.name)} <b>${item.count}</b></button>`).join("")}</div>`
+          : `<p class="personal-empty">${esc(t("idle.collectionsEmpty"))}</p>`}
+      </div>`,
   ];
   host.innerHTML = blocks.join("");
   host.hidden = false;
@@ -630,9 +1230,25 @@ async function togglePin(fileId, wanted) {
   }
 }
 
+/* Saving is a promise, so the bookmark answers at once: a small hop and a gold
+   glow. The class is dropped on a timer rather than `animationend` so a second
+   click restarts the whole motion instead of inheriting a finished one. */
+let saveTimer = 0;
+
+function pulseSave() {
+  const button = $("save-btn");
+  if (!button) return;
+  button.classList.remove("saved");
+  void button.offsetWidth;  // restart the keyframes from frame zero
+  button.classList.add("saved");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => button.classList.remove("saved"), 1400);
+}
+
 async function saveSearch() {
   const query = $("q").value.trim();
   if (!query) return;
+  pulseSave();
   try {
     await api("/api/saved", {
       method: "POST",
@@ -712,6 +1328,138 @@ async function removeAlias(alias) {
   }
 }
 
+/* Custom file types: a name and any number of filename masks, edited in the
+   settings card and shown as extra tabs in the header. The catalog file is the
+   server's; this block keeps the DOM and `state.types` in step with it. */
+let typesTimer = null;
+
+async function loadTypes(force = false) {
+  if (state.typesLoaded && !force) return state.types;
+  try {
+    const data = await api("/api/types");
+    state.types = data.types || [];
+    state.typesLoaded = true;
+  } catch (error) {
+    state.types = state.types || []; // a bad catalog must not hide the settings
+  }
+  return state.types;
+}
+
+function collectTypes() {
+  const host = $("types-list");
+  if (!host) return;
+  state.types = [...host.querySelectorAll(".type-card")].map((card) => ({
+    id: card.dataset.type || "",
+    name: (card.querySelector(".type-name")?.value || "").trim(),
+    masks: [...card.querySelectorAll(".type-mask")]
+      .map((input) => input.value.trim())
+      .filter(Boolean),
+  }));
+}
+
+function renderTypes() {
+  const host = $("types-list");
+  if (!host) return;
+  const types = state.types || [];
+  if (!types.length) {
+    host.innerHTML = `<p class="settings-note" id="types-empty">${esc(t("types.empty"))}</p>`;
+    return;
+  }
+  host.innerHTML = types.map((type) => {
+    const masks = type.masks && type.masks.length ? type.masks : [""];
+    return `<div class="type-card" data-type="${esc(type.id || "")}">
+      <input class="type-name" data-type-name value="${esc(type.name || "")}"
+             placeholder="${esc(t("types.name"))}" autocomplete="off" spellcheck="false">
+      <div class="type-masks">
+        <button class="type-addmask" type="button" data-type-addmask
+                title="${esc(t("types.addMask"))}"
+                aria-label="${esc(t("types.addMask"))}">+</button>
+        <div class="type-mask-list">
+          ${masks.map((mask) => `<div class="type-mask-row">
+            <input class="type-mask" data-type-mask value="${esc(mask)}"
+                   placeholder="${esc(t("types.mask"))}" autocomplete="off" spellcheck="false">
+            <button class="type-x" type="button" data-type-rmmask
+                    title="${esc(t("types.removeMask"))}"
+                    aria-label="${esc(t("types.removeMask"))}">×</button>
+          </div>`).join("")}
+        </div>
+      </div>
+      <button class="type-x type-remove" type="button" data-type-remove
+              title="${esc(t("types.remove"))}"
+              aria-label="${esc(t("types.remove"))}">×</button>
+    </div>`;
+  }).join("");
+}
+
+function addType() {
+  collectTypes();
+  state.types.push({ id: "", name: "", masks: [""] });
+  renderTypes();
+  const names = $("types-list").querySelectorAll(".type-name");
+  names[names.length - 1]?.focus();
+}
+
+function renderTypeTabs() {
+  const menu = document.querySelector(".menu");
+  if (!menu) return;
+  menu.querySelectorAll("[data-custom-kind]").forEach((chip) => chip.remove());
+  const types = (state.types || []).filter(
+    (type) => type.id && type.name && type.masks && type.masks.length,
+  );
+  types.forEach((type) => {
+    const chip = document.createElement("button");
+    chip.className = "chip";
+    chip.dataset.kind = `custom:${type.id}`;
+    chip.dataset.customKind = "1";
+    chip.textContent = type.name;
+    if (state.kind === chip.dataset.kind) chip.classList.add("active");
+    menu.appendChild(chip);
+  });
+  // A deleted type must not leave a tab pointing at nothing selected.
+  if (state.kind.startsWith("custom:") && !menu.querySelector(`[data-kind="${state.kind}"]`)) {
+    state.kind = "";
+    menu.querySelectorAll(".chip").forEach((chip) => {
+      chip.classList.toggle("active", chip.dataset.kind === "");
+    });
+  }
+}
+
+function saveTypesSoon() {
+  collectTypes();
+  clearTimeout(typesTimer);
+  typesTimer = setTimeout(saveTypes, 650);
+}
+
+async function saveTypes() {
+  clearTimeout(typesTimer);
+  typesTimer = null;
+  collectTypes();
+  const rows = state.types.filter((type) => type.name);
+  try {
+    const data = await api("/api/types", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ types: rows }),
+    });
+    // The server sanitises masks and assigns ids. Copy the ids onto the cards
+    // in place so typing is not interrupted by a redraw.
+    const ids = (data.types || []).map((type) => type.id);
+    const cards = [...$("types-list").querySelectorAll(".type-card")];
+    let next = 0;
+    state.types.forEach((type, index) => {
+      if (!type.name) return;
+      if (ids[next]) {
+        type.id = ids[next];
+        if (cards[index]) cards[index].dataset.type = type.id;
+      }
+      next += 1;
+    });
+    renderTypeTabs();
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
+}
+
 /* The idle screen used to be one small plate on a very large photo, which read
    as a half-empty page. Six recent screenshots give the space a floor: the eye
    lands on something real and the whole column stops looking unfinished.
@@ -760,8 +1508,16 @@ function card(hit, query, index) {
          hit.group_size} ${esc(plural(hit.group_size, `group.${reason}`))
        }</button>`
     : "";
+  const picked = state.picked.has(hit.file_id);
+  const tags = (hit.tags || []).map((tag) => `
+    <button class="tag-chip small" type="button" data-tag-run="${esc(tag)}">#${esc(tag)}</button>`
+  ).join("");
   return `
-    <div class="card" data-index="${index}">
+    <div class="card${picked ? " picked" : ""}" data-index="${index}" data-file="${hit.file_id}">
+      <label class="card-pick-wrap" title="${esc(t("card.select"))}">
+        <input type="checkbox" class="card-pick" data-pick="${hit.file_id}"
+               aria-label="${esc(t("card.select"))}"${picked ? " checked" : ""}>
+      </label>
       ${icon}
       <div>
         <div class="title-row">
@@ -778,11 +1534,15 @@ function card(hit, query, index) {
                   title="${esc(t(hit.pinned ? "card.unpin" : "card.pin"))}">★</button>
         </div>
         <div class="path" title="${esc(hit.path)}">${esc(hit.path)}</div>
+        ${tags ? `<div class="card-tags">${tags}</div>` : ""}
         <div class="snippet">${highlight(hit.snippet, query)}</div>
         <div class="actions">
           <button class="act" data-open="${hit.file_id}">${esc(t("card.open"))}</button>
           <button class="act" data-reveal="${hit.file_id}">${esc(t("card.folder"))}</button>
           <button class="act" data-preview="${hit.file_id}">${esc(t("card.preview"))}</button>
+          <button class="act" data-tag-add="${hit.file_id}">${esc(t("card.tag"))}</button>
+          <button class="act" data-collection-add="${hit.file_id}">${esc(t("card.collection"))}</button>
+          <button class="act why-btn" data-why="${hit.file_id}">${esc(t("card.why"))}</button>
           ${similar}
         </div>
       </div>
@@ -891,7 +1651,7 @@ function paintFacets(facets) {
 function renderResults(data, append) {
   const parts = [];
   if (!append) parts.push(chipRow(data.chips || []));
-  if (data.hints && data.hints.length) {
+  if (!append && data.hints && data.hints.length) {
     parts.push(`<div class="hints">${data.hints.map((hint) => {
       const key = `hint.${hint.kind}`;
       const text = t(key, { value: hint.value ?? "" });
@@ -904,12 +1664,25 @@ function renderResults(data, append) {
       return clickable;
     }).join("")}</div>`);
   }
-  paintFacets(data.facets);
+  if (!append) paintFacets(data.facets);
 
-  if (state.hits.length) {
-    parts.push(`<div class="results">${
-      state.hits.map((hit, index) => card(hit, data.query, index)).join("")
-    }</div>`);
+  // "show more" appends one page to the list already on screen. Mapping all of
+  // `state.hits` again would duplicate every card, and restarting the indexes
+  // at 0 would make the new rows collide with the old ones in `data-index`
+  // (selection and Quick Look key off it).
+  const fresh = append ? state.hits.slice(state.hits.length - (data.hits || []).length) : state.hits;
+  const first = state.hits.length - fresh.length;
+  const cards = fresh.map((hit, index) => card(hit, data.query, first + index)).join("");
+
+  if (append) {
+    // Insert into the existing list instead of a new `.results` block: two
+    // flex columns would lose the 10px gap between the last old card and the
+    // first new one.
+    const list = $("content").querySelector(".results");
+    if (list) list.insertAdjacentHTML("beforeend", cards);
+    else if (cards) parts.push(`<div class="results">${cards}</div>`);
+  } else if (cards) {
+    parts.push(`<div class="results">${cards}</div>`);
   }
 
   if (data.next_offset !== null && data.next_offset !== undefined) {
@@ -920,22 +1693,23 @@ function renderResults(data, append) {
     parts.push(`<div class="section-title">${esc(t("results.similarImages"))}</div>
       <div class="grid">${data.images.map(shot).join("")}</div>`);
   }
-  if (!parts.length) {
+  if (!parts.length && !append) {
     parts.push(`<div class="empty"><div>
         <h2>${esc(t("results.nothing"))}</h2>
         <p>${esc(t("results.nothingHint"))}</p>
       </div></div>`);
   }
 
-  if (append) {
-    // Appending must not rebuild the list: the browser would drop the scroll
-    // position and re-request every thumbnail already on screen.
-    $("content").insertAdjacentHTML("beforeend", parts.join(""));
-  } else {
-    $("content").innerHTML = parts.join("");
+  if (parts.length) {
+    if (append) {
+      $("content").insertAdjacentHTML("beforeend", parts.join(""));
+    } else {
+      $("content").innerHTML = parts.join("");
+    }
   }
   if (!append) state.selected = -1;
   paintSelection();
+  paintBulk();
 }
 
 function paintSelection() {
@@ -959,16 +1733,24 @@ function moveSelection(delta) {
 async function openPreview(fileId) {
   try {
     const data = await api(`/api/preview?id=${fileId}`);
+    state.preview = data;
     const meta = [
       sizeLabel(data.size),
       dateLabel(data.mtime),
       data.opens ? t("preview.opened", { n: data.opens }) : t("preview.never"),
       data.exists ? "" : t("preview.missing"),
     ].filter(Boolean).join(" · ");
+    const hit = state.hits.find((item) => item.file_id === data.file_id);
+    const reasons = hit ? whyFound(hit) : [t("why.preview")];
     const body = data.image
       ? `<img class="preview-img" src="${data.image.thumb}" alt="">
-         ${data.image.ocr ? `<pre class="preview-text">${esc(data.image.ocr)}</pre>` : ""}`
+         ${data.image.ocr
+           ? `<pre class="preview-text" id="preview-ocr">${esc(data.image.ocr)}</pre>`
+           : `<pre class="preview-text">${esc(t("preview.noText"))}</pre>`}`
       : `<pre class="preview-text">${esc(data.text || t("preview.noText"))}</pre>`;
+    const copyOcr = data.image && data.image.ocr
+      ? `<button class="act" data-copy-ocr type="button">${esc(t("preview.copyOcr"))}</button>`
+      : "";
     $("preview-body").innerHTML = `
       <div class="preview-head">
         <div>
@@ -978,13 +1760,29 @@ async function openPreview(fileId) {
         </div>
       </div>
       ${body}
+      <div class="preview-why">
+        <b>${esc(t("why.title"))}</b>
+        <ul class="why-list">${reasons.map((reason) => `<li>${esc(reason)}</li>`).join("")}</ul>
+      </div>
       <div class="preview-foot">
         <button class="act" data-open="${data.file_id}">${esc(t("card.open"))}</button>
         <button class="act" data-reveal="${data.file_id}">${esc(t("card.folder"))}</button>
+        ${copyOcr}
       </div>`;
     $("preview").classList.add("open");
   } catch (error) {
     toast(t("preview.failed", { error: error.message }));
+  }
+}
+
+async function copyPreviewOcr() {
+  const text = state.preview?.image?.ocr || "";
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(t("preview.copiedOcr"));
+  } catch (error) {
+    toast(t("ctx.copyFailed"));
   }
 }
 
@@ -1018,6 +1816,7 @@ async function loadStats() {
       ? plural(stats.files, "status.files")
       : t("status.empty");
     $("status-dot").style.background = stats.files ? "var(--teal)" : "var(--accent)";
+    $("status-dot").classList.toggle("live", Boolean(stats.files));
 
     renderPrivacy(privacy);
     renderWatch(watch);
@@ -1036,6 +1835,7 @@ async function loadStats() {
   } catch (error) {
     $("status-text").textContent = t("status.down");
     $("status-dot").style.background = "var(--red, #e24b4a)";
+    $("status-dot").classList.remove("live");
   }
 }
 
@@ -1090,6 +1890,26 @@ async function savePrivacy(patch) {
   } catch (error) {
     toast(t("toast.failed", { error: error.message }));
   }
+}
+
+/* The watcher already knows every batch it applied; the window only has to
+   compare the running total so a new file announces itself instead of waiting
+   for the next search to reveal it. */
+function startWatchPoll() {
+  clearInterval(state.watchTimer);
+  state.watchTimer = setInterval(async () => {
+    try {
+      const watch = await api("/api/watch");
+      renderWatch(watch);
+      if (!watch.running) { state.watchAdded = -1; return; }
+      if (state.watchAdded >= 0 && watch.added > state.watchAdded) {
+        toast(t("toast.newFiles", { n: watch.added - state.watchAdded }));
+      }
+      state.watchAdded = watch.added;
+    } catch (error) {
+      /* a dropped poll is not a notification */
+    }
+  }, 6000);
 }
 
 function renderWatch(watch) {
@@ -1219,10 +2039,124 @@ function setSettings(open) {
     renderAbout();
     paintLang();
     loadPersonal().then(renderAliases);
+    loadTypes(true).then(() => { renderTypes(); renderTypeTabs(); });
+    loadMeta().then(paintFilters);
+    loadHotkeys().then(renderHotkeys);
     renderWalls();
+    setSettingsTab(document.querySelector("#settings-tabs .settings-tab.active")?.dataset.tab || "general");
     // Focus the card, not the close button: a ring on "close" is the first
     // thing the eye lands on, and it is not what the dialog is about.
     $("settings").querySelector(".settings-card").focus();
+  } else if (typesTimer) {
+    // Closing the panel is a save, not a cancel: the debounce must not swallow
+    // the last mask typed.
+    saveTypes();
+  }
+}
+
+let settingsGrow = null;
+
+function growSettingsCard(from) {
+  const card = document.querySelector("#settings .settings-card");
+  if (!card || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const start = typeof from === "number" ? from : card.getBoundingClientRect().height;
+  if (settingsGrow) {
+    const previous = settingsGrow;
+    settingsGrow = null;
+    previous.cancel();
+  }
+  card.style.overflow = "";
+  const end = card.getBoundingClientRect().height;
+  if (Math.abs(end - start) < 1) return;
+  card.style.overflow = "hidden";
+  const anim = card.animate(
+    [{ height: `${start}px` }, { height: `${end}px` }],
+    { duration: 420, easing: "cubic-bezier(0.22, 0.72, 0.2, 1)" }
+  );
+  settingsGrow = anim;
+  const settle = () => {
+    if (settingsGrow !== anim) return;
+    settingsGrow = null;
+    card.style.overflow = "";
+  };
+  anim.addEventListener("finish", settle);
+  anim.addEventListener("cancel", settle);
+}
+
+function setSettingsTab(name) {
+  const tabs = [...document.querySelectorAll("#settings-tabs .settings-tab")];
+  const panes = [...document.querySelectorAll("#settings .settings-pane")];
+  const active = tabs.find((button) => button.classList.contains("active"));
+  const card = document.querySelector("#settings .settings-card");
+  const growFrom = active && active.dataset.tab !== name && card
+    ? card.getBoundingClientRect().height
+    : 0;
+
+  tabs.forEach((button) => {
+    button.classList.toggle("active", button.dataset.tab === name);
+    button.setAttribute("aria-selected", String(button.dataset.tab === name));
+  });
+  panes.forEach((pane) => {
+    pane.classList.toggle("active", pane.dataset.pane === name);
+  });
+
+  if (name === "keys") renderHotkeys();
+  if (name === "data") {
+    const done = loadAudit();
+    if (growFrom) {
+      done.then(() => {
+        const shown = document.querySelector("#settings .settings-pane.active");
+        if ($("settings").classList.contains("open") && shown?.dataset.pane === name) {
+          growSettingsCard();
+        }
+      });
+    }
+  }
+
+  if (!growFrom) return;
+  growSettingsCard(growFrom);
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const pane = document.querySelector(`#settings .settings-pane[data-pane="${name}"]`);
+    if (pane) pane.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: "ease" });
+  }
+}
+
+async function loadAudit() {
+  const host = $("audit-list");
+  if (!host) return;
+  try {
+    const data = await api("/api/audit");
+    const mb = (bytes) => `${(Number(bytes || 0) / 1048576).toFixed(2)} ${t("unit.mb")}`;
+    const personal = data.personal || {};
+    const rows = [
+      [t("audit.path"), data.db || "—"],
+      [t("audit.size"), mb(data.total_bytes)],
+      [t("audit.files"), String(data.files ?? 0)],
+      [t("audit.chunks"), String(data.chunks ?? 0)],
+      [t("audit.images"), String(data.images ?? 0)],
+      [t("audit.vectors"), String(data.vectors ?? 0)],
+      [t("audit.pins"), String(personal.pins ?? 0)],
+      [t("audit.saved"), String(personal.saved ?? 0)],
+      [t("audit.aliases"), String(personal.aliases ?? 0)],
+      [t("audit.tags"), String(personal.tags ?? 0)],
+      [t("audit.collections"), String(personal.collections ?? 0)],
+      [t("audit.encrypted"), data.encrypted ? t("audit.yes") : t("audit.no")],
+      [t("audit.privacy"), data.sensitive?.enabled
+        ? t("audit.privacyOn", { n: data.sensitive.count ?? 0 })
+        : t("audit.privacyOff")],
+    ];
+    host.innerHTML = rows.map(([label, value]) => `
+      <div class="audit-row">
+        <span>${esc(label)}</span>
+        <b title="${esc(value)}">${esc(value)}</b>
+      </div>`).join("");
+    const warn = $("audit-warn");
+    if (warn) {
+      warn.textContent = data.encrypted ? "" : t("audit.unencrypted");
+      warn.classList.toggle("on", !data.encrypted);
+    }
+  } catch (error) {
+    host.innerHTML = `<p class="settings-note">${esc(t("toast.failed", { error: error.message }))}</p>`;
   }
 }
 
@@ -1230,6 +2164,7 @@ function paintLang() {
   document.querySelectorAll("#lang-switch button").forEach((button) => {
     button.setAttribute("aria-checked", String(button.dataset.lang === currentLang()));
   });
+  syncFilterPickers();
 }
 
 function renderAbout() {
@@ -1259,6 +2194,26 @@ function renderAbout() {
 document.addEventListener("click", async (event) => {
   const chip = event.target.closest("[data-chip]");
   if (chip) { clearChip(chip.dataset.chip); return; }
+
+  const tagRun = event.target.closest("[data-tag-run]");
+  if (tagRun) { runTag(tagRun.dataset.tagRun); return; }
+
+  const collectionRun = event.target.closest("[data-collection-run]");
+  if (collectionRun) { runCollection(collectionRun.dataset.collectionRun); return; }
+
+  const tagAdd = event.target.closest("[data-tag-add]");
+  if (tagAdd) { openAnnotate("tag", [Number(tagAdd.dataset.tagAdd)]); return; }
+
+  const collectionAdd = event.target.closest("[data-collection-add]");
+  if (collectionAdd) {
+    openAnnotate("collection", [Number(collectionAdd.dataset.collectionAdd)]);
+    return;
+  }
+
+  const why = event.target.closest("[data-why]");
+  if (why) { showWhy(why); return; }
+
+  if (event.target.closest("[data-copy-ocr]")) { copyPreviewOcr(); return; }
 
   if (event.target.closest("#more-btn")) { runSearch({ append: true }); return; }
 
@@ -1306,7 +2261,11 @@ document.addEventListener("click", async (event) => {
     // Clicking anywhere on a card selects it, so the keyboard continues from
     // the row the user just pointed at.
     const card = event.target.closest(".card");
-    if (card) { state.selected = Number(card.dataset.index); paintSelection(); }
+    if (card) {
+      if (event.ctrlKey || event.metaKey) { togglePick(card.dataset.file); return; }
+      state.selected = Number(card.dataset.index);
+      paintSelection();
+    }
     return;
   }
   if (target.dataset.similar) { openSimilar(target.dataset.similar); return; }
@@ -1320,13 +2279,13 @@ document.addEventListener("click", async (event) => {
   }
 });
 
-document.querySelectorAll(".menu .chip").forEach((chip) => {
-  chip.addEventListener("click", () => {
-    document.querySelectorAll(".menu .chip").forEach((item) => item.classList.remove("active"));
-    chip.classList.add("active");
-    state.kind = chip.dataset.kind;
-    if (state.query) runSearch();
-  });
+document.querySelector(".menu").addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (!chip) return;
+  document.querySelectorAll(".menu .chip").forEach((item) => item.classList.remove("active"));
+  chip.classList.add("active");
+  state.kind = chip.dataset.kind;
+  if (state.query) runSearch();
 });
 
 /* ------------------------------------------------------------ suggestions */
@@ -1451,10 +2410,245 @@ $("suggest").addEventListener("mousedown", (event) => {
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".find")) closeSuggest();
 });
-$("sort").addEventListener("change", () => {
-  state.sort = $("sort").value;
+function paintSort() {
+  const value = $("sort-value");
+  if (value) {
+    value.dataset.i18n = `sort.${state.sort}`;
+    value.textContent = t(`sort.${state.sort}`);
+  }
+  document.querySelectorAll("#sort-menu [data-sort]").forEach((button) => {
+    button.setAttribute("aria-selected", String(button.dataset.sort === state.sort));
+  });
+}
+
+function placePanel(panel, anchor) {
+  if (!panel || !anchor) return;
+  const host = panel.offsetParent || document.querySelector(".tools");
+  if (!host) return;
+  panel.style.left = "";
+  panel.style.right = "";
+  panel.style.top = "";
+  const target = anchor.getBoundingClientRect();
+  const frame = host.getBoundingClientRect();
+  const width = panel.offsetWidth;
+  const left = Math.max(6, Math.min(target.right - frame.left - width, host.clientWidth - width - 6));
+  panel.style.left = `${left}px`;
+  panel.style.top = `${host.clientHeight - 4}px`;
+  panel.style.right = "auto";
+}
+
+function setSortMenu(open) {
+  const menu = $("sort-menu");
+  const field = document.querySelector(".sort-field");
+  if (!menu || !field) return;
+  menu.hidden = !open;
+  field.classList.toggle("open", open);
+  $("sort-btn").setAttribute("aria-expanded", String(open));
+  if (open) placePanel(menu, field);
+}
+
+$("sort-btn").addEventListener("click", () => setSortMenu($("sort-menu").hidden));
+$("sort-menu").addEventListener("click", (event) => {
+  const option = event.target.closest("[data-sort]");
+  if (!option) return;
+  state.sort = option.dataset.sort;
+  paintSort();
+  setSortMenu(false);
+  $("sort-btn").focus();
   if (state.query) runSearch();
 });
+$("sort-btn").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { setSortMenu(false); return; }
+  if (event.key === "ArrowDown" && $("sort-menu").hidden) {
+    event.preventDefault();
+    setSortMenu(true);
+    $("sort-menu").querySelector("[data-sort]")?.focus();
+  }
+});
+$("sort-menu").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setSortMenu(false);
+    $("sort-btn").focus();
+    return;
+  }
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  const options = [...$("sort-menu").querySelectorAll("[data-sort]")];
+  const at = options.indexOf(document.activeElement);
+  const next = event.key === "ArrowDown"
+    ? options[(at + 1) % options.length]
+    : options[(at - 1 + options.length) % options.length];
+  event.preventDefault();
+  next?.focus();
+});
+paintSort();
+
+/* Unit pickers are small custom menus so their list can fade in rounded and
+   match the rest of the builder. A hidden input keeps the lowercase token
+   value (`b`, `kb`, `mb`, `gb`) the query parser expects. */
+function paintUnit(picker) {
+  if (!picker) return;
+  const hidden = picker.querySelector('input[type="hidden"]');
+  const label = picker.querySelector(".unit-value");
+  if (!hidden || !label) return;
+  const unit = hidden.value || "mb";
+  label.dataset.i18n = `unit.${unit}`;
+  label.textContent = t(`unit.${unit}`);
+  picker.querySelectorAll("[data-unit]").forEach((option) => {
+    option.setAttribute("aria-selected", String(option.dataset.unit === unit));
+  });
+}
+
+function setUnitMenu(picker, open) {
+  if (!picker) return;
+  const menu = picker.querySelector(".unit-menu");
+  const trigger = picker.querySelector(".unit-trigger");
+  if (!menu || !trigger) return;
+  menu.hidden = !open;
+  picker.classList.toggle("open", open);
+  trigger.setAttribute("aria-expanded", String(open));
+  if (open) {
+    const active = menu.querySelector('[aria-selected="true"]') || menu.querySelector("[data-unit]");
+    active?.focus();
+  }
+}
+
+document.querySelectorAll(".unit-picker").forEach((picker) => {
+  const trigger = picker.querySelector(".unit-trigger");
+  const menu = picker.querySelector(".unit-menu");
+  const hidden = picker.querySelector('input[type="hidden"]');
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    document.querySelectorAll(".unit-picker").forEach((other) => {
+      if (other !== picker) setUnitMenu(other, false);
+    });
+    document.querySelectorAll(".filter-picker.open").forEach((other) => setFilterPicker(other, false));
+    setUnitMenu(picker, menu.hidden);
+  });
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-unit]");
+    if (!option) return;
+    hidden.value = option.dataset.unit;
+    paintUnit(picker);
+    setUnitMenu(picker, false);
+    trigger.focus();
+    paintFilterPreview();
+  });
+  picker.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) {
+      event.preventDefault();
+      setUnitMenu(picker, false);
+      trigger.focus();
+      return;
+    }
+    if (menu.hidden) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setUnitMenu(picker, true);
+      }
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const options = [...menu.querySelectorAll("[data-unit]")];
+    const at = options.indexOf(document.activeElement);
+    const next = event.key === "ArrowDown"
+      ? options[(at + 1) % options.length]
+      : options[(at - 1 + options.length) % options.length];
+    event.preventDefault();
+    next?.focus();
+  });
+  paintUnit(picker);
+});
+
+/* Type and collection reuse the same pattern. Their <select> stays in the DOM
+   (hidden) so the query code can keep reading `.value`; the menu is rebuilt
+   from its options every time it opens, which is how custom kinds and
+   collections added at runtime appear without extra bookkeeping. */
+function syncFilterPicker(picker) {
+  const select = document.getElementById(picker.dataset.picker);
+  const label = picker.querySelector(".filter-picker-value");
+  if (!select || !label) return;
+  const option = select.selectedOptions[0];
+  label.textContent = option ? option.textContent : "";
+  if (option?.dataset.i18n) label.dataset.i18n = option.dataset.i18n;
+  else delete label.dataset.i18n;
+}
+
+function syncFilterPickers() {
+  document.querySelectorAll(".filter-picker").forEach(syncFilterPicker);
+}
+
+function paintFilterMenu(picker) {
+  const select = document.getElementById(picker.dataset.picker);
+  const menu = picker.querySelector(".filter-menu");
+  if (!select || !menu) return;
+  menu.innerHTML = [...select.options].map((option) => {
+    const chosen = option.value === select.value ? ' aria-selected="true"' : "";
+    return `<button type="button" role="option" data-value="${esc(option.value)}"${chosen}>${esc(option.textContent)}</button>`;
+  }).join("");
+}
+
+function setFilterPicker(picker, open) {
+  if (!picker) return;
+  const menu = picker.querySelector(".filter-menu");
+  const trigger = picker.querySelector(".filter-picker-btn");
+  if (!menu || !trigger) return;
+  if (open) paintFilterMenu(picker);
+  menu.hidden = !open;
+  picker.classList.toggle("open", open);
+  trigger.setAttribute("aria-expanded", String(open));
+  if (open) {
+    const active = menu.querySelector('[aria-selected="true"]') || menu.querySelector("[data-value]");
+    active?.focus();
+  }
+}
+
+document.querySelectorAll(".filter-picker").forEach((picker) => {
+  const trigger = picker.querySelector(".filter-picker-btn");
+  const menu = picker.querySelector(".filter-menu");
+  const select = document.getElementById(picker.dataset.picker);
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    document.querySelectorAll(".filter-picker").forEach((other) => {
+      if (other !== picker) setFilterPicker(other, false);
+    });
+    document.querySelectorAll(".unit-picker").forEach((other) => setUnitMenu(other, false));
+    setFilterPicker(picker, menu.hidden);
+  });
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-value]");
+    if (!option) return;
+    select.value = option.dataset.value;
+    syncFilterPicker(picker);
+    setFilterPicker(picker, false);
+    trigger.focus();
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  picker.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) {
+      event.preventDefault();
+      setFilterPicker(picker, false);
+      trigger.focus();
+      return;
+    }
+    if (menu.hidden) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setFilterPicker(picker, true);
+      }
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const options = [...menu.querySelectorAll("[data-value]")];
+    const at = options.indexOf(document.activeElement);
+    const next = event.key === "ArrowDown"
+      ? options[(at + 1) % options.length]
+      : options[(at - 1 + options.length) % options.length];
+    event.preventDefault();
+    next?.focus();
+  });
+  syncFilterPicker(picker);
+});
+
 $("folder").addEventListener("change", () => { state.folder = $("folder").value.trim(); if (state.query) runSearch(); });
 $("since-btn").addEventListener("click", (event) => {
   event.stopPropagation();
@@ -1540,6 +2734,44 @@ $("clear").addEventListener("click", () => {
 });
 $("save-btn").addEventListener("click", saveSearch);
 $("alias-add").addEventListener("click", addAlias);
+$("types-add").addEventListener("click", addType);
+$("types-list").addEventListener("click", (event) => {
+  const host = $("types-list");
+  const card = event.target.closest(".type-card");
+  if (!card) return;
+  const index = [...host.querySelectorAll(".type-card")].indexOf(card);
+  if (index < 0) return;
+  if (event.target.closest("[data-type-addmask]")) {
+    collectTypes();
+    const type = state.types[index];
+    if (!type) return;
+    type.masks = [...(type.masks || []), ""];
+    renderTypes();
+    const inputs = host.querySelectorAll(".type-card")[index]?.querySelectorAll(".type-mask");
+    inputs?.[inputs.length - 1]?.focus();
+    return;
+  }
+  if (event.target.closest("[data-type-rmmask]")) {
+    const row = event.target.closest(".type-mask-row");
+    const maskIndex = [...card.querySelectorAll(".type-mask-row")].indexOf(row);
+    collectTypes();
+    const type = state.types[index];
+    if (!type || maskIndex < 0) return;
+    type.masks.splice(maskIndex, 1);
+    renderTypes();
+    saveTypes();
+    return;
+  }
+  if (event.target.closest("[data-type-remove]")) {
+    collectTypes();
+    state.types.splice(index, 1);
+    renderTypes();
+    saveTypes();
+  }
+});
+$("types-list").addEventListener("input", (event) => {
+  if (event.target.closest("[data-type-name], [data-type-mask]")) saveTypesSoon();
+});
 $("wall-row").addEventListener("click", (event) => {
   const tile = event.target.closest("[data-wall]");
   if (tile) { chooseWall(tile.dataset.wall); return; }
@@ -1628,26 +2860,39 @@ function basename(path) {
 
 function renderDuplicates(groups) {
   $("dups-body").innerHTML = groups.length
-    ? groups.map((group) => `
-        <div class="dup-group">
-          <b class="dup-count">${t("panel.copies", { n: group.items.length })}</b>
-          ${group.items.map((item) => `
-            <div class="dup-item">
+    ? groups.map((group) => {
+      const keep = Number(group.keep) || 0;
+      return `<div class="dup-group" data-keep="${keep}">
+          <b class="dup-count">${t("panel.copies", { n: group.items.length })}${
+            group.kind === "doc" ? ` <span class="dup-kind">${esc(t("dups.documents"))}</span>` : ""
+          }</b>
+          ${group.items.map((item) => {
+            const isKeep = item.file_id === keep;
+            return `<div class="dup-item${isKeep ? " keep" : ""}">
               <button type="button" class="dup-reveal" data-reveal="${item.file_id}"
                       title="${esc(item.path)}">
-                <span class="dup-name">${esc(basename(item.path))}</span>
+                <span class="dup-name">${esc(basename(item.path))}${
+                  isKeep ? ` <span class="dup-keep">${esc(t("dups.keep"))}</span>` : ""
+                }</span>
                 <span class="dup-full">${esc(item.path)}</span>
               </button>
               <input type="checkbox" class="dup-pick" value="${item.file_id}"
                      aria-label="${esc(t("dups.select", { name: basename(item.path) }))}">
-            </div>`).join("")}
-        </div>`).join("")
+            </div>`;
+          }).join("")}
+        </div>`;
+    }).join("")
     : `<p class="panel-note">${esc(t("panel.noDuplicates"))}</p>`;
+  document.querySelectorAll(".dup-mode").forEach((button) => {
+    button.classList.toggle("active", button.dataset.dupMode === state.dupMode);
+  });
 }
 
-async function loadDuplicates() {
-  const data = await api("/api/duplicates");
-  renderDuplicates(data.groups || []);
+async function loadDuplicates(mode = state.dupMode) {
+  state.dupMode = mode;
+  const data = await api(`/api/duplicates?mode=${encodeURIComponent(mode)}`);
+  state.dupGroups = data.groups || [];
+  renderDuplicates(state.dupGroups);
   setDups(true);
 }
 
@@ -1779,6 +3024,35 @@ $("dups-btn").addEventListener("click", async () => {
   }
 });
 
+function setAllDups(checked) {
+  $("dups-body").querySelectorAll(".dup-pick").forEach((pick) => {
+    pick.checked = checked;
+  });
+}
+
+$("dups-select-all").addEventListener("click", () => setAllDups(true));
+$("dups-clear").addEventListener("click", () => setAllDups(false));
+$("dups-smart").addEventListener("click", () => {
+  let checked = 0;
+  $("dups-body").querySelectorAll(".dup-group").forEach((group) => {
+    const keep = Number(group.dataset.keep) || 0;
+    group.querySelectorAll(".dup-item").forEach((row) => {
+      const pick = row.querySelector(".dup-pick");
+      if (!pick) return;
+      pick.checked = Number(pick.value) !== keep;
+      if (pick.checked) checked += 1;
+    });
+  });
+  toast(t("dups.smartDone", { n: checked }));
+});
+$("dups-mode").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-dup-mode]");
+  if (!button || button.dataset.dupMode === state.dupMode) return;
+  loadDuplicates(button.dataset.dupMode).catch((error) => {
+    toast(t("toast.failed", { error: error.message }));
+  });
+});
+
 $("dups-delete").addEventListener("click", () => {
   const ids = selectedDupIds();
   if (!ids.length) { toast(t("dups.nothingSelected")); return; }
@@ -1845,6 +3119,201 @@ $("settings-close").addEventListener("click", () => setSettings(false));
 $("settings").addEventListener("click", (event) => {
   if (event.target.id === "settings") setSettings(false);
 });
+$("settings-tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-tab]");
+  if (tab) setSettingsTab(tab.dataset.tab);
+});
+$("hotkeys-list").addEventListener("keydown", (event) => {
+  const slot = event.target.closest(".hk-slot");
+  if (!slot) return;
+  // Tab still moves focus: recording must not trap the keyboard in the list.
+  if (event.key === "Tab") return;
+  // The slot owns the keyboard while recording; no global shortcut may fire.
+  event.preventDefault();
+  event.stopPropagation();
+  recordHotkey(slot, event);
+});
+$("hotkeys-reset").addEventListener("click", () => {
+  state.hotkeys = JSON.parse(JSON.stringify(state.hotkeyDefaults || FALLBACK_HOTKEYS));
+  saveHotkeys();
+});
+
+/* ------------------------------------------------------ filters and export */
+
+$("filters-btn").addEventListener("click", () => {
+  openFilters($("filter-builder").hidden);
+});
+["f-type", "f-period", "f-collection"].forEach((id) => {
+  $(id).addEventListener("change", paintFilterPreview);
+});
+["f-folder", "f-size-min", "f-size-max", "f-tag"].forEach((id) => {
+  $(id).addEventListener("input", paintFilterPreview);
+});
+$("filter-apply").addEventListener("click", applyFilters);
+$("filter-clear").addEventListener("click", clearFilters);
+$("export-btn").addEventListener("click", () => {
+  const menu = $("export-menu");
+  menu.hidden = !menu.hidden;
+  $("export-btn").setAttribute("aria-expanded", String(!menu.hidden));
+  if (!menu.hidden) placePanel(menu, $("export-btn"));
+});
+$("export-menu").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-export]");
+  if (button) exportResults(button.dataset.export);
+});
+
+/* A left-button drag moves a panel by its own surface; a press that never
+   travels past a few pixels stays a normal click, so the menu buttons keep
+   working. */
+function makePanelDraggable(panel) {
+  if (!panel) return;
+  let drag = null;
+  let swallow = false;
+  panel.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.target.closest("input, select, textarea")) return;
+    const host = panel.offsetParent;
+    const rect = panel.getBoundingClientRect();
+    const frame = host ? host.getBoundingClientRect() : { left: 0, top: 0 };
+    drag = {
+      id: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      left: rect.left - frame.left,
+      top: rect.top - frame.top,
+      moving: false,
+    };
+    swallow = false;
+  });
+  panel.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!drag.moving) {
+      if (Math.hypot(dx, dy) < 4) return;
+      drag.moving = true;
+      swallow = true;
+      try { panel.setPointerCapture(drag.id); } catch (error) { /* synthetic pointer */ }
+      panel.classList.add("dragging");
+    }
+    panel.style.left = `${drag.left + dx}px`;
+    panel.style.top = `${drag.top + dy}px`;
+    panel.style.right = "auto";
+    event.preventDefault();
+  });
+  const stop = (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    drag = null;
+    panel.classList.remove("dragging");
+    try {
+      if (panel.hasPointerCapture(event.pointerId)) panel.releasePointerCapture(event.pointerId);
+    } catch (error) { /* synthetic pointer */ }
+  };
+  panel.addEventListener("pointerup", stop);
+  panel.addEventListener("pointercancel", stop);
+  panel.addEventListener("click", (event) => {
+    if (!swallow) return;
+    swallow = false;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+}
+
+makePanelDraggable($("filter-builder"));
+makePanelDraggable($("export-menu"));
+
+document.addEventListener("click", (event) => {
+  document.querySelectorAll(".unit-picker.open").forEach((picker) => {
+    if (!event.target.closest(".unit-picker")) setUnitMenu(picker, false);
+  });
+  document.querySelectorAll(".filter-picker.open").forEach((picker) => {
+    if (!event.target.closest(".filter-picker")) setFilterPicker(picker, false);
+  });
+  if (!$("export-menu").hidden
+      && !event.target.closest("#export-menu")
+      && !event.target.closest("#export-btn")) {
+    $("export-menu").hidden = true;
+    $("export-btn").setAttribute("aria-expanded", "false");
+  }
+  if (!$("sort-menu").hidden
+      && !event.target.closest("#sort-menu")
+      && !event.target.closest("#sort-btn")) {
+    setSortMenu(false);
+  }
+  if (!$("filter-builder").hidden
+      && !event.target.closest("#filter-builder")
+      && !event.target.closest("#filters-btn")) {
+    openFilters(false);
+  }
+});
+
+/* --------------------------------------------------------------- bulk bar */
+
+$("bulk-pin").addEventListener("click", async () => {
+  const ids = [...state.picked];
+  if (!ids.length) return;
+  try {
+    await api("/api/pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, pinned: true }),
+    });
+    for (const hit of pickedHits()) hit.pinned = true;
+    refreshResults();
+    await loadPersonal(true);
+    paintPersonal();
+    toast(t("bulk.pinned", { n: ids.length }));
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
+});
+$("bulk-tag").addEventListener("click", () => openAnnotate("tag", [...state.picked]));
+$("bulk-collection").addEventListener("click", () => openAnnotate("collection", [...state.picked]));
+$("bulk-copy").addEventListener("click", async () => {
+  const paths = pickedHits().map((hit) => hit.path);
+  if (!paths.length) return;
+  try {
+    await navigator.clipboard.writeText(paths.join("\n"));
+    toast(t("bulk.copied", { n: paths.length }));
+  } catch (error) {
+    toast(t("ctx.copyFailed"));
+  }
+});
+$("bulk-export").addEventListener("click", exportPicked);
+$("bulk-clear").addEventListener("click", clearPicks);
+
+/* ------------------------------------------------------- tag/collection UI */
+
+$("annotate-close").addEventListener("click", closeAnnotate);
+$("annotate").addEventListener("click", (event) => {
+  if (event.target.id === "annotate") closeAnnotate();
+});
+$("annotate-body").addEventListener("click", (event) => {
+  const tag = event.target.closest("[data-annotate-tag]");
+  if (tag) { applyTag(tag.dataset.annotateTag, ANNOTATE.ids); return; }
+  const collection = event.target.closest("[data-annotate-collection]");
+  if (collection) {
+    applyCollection(collection.dataset.annotateCollection, "", ANNOTATE.ids);
+    return;
+  }
+  if (event.target.closest("#annotate-add")) {
+    const value = $("annotate-input")?.value.trim() || "";
+    if (!value) return;
+    if (ANNOTATE.kind === "tag") applyTag(value, ANNOTATE.ids);
+    else applyCollection(0, value, ANNOTATE.ids);
+  }
+});
+$("annotate-body").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || !event.target.closest("#annotate-input")) return;
+  event.preventDefault();
+  const value = $("annotate-input").value.trim();
+  if (!value) return;
+  if (ANNOTATE.kind === "tag") applyTag(value, ANNOTATE.ids);
+  else applyCollection(0, value, ANNOTATE.ids);
+});
+$("content").addEventListener("change", (event) => {
+  const pick = event.target.closest("[data-pick]");
+  if (pick) togglePick(pick.dataset.pick, pick.checked);
+});
 
 /* The welcome screen is the only place a new user learns that the index and
    the language switch exist, so its controls have to work before the main app
@@ -1893,6 +3362,7 @@ $("lang-switch").addEventListener("click", (event) => {
   paintLang();
   renderAbout();
   renderAliases();
+  renderTypes();
   paintSince();
   if (CAL.open) renderCalendar();
   loadStats();
@@ -1903,17 +3373,64 @@ function selectedHit() {
   return state.selected >= 0 ? state.hits[state.selected] : null;
 }
 
+/* The shortcut table is user data, so every action goes through one dispatcher.
+   The guard order matters: Escape first, then fields, then overlays, and only
+   then the selected row — the same reflex the hardcoded handler had. */
+function runHotkey(action) {
+  const hit = selectedHit();
+  switch (action) {
+    case "focus":
+      $("q").focus();
+      $("q").select();
+      return true;
+    case "search":
+      $("q").focus();
+      if (state.query) runSearch();
+      return true;
+    case "settings":
+      setSettings(!$("settings").classList.contains("open"));
+      return true;
+    case "panel":
+      setPanel(!$("panel").classList.contains("open"));
+      return true;
+    case "duplicates":
+      if ($("dups-drawer").classList.contains("open")) setDups(false);
+      else $("dups-btn").click();
+      return true;
+    case "preview":
+      if (hit) openPreview(hit.file_id);
+      return Boolean(hit);
+    case "open":
+    case "reveal":
+      if (hit) {
+        api(`/api/${action}?id=${hit.file_id}`)
+          .catch((error) => toast(t("toast.failed", { error: error.message })));
+      }
+      return Boolean(hit);
+    case "next":
+      moveSelection(1);
+      return true;
+    case "prev":
+      moveSelection(-1);
+      return true;
+    case "select":
+      if (hit) togglePick(hit.file_id);
+      return Boolean(hit);
+    case "export":
+      $("export-btn").click();
+      return true;
+    default:
+      return false;
+  }
+}
+
 document.addEventListener("keydown", (event) => {
+  if (event.target.closest && event.target.closest("#hotkeys-list")) return;
   const inField = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
 
-  if (event.key === "/" && document.activeElement !== $("q")) {
-    event.preventDefault();
-    $("q").focus();
-    $("q").select();
-    return;
-  }
   if (event.key === "Escape") {
     if ($("confirm").classList.contains("open")) { closeConfirm(); return; }
+    if (!$("annotate").hidden) { closeAnnotate(); return; }
     if (CAL.open) { openCalendar(false); return; }
     if (editor.open) { closeWallEditor(); return; }
     if ($("preview").classList.contains("open")) { $("preview").classList.remove("open"); return; }
@@ -1921,24 +3438,29 @@ document.addEventListener("keydown", (event) => {
     if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }
     if ($("panel").classList.contains("open")) { setPanel(false); return; }
     if ($("dups-drawer").classList.contains("open")) { setDups(false); return; }
+    return;
   }
-  if (inField && document.activeElement === $("q")) return;
 
-  const hit = selectedHit();
-  if (!hit) return;
+  const chord = chordOfEvent(event);
+  const action = hotkeyActionFor(chord);
+  if (!action) return;
 
-  if (event.key === "ArrowDown") { event.preventDefault(); moveSelection(1); }
-  else if (event.key === "ArrowUp") { event.preventDefault(); moveSelection(-1); }
-  else if (event.key === "Enter") {
-    event.preventDefault();
-    api(`/api/${event.shiftKey ? "reveal" : "open"}?id=${hit.file_id}`)
-      .catch((error) => toast(t("toast.failed", { error: error.message })));
-  } else if (event.key === " " || (event.key === "Spacebar")) {
-    // Space is a space while the search box has focus; everywhere else it is
-    // Quick Look, the same reflex as in Finder.
-    event.preventDefault();
-    openPreview(hit.file_id);
+  // A plain key belongs to whatever field has focus: typing "x" in the query
+  // box is a letter, not "select". Chords with Ctrl/Alt/Meta are global.
+  const plain = !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
+  if (inField && plain) return;
+
+  const overlay = $("settings").classList.contains("open")
+    || $("preview").classList.contains("open")
+    || $("modal").classList.contains("open")
+    || $("confirm").classList.contains("open")
+    || $("panel").classList.contains("open")
+    || $("dups-drawer").classList.contains("open");
+  if (overlay && ["preview", "open", "reveal", "next", "prev", "select"].includes(action)) {
+    return;
   }
+
+  if (runHotkey(action)) event.preventDefault();
 });
 
 /* The window has no title bar, so the header carries the only close button
@@ -2461,6 +3983,10 @@ paintSince();
 renderIdle();
 wireWindowControls();
 loadStats();
+loadTypes().then(() => { renderTypes(); renderTypeTabs(); paintFilters(); });
+loadMeta().then(paintFilters);
+loadHotkeys();
+startWatchPoll();
 api("/api/progress").then((job) => {
   if (job.running) { $("index-btn").disabled = true; pollJob(); }
 });

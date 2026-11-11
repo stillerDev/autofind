@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from core import nameindex, vectors
+from core import filevec, nameindex, vectors
 from core.config import IndexConfig
 from core.embed import HashingEmbedder
 from core.group import dhash, group_hits, hamming, ocr_overlap, version_key
@@ -78,68 +78,74 @@ class NameIndexTests(unittest.TestCase):
         self.assertEqual(index.search("anything", 5), [])
 
 
-class PackTests(unittest.TestCase):
-    def test_pack_roundtrip_and_search(self):
+class FileVectorTests(unittest.TestCase):
+    """One binary vector per file, searched by a plain matvec (schema v9).
+
+    The old pack tests pinned a memory-mapped side file and a hot delta; with
+    one 48-byte row per file there is nothing to map, so what matters now is
+    that the bits round-trip, that a re-index replaces the row, and that the
+    result is a file id rather than a chunk id.
+    """
+
+    def test_bits_round_trip_at_48_bytes(self):
+        vector = np.zeros(384, dtype=np.float32)
+        vector[0] = 0.5
+        vector[1] = -0.5
+        vector[383] = 1.0
+        bits = filevec.to_bits(vector)
+        self.assertEqual(len(bits), 48)
+        self.assertEqual(filevec.packed_size(384), 48)
+        back = filevec.from_bits(bits, 384)
+        np.testing.assert_array_equal(back, np.where(vector > 0, 1.0, -1.0))
+
+    def test_mean_pool_is_the_document_direction(self):
+        chunks = np.array([[1.0, -1.0], [1.0, 1.0]], dtype=np.float32)
+        pooled = filevec.mean_pool(chunks)
+        np.testing.assert_allclose(pooled, [1.0, 0.0])
+        single = np.array([0.3, -0.7], dtype=np.float32)
+        np.testing.assert_allclose(filevec.mean_pool(single), single)
+
+    def test_store_knn_answers_with_file_ids(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "index.db"
-            store = Store(db)
+            store = Store(Path(tmp) / "index.db")
             try:
                 file_id = store.upsert_file("C:\\a.txt", 10, 1.0, "x", "doc")
-                matrix = np.eye(3, 384, dtype=np.float32)
-                store.replace_chunks(file_id, ["one", "two", "three"], matrix)
+                store.replace_chunks(
+                    file_id, ["one", "two"], np.eye(2, 384, dtype=np.float32)
+                )
                 store.commit()
-                store.rebuild_pack()
 
-                self.assertEqual(store.vector_backend, "pack")
-                pack = store.pack()
-                self.assertIsNotNone(pack)
-                self.assertEqual(pack.count, 3)
-
-                hits = store.knn(np.eye(1, 384, 1, dtype=np.float32)[0], 1)
-                self.assertEqual(len(hits), 1)
-                self.assertAlmostEqual(hits[0][1], 1.0, places=4)
+                self.assertEqual(store.vector_backend, "filebin")
+                self.assertTrue(store.vector_is_file_level)
+                self.assertEqual(
+                    store.conn.execute("SELECT COUNT(*) FROM file_vectors").fetchone()[0], 1
+                )
+                hits = store.knn(np.eye(1, 384, 0, dtype=np.float32)[0], 3)
+                self.assertEqual([hit[0] for hit in hits], [file_id])
             finally:
                 store.close()
 
-            # A fresh process must find the pack without rebuilding it.
-            reopened = Store(db, readonly=True)
-            try:
-                pack = reopened.pack()
-                self.assertEqual(pack.count, 3)
-            finally:
-                reopened.close()
-
-    def test_pack_is_rebuilt_when_vectors_change(self):
+    def test_reindex_replaces_the_row_and_the_matrix(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "index.db"
-            store = Store(db)
+            store = Store(Path(tmp) / "index.db")
             try:
                 file_id = store.upsert_file("C:\\a.txt", 10, 1.0, "x", "doc")
                 store.replace_chunks(file_id, ["one"], np.eye(1, 384, 0, dtype=np.float32))
                 store.commit()
-                store.rebuild_pack()
-                first = store.pack().count
+                first = store.knn(np.eye(1, 384, 0, dtype=np.float32)[0], 1)
+                self.assertEqual(len(first), 1)
 
-                store.replace_chunks(file_id, ["one", "two"], np.eye(2, 384, dtype=np.float32))
+                # The same file now points at a different direction; the old
+                # vector must be gone, not merged with the new one.
+                store.replace_chunks(file_id, ["two"], np.eye(1, 384, 1, dtype=np.float32))
                 store.commit()
-                second = store.pack().count
-                self.assertEqual(first, 1)
-                self.assertEqual(second, 2)
-            finally:
-                store.close()
-
-    def test_missing_pack_file_is_rebuilt_not_fatal(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "index.db"
-            store = Store(db)
-            try:
-                file_id = store.upsert_file("C:\\a.txt", 10, 1.0, "x", "doc")
-                store.replace_chunks(file_id, ["one"], np.eye(1, 384, 0, dtype=np.float32))
-                store.commit()
-                store.rebuild_pack()
-                vectors.drop_pack(db)
-                store._close_pack()
-                self.assertEqual(store.pack().count, 1)
+                self.assertEqual(
+                    store.conn.execute("SELECT COUNT(*) FROM file_vectors").fetchone()[0], 1
+                )
+                hits = store.knn(np.eye(1, 384, 0, dtype=np.float32)[0], 1)
+                self.assertEqual([hit[0] for hit in hits], [file_id])
+                # Anti-parallel now: the old row is gone, not averaged with the new one.
+                self.assertAlmostEqual(hits[0][1], -1.0, places=4)
             finally:
                 store.close()
 

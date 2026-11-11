@@ -858,6 +858,52 @@ body.in-app .win-controls { display: flex; align-items: center; }
 .save-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
 .save-btn:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.55); outline-offset: 1px; }
 
+/* Saving is a small promise, so the bookmark answers: it hops once and warms to
+   gold, then settles back. Two animations on one class — the hop is quick, the
+   gold takes its time fading. */
+@keyframes save-hop {
+  0% { transform: translateY(0) scale(1); }
+  18% { transform: translateY(-7px) scale(1.14); }
+  38% { transform: translateY(1px) scale(0.97); }
+  58% { transform: translateY(-2px) scale(1.04); }
+  78%, 100% { transform: translateY(0) scale(1); }
+}
+
+@keyframes save-gold {
+  0% {
+    color: rgba(255, 255, 255, 0.66);
+    background: none;
+    border-color: transparent;
+    box-shadow: 0 0 0 0 rgba(255, 205, 90, 0);
+  }
+  22% {
+    color: #ffdb7d;
+    background: rgba(255, 205, 90, 0.2);
+    border-color: rgba(255, 214, 110, 0.6);
+    box-shadow: 0 0 14px rgba(255, 200, 70, 0.45);
+  }
+  65% {
+    color: #ffd66b;
+    background: rgba(255, 205, 90, 0.14);
+    border-color: rgba(255, 214, 110, 0.4);
+    box-shadow: 0 0 10px rgba(255, 200, 70, 0.28);
+  }
+  100% {
+    color: rgba(255, 255, 255, 0.66);
+    background: none;
+    border-color: transparent;
+    box-shadow: 0 0 0 0 rgba(255, 205, 90, 0);
+  }
+}
+
+.save-btn.saved {
+  animation: save-hop 0.8s cubic-bezier(0.3, 1.4, 0.5, 1), save-gold 1.3s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .save-btn.saved { animation: save-gold 1s ease-out; }
+}
+
 .menu {
   display: flex;
   flex-wrap: wrap;
@@ -923,6 +969,19 @@ body.in-app .win-controls { display: flex; align-items: center; }
 
 .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--teal); }
 
+/* The count is live, so the dot breathes instead of sitting still. The ring
+   grows out of the dot and fades, which reads as "this number keeps up". */
+.pill .dot.live { animation: index-dot 2s ease-in-out infinite; }
+
+@keyframes index-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(63, 191, 160, 0.55); }
+  50% { box-shadow: 0 0 0 4px rgba(63, 191, 160, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pill .dot.live { animation: none; }
+}
+
 .chip {
   border: 1px solid var(--border);
   background: var(--panel);
@@ -973,9 +1032,83 @@ body.in-app .win-controls { display: flex; align-items: center; }
   font-size: 12.5px;
   padding: 1px 0;
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .field select option { background: #16181b; color: var(--text); }
+
+/* The pencil marks the folder field as a place to type; on focus it rocks and
+   draws a short underline, so the field announces itself as editable. */
+.field-edit {
+  flex: none;
+  color: var(--faint);
+  transition: color 0.12s ease;
+}
+
+.field:focus-within .field-edit { color: var(--text); }
+
+.folder-field { position: relative; }
+
+.folder-field::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 4px;
+  height: 1px;
+  border-radius: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.42s ease;
+  pointer-events: none;
+}
+
+.folder-field:focus-within::after { transform: scaleX(1); }
+
+.folder-field:focus-within .field-edit { animation: pencil-write 0.55s ease; }
+
+@keyframes pencil-write {
+  0% { transform: translate(0, 0) rotate(0); }
+  30% { transform: translate(-1px, -1px) rotate(-10deg); }
+  60% { transform: translate(1px, 1px) rotate(7deg); }
+  100% { transform: translate(0, 0) rotate(0); }
+}
+
+/* Sort is a button, not a native select: the caret has to return when the list
+   closes, and a native picker keeps focus after it closes. */
+.sort-field { cursor: pointer; }
+
+.sort-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sort-trigger > span:first-child { color: var(--faint); }
+
+.sort-value { color: var(--text); }
+
+.sort-field .sort-caret {
+  flex: none;
+  color: var(--faint);
+  pointer-events: none;
+  transition: transform 0.18s ease, color 0.12s ease;
+}
+
+.sort-field.open .sort-caret { transform: rotate(180deg); color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .folder-field::after { transition: none; }
+  .folder-field:focus-within .field-edit { animation: none; }
+}
 
 /* ---------------------------------------------------------------- calendar */
 
@@ -1000,10 +1133,21 @@ body.in-app .win-controls { display: flex; align-items: center; }
   transition: color 0.14s ease;
 }
 
-.date-btn svg { flex: none; color: var(--faint); }
+.date-btn svg {
+  flex: none;
+  color: var(--faint);
+  transition: transform 0.2s cubic-bezier(0.22, 0.72, 0.2, 1), color 0.14s ease;
+}
 .date-btn:hover { color: var(--text); }
 .date-btn.set { color: var(--text); font-weight: 600; }
 .date-btn:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.4); outline-offset: 3px; border-radius: 6px; }
+
+/* The calendar glyph lifts while its panel is open, so the icon answers the
+   click even before the panel catches the eye. */
+.date-btn[aria-expanded="true"] > svg:not(.date-caret) {
+  transform: translateY(-3px) scale(1.06);
+  color: var(--text);
+}
 
 /* The chevron is the same "this opens a menu" cue the sort select gives for
    free. It turns over while the calendar is showing, so the button says which
@@ -1174,7 +1318,8 @@ main {
 
 .card {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
+  grid-template-columns: 18px 40px minmax(0, 1fr);
+  align-items: start;
   gap: 14px;
   padding: 14px 16px;
   background: rgba(21, 23, 26, 0.82);
@@ -1299,16 +1444,16 @@ main {
 
 .icon img { width: 100%; height: 100%; object-fit: cover; }
 
-.icon.k-pdf { background: #3a2222; color: #f09595; }
-.icon.k-docx { background: #22303f; color: #85b7eb; }
-.icon.k-pptx { background: #3a2c1c; color: #e2a866; }
-.icon.k-xlsx { background: #1f3327; color: #7fca9b; }
-.icon.k-epub { background: #2d2740; color: #b9a6ea; }
-.icon.k-odt { background: #2b3138; color: #a9b6c4; }
-.icon.k-rtf { background: #322b26; color: #c9b099; }
-.icon.k-code { background: #24301f; color: #97c459; }
-.icon.k-text { background: #2a2a24; color: #d3c68a; }
-.icon.k-image { background: #302430; color: #e0a0d0; padding: 0; }
+/* File-type tiles are monochrome: the label already says "PDF" or "PY", and a
+   rainbow of hues only competed with the hit's name. Outline-only keeps them
+   quiet on a dark card while the shared selector covers every kind, including
+   any added later. */
+.icon[class*="k-"] {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.66);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+}
+.icon.k-image { padding: 0; }
 
 .title-row {
   display: flex;
@@ -1603,6 +1748,32 @@ main {
 
 .dup-trash:hover { background: rgba(255, 255, 255, 0.14); }
 
+/* Bulk selection sits just under the bin: two quiet text pills, grey until
+   hovered, so the header keeps the bin as the only loud control. */
+.dups-actions {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 2px;
+}
+
+.dup-action {
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+
+.dup-action:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .actions { display: flex; gap: 8px; margin-top: 10px; }
 
 .act {
@@ -1815,6 +1986,10 @@ body.in-app .side-foot .only-app { display: inline-flex; }
 }
 
 .stat-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* The "remove missing" box sits beside the index button; give it the same
+   white tick as every other checkbox instead of the system blue. */
+.stat-row input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
 
 /* Privacy: a master switch, then a disclosure with one checkbox per group.
    The arrow points down when collapsed and flips when the list is open. */
@@ -2339,6 +2514,23 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   cursor: pointer;
 }
 
+/* The settings dialog uses a quiet grey cross instead of a word: the title
+   already says what is being closed, and a second "close" reads as a button. */
+.close-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--faint);
+  transition: color 0.14s ease, background 0.14s ease;
+}
+
+.close-icon:hover { color: #e08a86; background: rgba(224, 138, 134, 0.12); }
+.close-icon svg { display: block; }
+
 .confirm-card { width: min(420px, 100%); }
 
 .confirm-text {
@@ -2600,6 +2792,101 @@ body.in-app .side-foot .only-app { display: inline-flex; }
 .alias-add input:focus { border-color: #3f4650; }
 .alias-add .btn { flex: none; }
 
+/* Custom file types: a name on the left, any number of mask rows on the right,
+   and the "+" that adds another row sits above them. */
+.types-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 9px;
+}
+
+.types-head h4 { margin: 0; }
+
+.types-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.type-card {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.75fr) minmax(0, 1.6fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.type-name,
+.type-mask {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(9, 11, 13, 0.6);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.type-name:focus,
+.type-mask:focus { border-color: #3f4650; }
+
+.type-masks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.type-addmask {
+  align-self: flex-start;
+  padding: 2px 9px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease;
+}
+
+.type-addmask:hover { color: var(--text); border-color: var(--faint); }
+
+.type-mask-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.type-mask-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.type-x {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.type-x:hover { color: #e08a86; background: rgba(224, 138, 134, 0.12); }
+.type-remove { margin-top: 3px; }
+.types-example { margin-top: 10px; }
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #262a2f; border-radius: 99px; border: 3px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -2681,4 +2968,882 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   color: var(--faint);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ tools */
+
+/* Filters and Export sit in the tools row beside the sort field. They are the
+   same quiet pill as a `.field`, so they read as tools and not as primary
+   actions; the panel they open is the loud part. */
+.tool-btn {
+  padding: 6px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  background: rgba(18, 20, 23, 0.72);
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.tool-btn:hover { color: var(--text); border-color: #343941; }
+
+.tool-btn[aria-expanded="true"] {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.34);
+  background: var(--accent-soft);
+}
+
+/* The panels hang below the tools bar. `.tools` is already relative and
+   above `main`, so an absolute child paints over the results instead of
+   being clipped by the flex row. */
+.filter-builder,
+.export-menu,
+.sort-menu {
+  position: absolute;
+  top: calc(100% - 4px);
+  z-index: 40;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+
+.filter-builder {
+  left: 24px;
+  width: min(680px, calc(100vw - 48px));
+  padding: 14px;
+}
+
+.filter-builder[hidden],
+.export-menu[hidden],
+.sort-menu[hidden] { display: none; }
+
+/* Both panels are dragged by their own surface with the left button. The
+   grabbing state keeps text from selecting under the pointer. */
+.filter-builder.dragging,
+.export-menu.dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 12px;
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.filter-field > span:first-child {
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.filter-field input,
+.filter-field select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(10, 11, 13, 0.7);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.filter-field input:focus,
+.filter-field select:focus { border-color: rgba(255, 255, 255, 0.4); }
+
+.filter-field select option { background: #16181b; color: var(--text); }
+
+/* Size is a number plus a round unit picker. The picker is ours, not the
+   platform's: a native select cannot animate open, and its list ignores the
+   rounded, dark surface the rest of the builder uses. */
+.filter-size {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+}
+
+.filter-size input { flex: 1 1 auto; min-width: 0; }
+
+/* Native number spinners render as two bright arrows on a dark field here;
+   the number itself is typed or stepped with the keyboard instead. */
+.filter-size input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.filter-size input[type="number"]::-webkit-outer-spin-button,
+.filter-size input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.unit-picker {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+}
+
+.unit-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  min-width: 62px;
+  padding: 7px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(10, 11, 13, 0.7);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.unit-trigger:hover { border-color: rgba(255, 255, 255, 0.22); }
+
+.unit-picker.open .unit-trigger,
+.unit-trigger:focus-visible {
+  border-color: rgba(255, 255, 255, 0.4);
+  outline: none;
+}
+
+.unit-caret {
+  flex: none;
+  color: var(--faint);
+  pointer-events: none;
+  transition: transform 0.18s ease, color 0.12s ease;
+}
+
+.unit-picker.open .unit-caret { transform: rotate(180deg); color: var(--text); }
+
+.unit-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 74px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.5);
+  transform-origin: top right;
+  animation: unit-pop 0.17s cubic-bezier(0.22, 0.72, 0.2, 1);
+}
+
+.unit-menu[hidden] { display: none; }
+
+.unit-menu button {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.unit-menu button:hover { background: rgba(255, 255, 255, 0.08); }
+
+.unit-menu button[aria-selected="true"] { background: rgba(255, 255, 255, 0.13); }
+
+@keyframes unit-pop {
+  from { opacity: 0; transform: translateY(-5px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .unit-menu { animation: none; }
+  .unit-caret, .unit-trigger { transition: none; }
+}
+
+/* Type and collection are custom lists too: the native select popup cannot be
+   rounded or animated, and it ignores the dark surface of the builder. The
+   real <select> stays in the DOM, hidden, because the query code reads its
+   value and the type list is filled with custom kinds at runtime. */
+.filter-picker {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.filter-picker-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(10, 11, 13, 0.7);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.filter-picker-btn:hover { border-color: rgba(255, 255, 255, 0.22); }
+
+.filter-picker.open .filter-picker-btn,
+.filter-picker-btn:focus-visible {
+  border-color: rgba(255, 255, 255, 0.4);
+  outline: none;
+}
+
+.filter-picker-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-picker-caret {
+  flex: none;
+  color: var(--faint);
+  pointer-events: none;
+  transition: transform 0.18s ease, color 0.12s ease;
+}
+
+.filter-picker.open .filter-picker-caret {
+  transform: rotate(180deg);
+  color: var(--text);
+}
+
+.filter-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  min-width: 100%;
+  max-width: 260px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.5);
+  transform-origin: top right;
+  animation: unit-pop 0.17s cubic-bezier(0.22, 0.72, 0.2, 1);
+}
+
+.filter-menu[hidden] { display: none; }
+
+.filter-menu button {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.filter-menu button:hover { background: rgba(255, 255, 255, 0.08); }
+
+.filter-menu button[aria-selected="true"] { background: rgba(255, 255, 255, 0.13); }
+
+@media (prefers-reduced-motion: reduce) {
+  .filter-menu { animation: none; }
+  .filter-picker-caret, .filter-picker-btn { transition: none; }
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.filter-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.export-menu,
+.sort-menu {
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  min-width: 130px;
+  padding: 5px;
+}
+
+.export-menu button,
+.sort-menu button {
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.export-menu button:hover,
+.sort-menu button:hover { background: rgba(255, 255, 255, 0.08); }
+
+.sort-menu button[aria-selected="true"] { background: rgba(255, 255, 255, 0.13); }
+
+/* ------------------------------------------------------------- settings tabs */
+
+.settings-tabs {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 18px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(10, 11, 13, 0.7);
+}
+
+.settings-tab {
+  flex: 1 1 auto;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.settings-tab:hover { color: var(--text); }
+
+.settings-tab.active {
+  background: var(--accent);
+  color: #15181b;
+  font-weight: 600;
+}
+
+.settings-pane { display: none; }
+
+.settings-pane.active {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* ------------------------------------------------------------------ hotkeys */
+
+.hotkeys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.hk-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.hk-label {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hk-slots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* A chord is a field, not a button: the same quiet input the dictionary form
+   uses, so the row reads as "type a combination here" instead of a wall of
+   pills. */
+.hk-slot {
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(9, 11, 13, 0.6);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.hk-slot:hover { border-color: #3f4650; }
+
+.hk-slot.hk-empty {
+  border-style: dashed;
+  color: var(--faint);
+  font-style: normal;
+}
+
+.hk-slot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Red is the only colour in the settings card, and it is earned: the two
+   fields genuinely cannot both fire. */
+.hk-slot.clash {
+  border-color: #e0625a;
+  background: rgba(224, 98, 90, 0.14);
+  color: #ffb4ae;
+}
+
+.hotkeys-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.hotkeys-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.hotkeys-status.bad { color: #ff9a92; }
+
+/* ---------------------------------------------------------------- bulk bar */
+
+/* Fixed to the bottom so a selection made by scrolling is still actionable
+   when the first picked row is off-screen. */
+.bulk-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px 7px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(22, 24, 28, 0.96);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(16px);
+  transform: translateX(-50%);
+}
+
+.bulk-bar[hidden] { display: none; }
+
+.bulk-count {
+  margin-right: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.bulk-act {
+  padding: 5px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.bulk-act:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bulk-clear {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.bulk-clear:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
+
+/* -------------------------------------------------------------- result card */
+
+.card-pick-wrap {
+  display: grid;
+  place-items: start center;
+  padding-top: 3px;
+  cursor: pointer;
+}
+
+.card-pick {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* A picked row is a filled surface, not another border: the checkbox is small
+   and the row is what the eye should see. */
+.card.picked {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(34, 38, 43, 0.94);
+}
+
+.card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.tag-chip {
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.tag-chip:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.tag-chip b {
+  margin-left: 4px;
+  color: var(--faint);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.tag-chip.small { padding: 2px 7px; font-size: 10.5px; }
+
+.tag-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.why-btn { margin-left: auto; }
+
+.why-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.why-list li {
+  position: relative;
+  padding-left: 15px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.why-list li::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.why-btn.open { color: var(--text); border-color: rgba(255, 255, 255, 0.34); }
+
+.preview-why {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.preview-why > b {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* ------------------------------------------------------- annotate popover */
+
+.popover {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 85;
+  width: min(420px, calc(100vw - 32px));
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  transform: translate(-50%, -50%);
+}
+
+.popover[hidden] { display: none; }
+
+.popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.popover-head b { font-size: 13px; color: var(--text); }
+
+.popover-x {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.popover-x:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
+
+.annotate-add {
+  display: flex;
+  gap: 8px;
+}
+
+.annotate-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(10, 11, 13, 0.7);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.annotate-add input:focus { border-color: rgba(255, 255, 255, 0.4); }
+
+.annotate-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.annotate-chip {
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.annotate-chip:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.annotate-chip b {
+  margin-left: 4px;
+  color: var(--faint);
+  font-weight: 500;
+}
+
+.annotate-note {
+  margin: 12px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--faint);
+}
+
+/* --------------------------------------------------------- duplicate modes */
+
+.dups-mode {
+  display: flex;
+  gap: 3px;
+  width: max-content;
+  margin: 0 0 8px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(10, 11, 13, 0.7);
+}
+
+.dup-mode {
+  padding: 5px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.dup-mode:hover { color: var(--text); }
+
+.dup-mode.active {
+  background: var(--accent);
+  color: #15181b;
+  font-weight: 600;
+}
+
+/* The copy the cleanup would keep. A thin rail, so it reads as advice and not
+   as a state you must confirm. */
+.dup-item.keep {
+  background: rgba(63, 191, 160, 0.1);
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+
+.dup-keep {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(63, 191, 160, 0.18);
+  color: var(--teal);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dup-kind {
+  margin-left: 6px;
+  color: var(--faint);
+  font-weight: 400;
+}
+
+/* ------------------------------------------------------------------- audit */
+
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.audit-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 11px;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 12px;
+}
+
+.audit-row span { color: var(--faint); }
+
+.audit-row b {
+  min-width: 0;
+  color: var(--text);
+  font-weight: 500;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-warn {
+  margin: 12px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--faint);
+}
+
+.audit-warn.on {
+  padding: 9px 11px;
+  border: 1px solid rgba(224, 98, 90, 0.32);
+  border-radius: 9px;
+  background: rgba(224, 98, 90, 0.08);
+  color: #ffb4ae;
+}
+
+@media (max-width: 720px) {
+  .filter-builder { left: 12px; width: calc(100vw - 24px); }
+  .export-menu { right: 12px; }
+  .bulk-bar {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+    border-radius: 14px;
+    transform: none;
+  }
+  .bulk-count { flex-basis: 100%; text-align: center; margin: 0 0 2px; }
+  .hk-row { grid-template-columns: 1fr; gap: 6px; }
+  .hk-slots { justify-content: flex-start; }
+  .card { grid-template-columns: 18px 32px minmax(0, 1fr); gap: 10px; }
 }

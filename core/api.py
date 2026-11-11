@@ -13,6 +13,8 @@ raw path, so a page cannot ask us to open something we never scanned.
 from __future__ import annotations
 
 import base64
+import csv
+import io
 import json
 import mimetypes
 import os
@@ -37,7 +39,15 @@ from .config import (
     save_privacy_prefs,
 )
 from .connect import token as mcp_token
+from .custom_types import coerce_types, find_type, read_types, save_types
 from .embed import get_embedder, get_visual_embedder
+from .hotkeys import (
+    DEFAULTS as HOTKEY_DEFAULTS,
+    coerce_hotkeys,
+    conflicts as hotkey_conflicts,
+    read_hotkeys,
+    save_hotkeys,
+)
 from .indexer import IndexStats, run_index
 from .mcp import McpServer
 from .ocr import engine_report
@@ -58,6 +68,10 @@ KIND_MAP = {
     "pdf": ("pdf",),
     "docx": ("docx",),
     "image": ("image",),
+    "email": ("email",),
+    "archive": ("archive",),
+    "epub": ("epub",),
+    "rtf": ("rtf",),
 }
 
 # A wallpaper is a picture, not a photo library: 12 MB covers a 4K JPEG and
@@ -152,6 +166,46 @@ JOB = IndexJob()
 WATCHER: Watcher | None = None
 WATCH_LOCK = threading.Lock()
 CACHE = VectorCache()
+
+
+class _ReadStores:
+    """Reuse read-only Stores across requests.
+
+    `ThreadingHTTPServer` gives every request its own thread, and a fresh
+    read-only Store measured 0.9 ms — a connection plus a 1 GB mmap window that
+    is unmapped again on close. A Store is lent to one request at a time, and
+    in WAL mode a connection sees every committed write, so holding it is safe:
+    `VectorCache` and the name index key themselves on the file stamps, and an
+    indexer run is visible on the next SELECT. Four connections is plenty for
+    one desktop; the rest are closed as before.
+    """
+
+    def __init__(self, limit: int = 4) -> None:
+        self._lock = threading.Lock()
+        self._free: list[Store] = []
+        self._limit = limit
+
+    def acquire(self, factory) -> Store:
+        with self._lock:
+            if self._free:
+                return self._free.pop()
+        return factory()
+
+    def release(self, store: Store) -> None:
+        with self._lock:
+            if len(self._free) < self._limit:
+                self._free.append(store)
+                return
+        store.close()
+
+    def close_all(self) -> None:
+        with self._lock:
+            stores, self._free = self._free, []
+        for store in stores:
+            store.close()
+
+
+READ_STORES = _ReadStores()
 # What the boot screen polls. The server answers requests from the first
 # millisecond, but "ready" means the vector pack has been faulted in — that is
 # the difference between a window that opens and a window that can search.
@@ -215,6 +269,126 @@ def _trash_path(path: Path) -> None:
             raise OSError("recycle bin operation was aborted")
         return
     path.unlink()
+
+
+def _window_handles() -> set[int] | None:
+    """Every top-level window on screen right now, or None if it cannot be read."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        handles: set[int] = set()
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def collect(hwnd, _):
+            handles.add(int(hwnd))
+            return True
+
+        ctypes.windll.user32.EnumWindows(collect, 0)
+        return handles
+    except Exception:
+        return None
+
+
+def _activate_window(hwnd: int) -> None:
+    """Put `hwnd` in front, including past Windows' foreground lock."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    user32.AllowSetForegroundWindow(-1)  # ASFW_ANY, honoured if we own the foreground
+    user32.ShowWindow(hwnd, 9)           # SW_RESTORE
+    if int(user32.GetForegroundWindow()) == hwnd:
+        return
+    # While another process owns the foreground, SetForegroundWindow is refused.
+    # A synthetic Alt keypress marks us as "user input", which is the documented
+    # condition under which Windows lets the call through.
+    VK_MENU, KEYEVENTF_KEYUP = 0x12, 0x0002
+    user32.keybd_event(VK_MENU, 0, 0, 0)
+    try:
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+    if int(user32.GetForegroundWindow()) == hwnd:
+        return
+    # Last resort: share the foreground thread's input queue and try again.
+    foreground = user32.GetForegroundWindow()
+    fg_thread = user32.GetWindowThreadProcessId(foreground, None) if foreground else 0
+    current = ctypes.windll.kernel32.GetCurrentThreadId()
+    if fg_thread and fg_thread != current:
+        user32.AttachThreadInput(current, fg_thread, True)
+        try:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            user32.AttachThreadInput(current, fg_thread, False)
+
+
+def _raise_opened_window(
+    before: set[int], needles: tuple[str, ...], timeout: float = 3.0
+) -> None:
+    """Bring the window that an external open just created to the front.
+
+    Windows hands the foreground to the process that was already active (the
+    browser), so `startfile` and `explorer /select` routinely open *behind* it
+    and the person has to alt-tab to see what they asked for. A new top-level
+    handle is the reliable signal; a viewer that reuses its window is matched
+    by the document or folder name in the title after a short grace period.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return
+    user32 = ctypes.windll.user32
+    own = os.getpid()
+    needles = tuple(n.lower() for n in needles if len(n) >= 3)
+    started = time.time()
+    while time.time() - started < timeout:
+        fresh = 0
+        named = 0
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def scan(hwnd, _):
+            nonlocal fresh, named
+            handle = int(hwnd)
+            if handle in before or not user32.IsWindowVisible(hwnd):
+                return True
+            # Popups, tooltips and IME hosts are top-level enough to appear in
+            # EnumWindows while a window is being built; only a root owner that
+            # can actually take focus is the window the person meant.
+            if int(user32.GetAncestor(hwnd, 2)) != handle:  # GA_ROOT
+                return True
+            style = user32.GetWindowLongW(hwnd, -20) & 0xFFFFFFFF  # GWL_EXSTYLE
+            if style & (0x00000080 | 0x08000000):  # TOOLWINDOW | NOACTIVATE
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if int(pid.value) == own:
+                return True
+            if handle not in before:
+                fresh = handle
+                return False
+            if not needles:
+                return True
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buffer, length + 1)
+            title = buffer.value.lower()
+            if any(needle in title for needle in needles):
+                named = handle
+                return False
+            return True
+
+        user32.EnumWindows(scan, 0)
+        target = named or fresh
+        if target and (fresh or time.time() - started > 1.2):
+            _activate_window(target)
+            return
+        time.sleep(0.08)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -328,34 +502,229 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"saved": self._saved()})
         elif route == "/api/aliases":
             self._json({"aliases": self._aliases()})
+        elif route == "/api/types":
+            self._types()
+        elif route == "/api/tags":
+            self._tags()
+        elif route == "/api/collections":
+            self._collections()
+        elif route == "/api/hotkeys":
+            self._hotkeys()
+        elif route == "/api/audit":
+            self._audit()
+        elif route == "/api/export":
+            self._export(query)
         elif route == "/api/symbols":
             self._symbols(query)
         elif route in ("/api/open", "/api/reveal"):
             self._open_file(query, reveal=route.endswith("reveal"))
         elif route == "/api/duplicates":
-            self._duplicates()
+            self._duplicates(query)
         else:
             self._error("unknown route", 404)
 
-    def _duplicates(self) -> None:
-        """Exact copies from the index: same name, size and bytes.
+    def _duplicates(self, query: dict | None = None) -> None:
+        """Duplicate report, in two modes.
 
-        The perceptual hash is not used here; sharing a phash means two screens
-        look alike, not that they are copies. The report is meant for files a
-        person can safely delete.
+        `mode=docs` is the fuzzy report: documents whose text is near-identical
+        but whose bytes are not. The default stays exact copies of screenshots,
+        because the perceptual hash groups things that merely look alike, which
+        is not a set a person should delete from.
         """
+        mode = ((query or {}).get("mode") or ["images"])[0]
         store = self._store()
         try:
-            self._json({"groups": store.duplicate_images()})
+            if mode == "docs":
+                self._json({"mode": "docs", "groups": store.duplicate_documents()})
+            else:
+                self._json({"mode": "images", "groups": store.duplicate_images()})
         finally:
             store.close()
 
-    def _search(self, query: dict) -> None:
+    # ------------------------------------------------------- tags / collections
+
+    def _tags(self) -> None:
+        store = self._store()
+        try:
+            self._json({"tags": store.all_tags()})
+        finally:
+            store.close()
+
+    def _collections(self) -> None:
+        store = self._store()
+        try:
+            self._json({"collections": store.collections()})
+        finally:
+            store.close()
+
+    def _set_tags(self, payload: dict) -> None:
+        tag = " ".join(str(payload.get("tag") or "").split())[:64]
+        if not tag:
+            self._error("tag required")
+            return
+        raw = payload.get("ids")
+        if raw is None and payload.get("id") is not None:
+            raw = [payload["id"]]
+        try:
+            ids = sorted({int(item) for item in (raw or [])})
+        except (TypeError, ValueError):
+            self._error("ids must be integers")
+            return
+        if not ids:
+            self._error("ids required")
+            return
+        on = payload.get("on", True) is not False
+        count = self._write(lambda store: store.set_tags(ids, tag, bool(on)))
+        self._json({"tag": tag, "on": bool(on), "changed": count, "ids": ids})
+
+    def _set_collections(self, payload: dict) -> None:
+        action = str(payload.get("action") or "create")
+        try:
+            raw_ids = payload.get("ids") or []
+            ids = sorted({int(item) for item in raw_ids})
+        except (TypeError, ValueError):
+            self._error("ids must be integers")
+            return
+
+        if action == "create":
+            name = " ".join(str(payload.get("name") or "").split())[:96]
+            if not name:
+                self._error("name required")
+                return
+            created = self._write(lambda store: store.create_collection(name))
+            self._json({"id": created, "name": name, "collections": self._collection_list()})
+            return
+
+        try:
+            collection_id = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            collection_id = 0
+        if not collection_id:
+            self._error("id required")
+            return
+
+        if action == "rename":
+            name = " ".join(str(payload.get("name") or "").split())[:96]
+            if not name:
+                self._error("name required")
+                return
+            self._write(lambda store: store.rename_collection(collection_id, name))
+        elif action == "drop":
+            self._write(lambda store: store.drop_collection(collection_id))
+        elif action == "add":
+            if not ids:
+                self._error("ids required")
+                return
+            self._write(lambda store: store.add_to_collection(collection_id, ids))
+        elif action == "remove":
+            if not ids:
+                self._error("ids required")
+                return
+            self._write(lambda store: store.remove_from_collection(collection_id, ids))
+        else:
+            self._error("unknown action")
+            return
+        self._json({"collections": self._collection_list()})
+
+    def _collection_list(self) -> list[dict]:
+        store = self._store()
+        try:
+            return store.collections()
+        finally:
+            store.close()
+
+    # --------------------------------------------------------------- hotkeys
+
+    def _hotkeys(self) -> None:
+        self._json({
+            "hotkeys": read_hotkeys(self.config.home),
+            "defaults": HOTKEY_DEFAULTS,
+            "conflicts": hotkey_conflicts(read_hotkeys(self.config.home)),
+        })
+
+    def _set_hotkeys(self, payload: dict) -> None:
+        hotkeys = save_hotkeys(self.config.home, coerce_hotkeys(payload.get("hotkeys")))
+        self._json({
+            "hotkeys": hotkeys,
+            "defaults": HOTKEY_DEFAULTS,
+            "conflicts": hotkey_conflicts(hotkeys),
+        })
+
+    # ----------------------------------------------------------------- audit
+
+    def _audit(self) -> None:
+        """What the index knows and where it lives.
+
+        This is the honest half of "index encryption": it names the file, its
+        size, the personal tables and how many privacy-category files are still
+        inside, so a user can see what a backup or a stolen laptop would expose.
+        Encryption itself would need SQLCipher (a native dependency), so the
+        report states plainly that the file is not encrypted rather than
+        pretending a checkbox changed that.
+        """
+        store = self._store()
+        try:
+            stats = store.stats()
+            tags = store.all_tags(limit=1000)
+            collections = store.collections()
+            oldest = store.conn.execute("SELECT MIN(mtime) AS v FROM files").fetchone()
+            newest = store.conn.execute("SELECT MAX(mtime) AS v FROM files").fetchone()
+            sensitive = indexed_sensitive(
+                store, limit=10000, categories=self.config.privacy_categories
+            )
+            personal = {
+                "pins": len(store.pinned_ids()),
+                "saved": len(store.saved_searches(limit=10000)),
+                "aliases": len(store.aliases()),
+                "tags": len(tags),
+                "collections": len(collections),
+            }
+        finally:
+            store.close()
+
+        db = Path(self.db_path)
+        related = {}
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(str(db) + suffix)
+            related[suffix or "main"] = candidate.stat().st_size if candidate.exists() else 0
+
+        self._json({
+            "db": str(db),
+            "encrypted": False,
+            "sizes": related,
+            "total_bytes": sum(related.values()),
+            "files": stats.get("files", 0),
+            "chunks": stats.get("chunks", 0),
+            "images": stats.get("images", 0),
+            "vectors": stats.get("vectors", 0),
+            "oldest": float(oldest["v"] or 0.0) if oldest else 0.0,
+            "newest": float(newest["v"] or 0.0) if newest else 0.0,
+            "personal": personal,
+            "sensitive": {
+                "count": len(sensitive),
+                "categories": sorted(self.config.privacy_categories),
+                "enabled": bool(self.config.privacy),
+            },
+            "files_on_disk": {
+                "types": str(self.config.home / "types.json"),
+                "hotkeys": str(self.config.home / "hotkeys.json"),
+                "privacy": str(self.config.home / "privacy.json"),
+                "onboarding": str(self.config.home / "onboarding.json"),
+            },
+        })
+
+    def _run_search(self, query: dict, limit: int | None = None, visual: bool = True) -> dict:
+        """Parse the request and run one page.
+
+        Both the window and the export button go through here, so an exported
+        CSV lists exactly the rows the screen showed and applies exactly the same
+        filters. The store goes back to the read pool before returning; only the
+        plain page and the tags map escape.
+        """
         text = (query.get("q") or [""])[0].strip()
         if not text:
-            self._json({"query": "", "ms": 0, "hits": [], "images": []})
-            return
-        limit = min(int((query.get("limit") or ["12"])[0]), 50)
+            return {"text": "", "page": None, "images": [], "tags": {}, "elapsed": 0.0}
+        page_limit = limit if limit is not None else min(int((query.get("limit") or ["12"])[0]), 50)
         offset = max(int((query.get("offset") or ["0"])[0]), 0)
         kind_key = (query.get("kind") or [""])[0]
         folder = (query.get("folder") or [""])[0] or None
@@ -367,6 +736,9 @@ class Handler(BaseHTTPRequestHandler):
         kinds = KIND_MAP.get(kind_key)
         if kinds:
             parsed.kinds |= set(kinds)
+        masks = self._custom_masks(kind_key)
+        if masks:
+            parsed.masks = list(masks)
         if folder:
             parsed.in_paths.append(folder)
         since_ts = None
@@ -379,7 +751,7 @@ class Handler(BaseHTTPRequestHandler):
             parsed.modified = Range(since_ts, None)
 
         embedder = get_embedder("auto", self.config.model_dir)
-        store = self._store()
+        store = READ_STORES.acquire(self._store)
         started = time.perf_counter()
         try:
             # The dictionary is expanded before parsing, so `cv` reaches the
@@ -389,31 +761,51 @@ class Handler(BaseHTTPRequestHandler):
                 parsed = understand(expanded)
                 if kinds:
                     parsed.kinds |= set(kinds)
+                if masks:
+                    parsed.masks = list(masks)
                 if folder:
                     parsed.in_paths.append(folder)
                 if since_ts is not None:
                     parsed.modified = Range(since_ts, None)
             page = search_page(
-                store, embedder, expanded, limit=limit, offset=offset, sort=sort,
+                store, embedder, expanded, limit=page_limit, offset=offset, sort=sort,
                 parsed=parsed, usage=store.usage_map(), applied=applied,
                 doc_dates=docdate,
             )
+            tags = store.tags_for(hit.file_id for hit in page.hits)
             # Visual text search only makes sense when the query still has free
             # text; a pure filter query would send nonsense to the image model.
-            visual = get_visual_embedder(self.config.model_dir)
-            images = (
-                visual_text_search(store, visual, parsed.text or text, limit=8)
-                if getattr(visual, "supports_text", False) and parsed.text
-                else []
-            )
+            images = []
+            if visual:
+                visual_embedder = get_visual_embedder(self.config.model_dir)
+                images = (
+                    visual_text_search(store, visual_embedder, parsed.text or text, limit=8)
+                    if getattr(visual_embedder, "supports_text", False) and parsed.text
+                    else []
+                )
         finally:
-            store.close()
+            READ_STORES.release(store)
         elapsed = (time.perf_counter() - started) * 1000
+        return {
+            "text": text,
+            "page": page,
+            "images": images,
+            "tags": tags,
+            "elapsed": elapsed,
+        }
 
+    def _search(self, query: dict) -> None:
+        result = self._run_search(query)
+        text = result["text"]
+        if not text:
+            self._json({"query": "", "ms": 0, "hits": [], "images": []})
+            return
+        page = result["page"]
+        tags = result["tags"]
         self._json(
             {
                 "query": text,
-                "ms": round(elapsed, 1),
+                "ms": round(result["elapsed"], 1),
                 "total": page.total,
                 "approx": page.approx,
                 "offset": page.offset,
@@ -444,6 +836,9 @@ class Handler(BaseHTTPRequestHandler):
                         "group_members": list(hit.group_members),
                         "pinned": hit.pinned,
                         "symbol": hit.symbol,
+                        "opens": hit.opens,
+                        "last_open": hit.last_open,
+                        "tags": tags.get(hit.file_id, []),
                         "thumb": f"/api/thumb?id={hit.file_id}" if hit.is_image else None,
                     }
                     for hit in page.hits
@@ -456,10 +851,86 @@ class Handler(BaseHTTPRequestHandler):
                         "score": image.score,
                         "thumb": f"/api/thumb?id={image.file_id}",
                     }
-                    for image in images
+                    for image in result["images"]
                 ],
             }
         )
+
+    def _export(self, query: dict) -> None:
+        """The current result page as a portable file.
+
+        CSV is the integration format (Excel, Sheets, a script); JSON keeps the
+        typed fields for a tool that wants to consume AutoFind rather than read
+        a table. The rows come from `_run_search`, so an export can never drift
+        from what the screen shows.
+        """
+        fmt = ((query.get("format") or ["csv"])[0] or "csv").lower()
+        if fmt not in ("csv", "json"):
+            fmt = "csv"
+        result = self._run_search(query, limit=5000, visual=False)
+        page = result["page"]
+        if page is None:
+            self._error("query required")
+            return
+        tags = result["tags"]
+        rows = page.hits
+
+        if fmt == "json":
+            payload = {
+                "query": result["text"],
+                "total": page.total,
+                "exported": len(rows),
+                "hits": [
+                    {
+                        "file_id": hit.file_id,
+                        "name": hit.name,
+                        "path": hit.path,
+                        "kind": hit.kind,
+                        "size": hit.size,
+                        "mtime": hit.mtime,
+                        "score": round(float(hit.score), 6),
+                        "opens": hit.opens,
+                        "tags": tags.get(hit.file_id, []),
+                    }
+                    for hit in rows
+                ],
+            }
+            body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            content_type = "application/json; charset=utf-8"
+            filename = "autofind-export.json"
+        else:
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow(
+                ["name", "path", "kind", "size", "modified", "score", "opens", "tags"]
+            )
+            for hit in rows:
+                writer.writerow([
+                    hit.name,
+                    hit.path,
+                    hit.kind,
+                    hit.size,
+                    time.strftime("%Y-%m-%d %H:%M", time.localtime(hit.mtime)),
+                    round(float(hit.score), 6),
+                    hit.opens,
+                    "; ".join(tags.get(hit.file_id, [])),
+                ])
+            # The BOM is what makes Excel open a UTF-8 CSV as UTF-8 instead of
+            # mangling every Cyrillic file name.
+            body = buffer.getvalue().encode("utf-8-sig")
+            content_type = "text/csv; charset=utf-8"
+            filename = "autofind-export.csv"
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _stats(self) -> None:
         store = self._store()
@@ -704,6 +1175,18 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
         return [{"alias": alias, "expand": expand} for alias, expand in sorted(table.items())]
 
+    def _types(self) -> None:
+        self._json(
+            {"types": [item.as_dict() for item in read_types(self.config.home)]}
+        )
+
+    def _custom_masks(self, kind_key: str) -> list[str]:
+        """The filename masks behind a `custom:<id>` tab."""
+        if not kind_key.startswith("custom:"):
+            return []
+        found = find_type(read_types(self.config.home), kind_key.split(":", 1)[1])
+        return list(found.masks) if found else []
+
     def _symbol_count(self) -> int:
         store = self._store()
         try:
@@ -754,20 +1237,37 @@ class Handler(BaseHTTPRequestHandler):
     def _pin(self, payload: dict) -> None:
         from .personal import pin
 
-        file_id = int(payload.get("id") or 0)
-        if not file_id:
+        raw = payload.get("ids")
+        if raw is None and payload.get("id") is not None:
+            raw = [payload["id"]]
+        try:
+            ids = sorted({int(item) for item in (raw or [])})
+        except (TypeError, ValueError):
+            self._error("ids must be integers")
+            return
+        if not ids:
             self._error("id required")
             return
-        # No `pinned` key means toggle, which is what the star does.
+        # No `pinned` key means toggle, which is what the star does. In a bulk
+        # action a mixed selection is pinned rather than flipped per file: a
+        # star that unpins half the rows is not an action a person can predict.
         wanted = payload.get("pinned")
         if wanted is None:
             store = self._store()
             try:
-                wanted = file_id not in store.pinned_ids()
+                pinned = store.pinned_ids()
             finally:
                 store.close()
-        state = self._write(lambda store: pin(store, file_id, bool(wanted)))
-        self._json({"id": file_id, "pinned": state})
+            wanted = any(file_id not in pinned for file_id in ids)
+        states = self._write(
+            lambda store: {file_id: pin(store, file_id, bool(wanted)) for file_id in ids}
+        )
+        self._json({
+            "id": ids[0],
+            "ids": ids,
+            "pinned": bool(wanted),
+            "states": states,
+        })
 
     def _save_search(self, payload: dict) -> None:
         from .personal import save
@@ -806,6 +1306,16 @@ class Handler(BaseHTTPRequestHandler):
             self._error("alias required")
             return
         self._json({"dropped": self._write(lambda store: forget(store, alias))})
+
+    def _set_types(self, payload: dict) -> None:
+        """Replace the whole catalog, the way the settings editor thinks of it."""
+        try:
+            catalog = coerce_types(payload.get("types"))
+        except ValueError as exc:
+            self._error(str(exc))
+            return
+        save_types(self.config.home, catalog)
+        self._json({"types": [item.as_dict() for item in catalog]})
 
     def _thumb(self, query: dict) -> None:
         file_id = int((query.get("id") or ["0"])[0])
@@ -925,17 +1435,14 @@ class Handler(BaseHTTPRequestHandler):
             if row is None:
                 self._error("unknown file", 404)
                 return
-            chunks = store.conn.execute(
-                "SELECT text FROM chunks WHERE file_id = ? ORDER BY ord LIMIT 4", (file_id,)
-            ).fetchall()
             image = store.image_by_file_id(file_id) if row["kind"] == "image" else None
             usage = store.conn.execute(
                 "SELECT opens FROM usage WHERE file_id = ?", (file_id,)
             ).fetchone()
+            text = store.file_text(file_id)[:limit]
         finally:
             store.close()
 
-        text = "\n".join(chunk["text"] for chunk in chunks)[:limit]
         self._json(
             {
                 "file_id": file_id,
@@ -973,6 +1480,11 @@ class Handler(BaseHTTPRequestHandler):
         if not Path(path).exists():
             self._error("file is gone from disk", 410)
             return
+        # Snapshot the windows before the spawn: the one that appears next is the
+        # one to bring forward. This is why the open endpoint knows the HWND at
+        # all — Windows gives the foreground to the browser it already had.
+        before = _window_handles()
+        parent = Path(path).parent
         try:
             if sys.platform == "win32":
                 if reveal:
@@ -986,6 +1498,13 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             self._error(f"cannot open: {exc}", 500)
             return
+        if before is not None:
+            threading.Thread(
+                target=_raise_opened_window,
+                args=(before, (Path(path).stem, parent.name)),
+                daemon=True,
+                name="af-focus",
+            ).start()
         # Frecency is fed by real opens only, so "show in folder" must not count:
         # a file you reveal to delete it is not a file you care about.
         if not reveal:
@@ -1053,6 +1572,14 @@ class Handler(BaseHTTPRequestHandler):
             self._set_alias(payload)
         elif parsed.path == "/api/alias/drop":
             self._drop_alias(payload)
+        elif parsed.path == "/api/types":
+            self._set_types(payload)
+        elif parsed.path == "/api/tag":
+            self._set_tags(payload)
+        elif parsed.path == "/api/collections":
+            self._set_collections(payload)
+        elif parsed.path == "/api/hotkeys":
+            self._set_hotkeys(payload)
         elif parsed.path == "/api/background":
             self._set_background(payload)
         elif parsed.path == "/api/onboarding/done":
@@ -1313,6 +1840,7 @@ def serve(
     except KeyboardInterrupt:
         print("\nstopping")
     finally:
+        READ_STORES.close_all()
         server.server_close()
         if MCP is not None:
             MCP.close()

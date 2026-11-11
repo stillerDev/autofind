@@ -260,9 +260,15 @@ class TwoLayerTests(unittest.TestCase):
 
 
 class StoreLevelTests(unittest.TestCase):
-    """The same machinery through the API an index run actually uses."""
+    """The v9 storage contract through the API an index run actually uses.
 
-    SDIM = 384  # the Store's own default dim; the pack must agree with it
+    Text lives once per *content* (a second copy of a document costs one row in
+    `files`), a chunk is a span into that text, and a document has one binary
+    vector. The old pack/delta machinery is covered by `TwoLayerTests`, which
+    still drives `core.vectors` directly for the image side.
+    """
+
+    SDIM = 384  # the Store's own default dim
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -277,52 +283,120 @@ class StoreLevelTests(unittest.TestCase):
 
         return Store(self.db)
 
-    def test_rebuild_pack_is_incremental_for_new_files(self):
+    def test_identical_documents_share_one_stored_text(self):
         store = self._store()
         try:
+            text = "one two three"
             a = store.upsert_file("C:\\a.txt", 10, 1.0, "sha-a", "doc")
-            store.replace_chunks(a, ["one", "two"], np.eye(2, self.SDIM, dtype=np.float32))
+            store.replace_chunks(a, text, None, np.eye(1, self.SDIM, 0, dtype=np.float32))
             b = store.upsert_file("C:\\b.txt", 10, 1.0, "sha-b", "doc")
-            store.replace_chunks(b, ["three"], np.eye(1, self.SDIM, 2, dtype=np.float32))
+            store.replace_chunks(b, text, None, np.eye(1, self.SDIM, 0, dtype=np.float32))
             store.commit()
-            vecstore.PACKS.build(self.db, store.conn, store.dim)
-            before = (vecstore.pack_path(self.db).stat().st_mtime_ns,
-                      vecstore.pack_path(self.db).stat().st_size)
 
-            c = store.upsert_file("C:\\c.txt", 10, 1.0, "sha-c", "doc")
-            store.replace_chunks(c, ["four", "five"], np.eye(2, self.SDIM, 3, dtype=np.float32))
+            self.assertEqual(
+                store.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0], 1,
+                "the same text must be stored once, not once per file",
+            )
+            self.assertEqual(store.file_text(a), text)
+            self.assertEqual(store.file_text(b), text)
+
+            # Dropping one copy keeps the blob for the other; dropping the last
+            # one releases it.
+            store.replace_chunks(a, "", None, None)
             store.commit()
-            store.rebuild_pack()
-
-            after = (vecstore.pack_path(self.db).stat().st_mtime_ns,
-                     vecstore.pack_path(self.db).stat().st_size)
-            self.assertEqual(after, before, "a new file must not rewrite the base pack")
-            self.assertEqual(store.pack().count, 5)
-            store.release_pack()
-
-            # Re-indexing a file deletes its old chunks: the epoch moves and
-            # the rebuild is full again — 6 served rows (5 - 2 deleted + 3
-            # re-written). `count` would dedup B's vector, which repeats one
-            # of A's, so the assertion is on orig_count.
-            store.replace_chunks(a, ["one-v2", "two-v2", "three-v2"],
-                                 np.eye(3, self.SDIM, dtype=np.float32))
+            self.assertEqual(
+                store.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0], 1
+            )
+            store.replace_chunks(b, "", None, None)
             store.commit()
-            store.rebuild_pack()
-            self.assertEqual(store.pack().orig_count, 6)
-            store.release_pack()
+            self.assertEqual(
+                store.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0], 0
+            )
         finally:
             store.close()
 
-    def test_blob_fallback_and_backends_still_answer(self):
+    def test_chunks_are_spans_into_the_stored_text(self):
+        store = self._store()
+        try:
+            text = "alpha beta gamma delta"
+            file_id = store.upsert_file("C:\\a.txt", 10, 1.0, "sha-a", "doc")
+            spans = [(0, 10), (11, 16), (17, 22)]
+            written = store.replace_chunks(
+                file_id, text, spans, np.eye(1, self.SDIM, 0, dtype=np.float32)
+            )
+            store.commit()
+
+            self.assertEqual(written, 3)
+            rows = store.conn.execute(
+                "SELECT ord, start, len FROM chunks WHERE file_id = ? ORDER BY ord", (file_id,)
+            ).fetchall()
+            self.assertEqual([(r["ord"], r["start"], r["len"]) for r in rows],
+                             [(0, 0, 10), (1, 11, 5), (2, 17, 5)])
+            self.assertEqual(store.chunk_heads(file_id, limit=2), "alpha beta\ngamma")
+        finally:
+            store.close()
+
+    def test_reindex_replaces_the_file_vector(self):
         store = self._store()
         try:
             file_id = store.upsert_file("C:\\a.txt", 10, 1.0, "x", "doc")
-            store.replace_chunks(file_id, ["only"], np.eye(1, self.SDIM, 0, dtype=np.float32))
+            store.replace_chunks(file_id, ["only"], None,
+                                 np.eye(1, self.SDIM, 0, dtype=np.float32))
             store.commit()
-            store.rebuild_pack()
             hits = store.knn(np.eye(1, self.SDIM, 0, dtype=np.float32)[0], 3)
-            self.assertEqual(len(hits), 1)
+            self.assertEqual([hit[0] for hit in hits], [file_id])
             self.assertAlmostEqual(hits[0][1], 1.0, places=4)
+
+            store.replace_chunks(file_id, ["other"], None,
+                                 np.eye(1, self.SDIM, 1, dtype=np.float32))
+            store.commit()
+            self.assertEqual(
+                store.conn.execute("SELECT COUNT(*) FROM file_vectors").fetchone()[0], 1
+            )
+            hits = store.knn(np.eye(1, self.SDIM, 0, dtype=np.float32)[0], 3)
+            self.assertEqual([hit[0] for hit in hits], [file_id])
+            # Anti-parallel: the old row was replaced, not averaged with the new.
+            self.assertAlmostEqual(hits[0][1], -1.0, places=4)
+        finally:
+            store.close()
+
+    def test_long_document_spans_cross_block_boundaries(self):
+        store = self._store()
+        try:
+            # 30 000 characters is two 16 384-char blocks, so the middle span
+            # starts in the first block and the last one lives in the second.
+            text = "".join(f"word{n} " for n in range(4000))[:30000]
+            spans = [(0, 100), (20000, 20100), (29900, 30000)]
+            file_id = store.upsert_file("C:\\long.txt", 10, 1.0, "sha-long", "doc")
+            store.replace_chunks(file_id, text, spans, None)
+            store.commit()
+
+            self.assertEqual(store.file_text(file_id), text)
+            rows = store.conn.execute(
+                "SELECT id, start, len FROM chunks WHERE file_id = ? ORDER BY ord", (file_id,)
+            ).fetchall()
+            slices = store.chunk_rows([int(row["id"]) for row in rows])
+            for row in rows:
+                start = int(row["start"])
+                self.assertEqual(
+                    slices[int(row["id"])]["text"],
+                    text[start:start + int(row["len"])],
+                )
+        finally:
+            store.close()
+
+    def test_regex_and_snippets_read_the_span_not_a_copy(self):
+        store = self._store()
+        try:
+            file_id = store.upsert_file("C:\\a.txt", 10, 1.0, "x", "doc")
+            store.replace_chunks(file_id, "first sentence. second sentence.", None, None)
+            store.commit()
+
+            rows = store.regex_chunks("second", 10)
+            self.assertEqual([row["text"] for row in rows], ["first sentence. second sentence."])
+            chunk = next(iter(store.chunk_rows([rows[0]["id"]]).values()))
+            self.assertIn("second", chunk["text"])
+            self.assertEqual(chunk["file_id"], file_id)
         finally:
             store.close()
 

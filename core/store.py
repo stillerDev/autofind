@@ -1,25 +1,55 @@
-"""SQLite storage: metadata, FTS5 full text, image records and vector blobs.
+"""SQLite storage: metadata, FTS5 full text, image records and file vectors.
 
-Everything lives in one file in WAL mode. Chunk vectors live in a sqlite-vec
-`vec0` virtual table when the extension is present, so the KNN scan happens
-inside SQLite and nothing is materialised in the process; without it they fall
-back to raw float32 blobs searched by brute force in numpy (see `core.vectors`
-for why that distinction is recorded in `meta`).
+Everything lives in one file in WAL mode. Since schema v9 the text of a
+document is stored **once** — a zlib-compressed blob in `file_texts`, shared by
+every file with the same content — and a chunk is only a span into it
+`(file_id, ord, start, len)`. That removed the second copy of the corpus that
+the chunk table used to carry (~322 MB here) and let the full-text index be
+contentless, so it stores postings and nothing else.
+
+Vectors are one binary row per file (`file_vectors`, 48 bytes at 384 dims) and
+are searched by brute force in numpy: 14 000 rows is a 5 MB matvec, cheaper
+than any index would be. See `core.filevec`.
 """
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import sqlite3
 import threading
 import time
+import zlib
+from bisect import bisect_right
+from itertools import groupby
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Iterator, Sequence
 
 import numpy as np
 
 from . import vectors as vecstore
-from .cjk import cjk_bigrams, has_cjk
+from . import bm25 as bm25mod
+from . import filevec
+from .chunker import chunk_spans, normalize
+
+_BM25: dict = {"key": None, "index": None, "building": None}
+_BM25_LOCK = threading.Lock()
+
+# The in-RAM BM25 is a trade, not a free win: on a 298k-chunk index it took
+# 35-37 s to build and ~1.5 GB, and its query time was a wash against FTS5
+# (faster on rare multi-word queries, slower on common single words) while the
+# build thread stole the GIL from the first query. Long-lived surfaces (the app
+# server, the MCP server) keep it; one-shot CLI searches pass `ram_bm25=False`
+# so a single query never starts a 35 s build the process will not outlive.
+# Set AUTOFIND_RAM_BM25=0 to turn it off everywhere.
+_RAM_BM25_ENABLED = os.environ.get("AUTOFIND_RAM_BM25", "0").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+from .cjk import cjk_bigrams
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -31,23 +61,30 @@ CREATE TABLE IF NOT EXISTS files (
     kind      TEXT NOT NULL,
     indexed_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS file_texts (
+    hash       TEXT PRIMARY KEY,
+    raw_len    INTEGER NOT NULL,
+    block_size INTEGER NOT NULL DEFAULT 0,
+    offsets    BLOB NOT NULL DEFAULT x'',
+    data       BLOB NOT NULL
+);
+-- A chunk is a span into its file's text, never a copy of it. The text lives
+-- once per *content*: two byte-identical documents share one `file_texts` row.
 CREATE TABLE IF NOT EXISTS chunks (
     id      INTEGER PRIMARY KEY,
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     ord     INTEGER NOT NULL,
-    text    TEXT NOT NULL
+    start   INTEGER NOT NULL,
+    len     INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
--- External content (`content='chunks'`): the FTS table stores only the
--- inverted index and reads the text back from `chunks` — the old self-content
--- table kept a second copy of the whole corpus (~240 MB here). `prefix='2 3'
--- pre-builds the prefix indexes our `"term"*` queries hit on every keystroke;
--- without it FTS5 scans the whole vocabulary for each one.
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
-    USING fts5(text, prefix='2 3', tokenize="unicode61 remove_diacritics 2",
-               content='chunks', content_rowid='id');
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_cjk
-    USING fts5(text, tokenize="unicode61 remove_diacritics 2");
+-- One vector per file, one bit per dimension: 48 bytes at 384 dims. The sign
+-- pattern is what the KNN scan multiplies against a float query vector.
+CREATE TABLE IF NOT EXISTS file_vectors (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    dim     INTEGER NOT NULL,
+    bits    BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS images (
     id         INTEGER PRIMARY KEY,
     path       TEXT UNIQUE NOT NULL,
@@ -109,6 +146,31 @@ CREATE TABLE IF NOT EXISTS aliases (
     alias  TEXT PRIMARY KEY,
     expand TEXT NOT NULL
 );
+-- Tags are the user's own words about a file ("invoice", "tax 2025"). Any
+-- number per file; the filters are an AND so two tags narrow, not widen.
+CREATE TABLE IF NOT EXISTS tags (
+    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    tag      TEXT NOT NULL,
+    added_at REAL NOT NULL,
+    PRIMARY KEY (file_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
+-- A collection is a named set of files, like a playlist: "Project X", "To
+-- read". Membership is many-to-many; the order is the moment a file joined.
+CREATE TABLE IF NOT EXISTS collections (
+    id      INTEGER PRIMARY KEY,
+    name    TEXT NOT NULL UNIQUE,
+    created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS collection_files (
+    collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    file_id       INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    added_at      REAL NOT NULL,
+    PRIMARY KEY (collection_id, file_id)
+);
+CREATE INDEX IF NOT EXISTS idx_collection_files_file ON collection_files(file_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_name
+    ON collections(name COLLATE NOCASE);
 -- Code definitions, extracted at index time. kensaku parses with tree-sitter
 -- and finds functions, classes and structs; this is the same feature without a
 -- parser dependency: a per-language pattern table that only fires on lines that
@@ -137,6 +199,14 @@ FILE_COLUMNS = {
     # NULL until a re-index reads one. mtime is when the file landed on disk.
     "doc_date": "TEXT",
 }
+
+# The v9 pointer from a file to its (shared, compressed) text. Kept out of
+# FILE_COLUMNS so adding it does not trigger the name/char_mask backfill.
+TEXT_COLUMNS = {"text_hash": "TEXT"}
+# Block compression metadata for `file_texts` (see `_pack_text`); older rows
+# have `block_size = 0` and are repacked once on open.
+TEXT_BLOCK_COLUMNS = {"block_size": "INTEGER NOT NULL DEFAULT 0",
+                      "offsets": "BLOB NOT NULL DEFAULT x''"}
 
 IMAGE_COLUMNS = {
     "file_id": "INTEGER",
@@ -188,6 +258,46 @@ def basename(path: str) -> str:
     return path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
 
 
+def _best_copy(items: Sequence[dict], prefer_size: bool = False) -> dict:
+    """The copy to keep in a duplicate group.
+
+    A path in a temp folder or a download folder is the copy that was made by
+    accident; a shallow path is easier to find; the newest copy is the one that
+    was edited last. For documents the largest copy comes first because a
+    truncated export is often the smaller twin.
+    """
+
+    def rank(item: dict):
+        path = str(item.get("path") or "").replace("\\", "/").lower()
+        accidental = sum(
+            2 for marker in ("/temp/", "/tmp/", "/appdata/", "/downloads/", "$recycle.bin")
+            if marker in path
+        )
+        size = -int(item.get("size") or 0) if prefer_size else 0
+        return (accidental, size, path.count("/"), -float(item.get("mtime") or 0.0))
+
+    return min(items, key=rank)
+
+
+def _simhash(text: str) -> int:
+    """64-bit SimHash over three-word shingles; 0 when there is too little text."""
+    words = re.findall(r"\w+", text.lower())
+    if len(words) < 12:
+        return 0
+    vector = [0] * 64
+    for index in range(len(words) - 2):
+        shingle = " ".join(words[index:index + 3])
+        digest = hashlib.blake2b(shingle.encode("utf-8"), digest_size=8).digest()
+        value = int.from_bytes(digest, "big")
+        for bit in range(64):
+            vector[bit] += 1 if (value >> bit) & 1 else -1
+    out = 0
+    for bit in range(64):
+        if vector[bit] > 0:
+            out |= 1 << bit
+    return out
+
+
 def normalize_path(path: str) -> str:
     """One spelling for a path: forward slashes, no trailing slash, casefolded.
 
@@ -221,7 +331,32 @@ def _regexp(pattern: str, value: str | None) -> bool:
         return False
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 9
+
+# Contentless FTS: `content=''` keeps postings only — no copy of the corpus in
+# the index. `contentless_delete=1` (SQLite 3.43+) makes `DELETE FROM` work,
+# which is what lets a re-index replace one file's rows without rebuilding the
+# whole table; older SQLite falls back to the `'delete'` command, which needs
+# the original text and is issued by `_drop_chunks_of`.
+#
+# No `prefix='2 3'`: the prefix index cost 126 MB of the 346 MB file here, and
+# measured *slower* for ordinary terms (more pages to read). Without it a
+# 3-character prefix still range-scans the term dictionary in ~10 ms, and the
+# in-RAM BM25 — which answers every query once it is built — expands prefixes
+# from its own vocabulary anyway.
+FTS_DELETE_SQL = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+    "text, tokenize=\"unicode61 remove_diacritics 2\", "
+    "content='', contentless_delete=1)"
+)
+FTS_PLAIN_SQL = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+    "text, tokenize=\"unicode61 remove_diacritics 2\", content='')"
+)
+# `fts5vocab` is a read-only view over the term dictionary: the typo channel
+# reads it instead of keeping a 3-gram table (which cost 778 MB here).
+VOCAB_SQL = "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vocab USING fts5vocab(chunks_fts, 'col')"
+
 
 
 def _meta(conn: sqlite3.Connection, key: str) -> str | None:
@@ -296,99 +431,414 @@ def _migrate_connection(conn: sqlite3.Connection) -> None:
             "UPDATE files SET name = ?, char_mask = ? WHERE id = ?",
             [(basename(row["path"]), char_mask(basename(row["path"])), row["id"]) for row in rows],
         )
-    _ensure_trigram(conn)
-    _backfill_aux_fts(conn)
-    if version < 6:
-        _rebuild_fts_external(conn)
+    _add_columns(conn, "files", TEXT_COLUMNS)
+    if _add_columns(conn, "file_texts", TEXT_BLOCK_COLUMNS):
+        pass  # the rows are repacked right below
+    _repack_texts(conn)
+    if version < 8:
+        _quantize_vector_rows(conn)
+    if version < 9:
+        _migrate_v9(conn)
+    _ensure_fts(conn)
+    if version < 9:
+        # The dropped tiers (778 MB of trigram, 17 MB of CJK, the chunk text
+        # column) only leave the file on a VACUUM. One pass, on the upgrade.
+        try:
+            conn.commit()
+            conn.execute("VACUUM")
+        except sqlite3.Error:
+            pass
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
-def _fts_is_external(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE name = ?", (table,)
-    ).fetchone()
-    return bool(row) and "content=" in (row["sql"] or "")
+def _quantize_vector_rows(conn: sqlite3.Connection, batch: int = 4000) -> None:
+    """Rewrite legacy float32 `vectors` blobs as i8+scale (schema v8).
 
-
-def _rebuild_fts_external(conn: sqlite3.Connection) -> None:
-    """Schema v6: FTS tables move to external content + prefix indexes.
-
-    The self-content tables carried a second copy of the whole corpus in the
-    database file (chunk text in `chunks`, the same text again in every FTS
-    table — ~480 MB here). Rebuilding means: drop, recreate with the new
-    definition, refill from `chunks` — one pass, no file re-extraction. The
-    CJK table keeps its own content: its text is the bigram transform, which
-    the external-content reader (that re-reads `chunks.text` verbatim) could
-    not reconstruct, and DELETE would silently unindex the wrong words.
+    The table is the source of truth every backend derives from; at float32 it
+    was the largest thing in the database. Rows are streamed, so the one-time
+    pass on a 300k-chunk index costs a couple of minutes, not a memory spike.
+    Already-quantized rows (length dim+4) are left alone, so the pass is a
+    no-op after the first run.
     """
-    from .cjk import cjk_bigrams
-
-    if not _fts_is_external(conn, "chunks_fts"):
-        conn.execute("DROP TABLE IF EXISTS chunks_fts")
-        conn.execute(
-            "CREATE VIRTUAL TABLE chunks_fts USING fts5(text, prefix='2 3', "
-            'tokenize="unicode61 remove_diacritics 2", '
-            "content='chunks', content_rowid='id')"
-        )
-        conn.execute("INSERT INTO chunks_fts(rowid, text) SELECT id, text FROM chunks")
-    if not _fts_is_external(conn, "chunks_tri"):
-        try:
-            conn.execute("DROP TABLE IF EXISTS chunks_tri")
-            conn.execute(
-                'CREATE VIRTUAL TABLE chunks_tri USING fts5(text, tokenize="trigram", '
-                "content='chunks', content_rowid='id')"
-            )
-            conn.execute("INSERT INTO chunks_tri(rowid, text) SELECT id, text FROM chunks")
-        except sqlite3.Error:
-            pass  # pre-3.34 SQLite: the tier is off, as before
-
-
-def _ensure_trigram(conn: sqlite3.Connection) -> None:
-    """The trigram tier needs SQLite 3.34+; without it the typo channel is
-    simply absent and search carries on with the other four. External content:
-    a self-content trigram table would store the whole corpus a second time."""
     try:
-        conn.execute(
-            'CREATE VIRTUAL TABLE IF NOT EXISTS chunks_tri USING fts5(text, tokenize="trigram", '
-            "content='chunks', content_rowid='id')"
+        pending: list[tuple[bytes, int]] = []
+        rewritten = 0
+        cursor = conn.execute(
+            "SELECT rowid AS rid, dim, vec FROM vectors"
         )
-        conn.execute("INSERT INTO meta(key, value) VALUES('trigram','1') "
-                     "ON CONFLICT(key) DO UPDATE SET value='1'")
+        while True:
+            rows = cursor.fetchmany(batch)
+            if not rows:
+                break
+            for row in rows:
+                dim = int(row["dim"] or 0)
+                blob = row["vec"]
+                if not dim or blob is None or len(blob) != dim * 4:
+                    continue  # already i8, empty, or an unknown shape
+                vector = np.frombuffer(blob, dtype=np.float32)
+                pending.append((vecstore.quantize_vector(vector), int(row["rid"])))
+            if pending:
+                conn.executemany(
+                    "UPDATE vectors SET vec = ? WHERE rowid = ?",
+                    pending,
+                )
+                rewritten += len(pending)
+                pending.clear()
+        conn.commit()
+        if rewritten:
+            # The freed pages stay inside the file until vacuumed; on the real
+            # 1.98 GB index this one-time pass returns about half a gigabyte.
+            conn.execute("VACUUM")
     except sqlite3.Error:
-        conn.execute("INSERT INTO meta(key, value) VALUES('trigram','0') "
-                     "ON CONFLICT(key) DO UPDATE SET value='0'")
+        conn.rollback()  # a read-only file keeps its float32 rows; readers cope
 
 
-def _backfill_aux_fts(conn: sqlite3.Connection) -> None:
-    """Populate chunks_cjk / chunks_tri from the chunk text, once.
+# A document's text is compressed in fixed-size *character* blocks rather than
+# one stream: a snippet then costs one 16 KB block instead of inflating the
+# whole file. 16 384 characters is ~48 KB of UTF-8 here and still well inside
+# zlib's 32 KB window, so the ratio is within a couple of percent of one stream.
+TEXT_BLOCK_CHARS = 16384
 
-    The CJK bigram table and the trigram tier index text that is already in
-    `chunks`, so an upgrade rebuilds them without re-extracting a single file.
-    The meta flag is the guard: FTS5 tables have no unique constraint, and a
-    half-run backfill retried from the top would double-count every row.
+
+def _pack_text(text: str) -> tuple[str, int, int, bytes, bytes]:
+    """(content hash, length, block size, block offsets, compressed blocks).
+
+    zlib, not zstd: it is in the standard library, so the frozen build and a
+    bare `python -m core` behave the same. Level 6 lands within a few percent
+    of zstd on prose and costs ~58 MB instead of the 322 MB of raw UTF-8.
     """
-    done = conn.execute("SELECT value FROM meta WHERE key='aux_fts_backfill'").fetchone()
-    if done is not None:
-        return
-    from .cjk import cjk_bigrams, has_cjk
-
-    cjk_rows: list[tuple[int, str]] = []
-    tri_rows: list[tuple[int, str]] = []
-    for row in conn.execute("SELECT id, text FROM chunks"):
-        chunk_id, text = int(row["id"]), row["text"]
-        transformed = cjk_bigrams(text)
-        if has_cjk(text):
-            cjk_rows.append((chunk_id, transformed))
-        tri_rows.append((chunk_id, text))
-    if cjk_rows:
-        conn.executemany("INSERT INTO chunks_cjk(rowid, text) VALUES(?,?)", cjk_rows)
-    trigram = conn.execute("SELECT value FROM meta WHERE key='trigram'").fetchone()
-    if trigram is not None and trigram["value"] == "1" and tri_rows:
-        conn.executemany("INSERT INTO chunks_tri(rowid, text) VALUES(?,?)", tri_rows)
-    conn.execute(
-        "INSERT INTO meta(key, value) VALUES('aux_fts_backfill','1') "
-        "ON CONFLICT(key) DO UPDATE SET value='1'"
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    offsets = [0]
+    blocks: list[bytes] = []
+    total = 0
+    for start in range(0, len(text), TEXT_BLOCK_CHARS):
+        block = zlib.compress(text[start:start + TEXT_BLOCK_CHARS].encode("utf-8"), 6)
+        blocks.append(block)
+        total += len(block)
+        offsets.append(total)
+    return (
+        digest,
+        len(text),
+        TEXT_BLOCK_CHARS,
+        np.asarray(offsets, dtype=np.int32).tobytes(),
+        b"".join(blocks),
     )
+
+
+def _unpack_text(blob: bytes | None) -> str:
+    """A whole document from a legacy single-stream blob."""
+    if not blob:
+        return ""
+    try:
+        return zlib.decompress(blob).decode("utf-8", "replace")
+    except zlib.error:
+        return ""
+
+
+def _row_slice(row: sqlite3.Row, start: int, end: int) -> str:
+    """`text[start:end]` from a `file_texts` row, inflating only its blocks.
+
+    Rows written before block compression (`block_size = 0`) fall back to
+    inflating the whole stream; `_repack_texts` upgrades them on first open.
+    """
+    data = row["data"]
+    block_size = int(row["block_size"] or 0)
+    offsets = row["offsets"]
+    if not data:
+        return ""
+    if start < 0:
+        start = 0
+    if end <= start:
+        return ""
+    if not block_size or not offsets:
+        return _unpack_text(data)[start:end]
+    table = np.frombuffer(offsets, dtype=np.int32)
+    if len(table) < 2:
+        return _unpack_text(data)[start:end]
+    first = start // block_size
+    last = min((end - 1) // block_size, len(table) - 2)
+    parts: list[str] = []
+    for index in range(first, last + 1):
+        lo, hi = int(table[index]), int(table[index + 1])
+        try:
+            block = zlib.decompress(data[lo:hi]).decode("utf-8", "replace")
+        except zlib.error:
+            return ""
+        base = index * block_size
+        a = max(start - base, 0)
+        b = min(end - base, len(block))
+        if b > a:
+            parts.append(block[a:b])
+    return "".join(parts)
+
+
+def _row_text(row: sqlite3.Row) -> str:
+    if not row["data"]:
+        return ""
+    if not int(row["block_size"] or 0):
+        return _unpack_text(row["data"])
+    return _row_slice(row, 0, int(row["raw_len"] or 0))
+
+
+def _text_row(conn: sqlite3.Connection, digest: str | None) -> sqlite3.Row | None:
+    if not digest:
+        return None
+    return conn.execute(
+        "SELECT hash, raw_len, block_size, offsets, data FROM file_texts WHERE hash = ?",
+        (digest,),
+    ).fetchone()
+
+
+def _read_text(conn: sqlite3.Connection, digest: str | None) -> str:
+    row = _text_row(conn, digest)
+    return _row_text(row) if row else ""
+
+
+def _iter_chunk_texts(conn: sqlite3.Connection) -> Iterator[tuple[int, str]]:
+    """(chunk id, its text) for every chunk, decompressing one file at a time.
+
+    Rows arrive grouped by file, so a document's blob is inflated once and its
+    chunks are slices of that one string — the whole reason the text lives per
+    file rather than per chunk.
+    """
+    cursor = conn.execute(
+        "SELECT c.id, c.start, c.len, f.text_hash FROM chunks c "
+        "JOIN files f ON f.id = c.file_id ORDER BY c.file_id, c.ord"
+    )
+    current: str | None = None
+    text = ""
+    for row in cursor:
+        digest = row["text_hash"]
+        if digest != current:
+            current = digest
+            text = _read_text(conn, digest)
+        start = int(row["start"])
+        yield int(row["id"]), text[start:start + int(row["len"])]
+
+
+def _fts_sql(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'"
+    ).fetchone()
+    return (row[0] or "") if row else None
+
+
+def _ensure_vocab(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute(VOCAB_SQL)
+    except sqlite3.Error:
+        pass  # no fts5vocab in this build: the typo channel is simply absent
+
+
+def _ensure_fts(conn: sqlite3.Connection) -> None:
+    """Make the single contentless FTS tier exist and be complete.
+
+    A v9 database has one table with postings only: the text it indexes is a
+    span into `file_texts`, so an external-content table would have had to read
+    a column that no longer exists. Anything older (or half-built) is dropped
+    and refilled — that is one pass over the corpus, not a re-extraction.
+    """
+    sql = _fts_sql(conn)
+    if sql is not None:
+        flat = sql.replace(" ", "").lower()
+        contentless = "content=''" in flat or 'content=""' in flat
+        # A table with a prefix index is a v9 beta: correct but 126 MB bigger
+        # than it needs to be, so it is rebuilt once, like any half-built one.
+        if contentless and "prefix=" not in flat:
+            supports_delete = "contentless_delete=1" in flat
+            _set_meta(conn, "fts_delete", "1" if supports_delete else "0")
+            _ensure_vocab(conn)
+            if _meta(conn, "fts_v9") == "1":
+                return
+    _rebuild_fts(conn)
+
+
+def _rebuild_fts(conn: sqlite3.Connection, batch: int = 4000) -> None:
+    """Drop and refill `chunks_fts` from the chunk spans."""
+    conn.execute("DROP TABLE IF EXISTS chunks_vocab")
+    conn.execute("DROP TABLE IF EXISTS chunks_fts")
+    try:
+        conn.execute(FTS_DELETE_SQL)
+        _set_meta(conn, "fts_delete", "1")
+    except sqlite3.Error:
+        conn.execute(FTS_PLAIN_SQL)
+        _set_meta(conn, "fts_delete", "0")
+    pending: list[tuple[int, str]] = []
+    for chunk_id, text in _iter_chunk_texts(conn):
+        # CJK runs become bigrams here, in the same index as the latin words:
+        # one tier, not the main table plus a full copy of the CJK subset.
+        pending.append((chunk_id, cjk_bigrams(text)))
+        if len(pending) >= batch:
+            conn.executemany("INSERT INTO chunks_fts(rowid, text) VALUES(?,?)", pending)
+            pending.clear()
+    if pending:
+        conn.executemany("INSERT INTO chunks_fts(rowid, text) VALUES(?,?)", pending)
+    _ensure_vocab(conn)
+    _set_meta(conn, "fts_v9", "1")
+
+
+def _fold_chunk_text(conn: sqlite3.Connection, batch: int = 2000) -> None:
+    """v9 step one: move chunk text into one blob per file, keep the spans.
+
+    Chunks overlap, so the text is rebuilt as their newline join and every
+    chunk keeps the span it occupies in it. The result is not byte-identical to
+    the extracted document (the overlap stays), but it is exact for snippets,
+    regex and the FTS rebuild — and it needs no re-extraction of 14 000 files.
+    """
+    conn.execute("DROP TABLE IF EXISTS chunks_v9")
+    conn.execute(
+        "CREATE TABLE chunks_v9 (id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL, "
+        "ord INTEGER NOT NULL, start INTEGER NOT NULL, len INTEGER NOT NULL)"
+    )
+    cursor = conn.execute(
+        "SELECT id, file_id, ord, text FROM chunks ORDER BY file_id, ord"
+    )
+    chunk_rows: list[tuple[int, int, int, int, int]] = []
+    text_rows: dict[str, tuple[str, int, int, bytes, bytes]] = {}
+    hashes: dict[int, str] = {}
+    file_id: int | None = None
+    parts: list[str] = []
+    ids: list[int] = []
+    ords: list[int] = []
+
+    def flush_file() -> None:
+        if file_id is None or not parts:
+            return
+        text = "\n".join(parts)
+        packed = _pack_text(text)
+        text_rows[packed[0]] = packed
+        hashes[file_id] = packed[0]
+        position = 0
+        for chunk_id, order, part in zip(ids, ords, parts):
+            chunk_rows.append((chunk_id, file_id, order, position, len(part)))
+            position += len(part) + 1
+        parts.clear()
+        ids.clear()
+        ords.clear()
+
+    def flush_batch() -> None:
+        if chunk_rows:
+            conn.executemany(
+                "INSERT INTO chunks_v9(id, file_id, ord, start, len) VALUES(?,?,?,?,?)",
+                chunk_rows,
+            )
+            chunk_rows.clear()
+        if text_rows:
+            conn.executemany(
+                "INSERT INTO file_texts(hash, raw_len, block_size, offsets, data) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(hash) DO NOTHING",
+                list(text_rows.values()),
+            )
+            text_rows.clear()
+
+    while True:
+        rows = cursor.fetchmany(batch)
+        if not rows:
+            break
+        for row in rows:
+            if row["file_id"] != file_id:
+                flush_file()
+                file_id = int(row["file_id"])
+            parts.append(row["text"] or "")
+            ids.append(int(row["id"]))
+            ords.append(int(row["ord"]))
+        flush_batch()
+    flush_file()
+    flush_batch()
+    cursor.close()
+    conn.execute("DROP TABLE chunks")
+    conn.execute("ALTER TABLE chunks_v9 RENAME TO chunks")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id)")
+    conn.executemany(
+        "UPDATE files SET text_hash = ? WHERE id = ?",
+        [(digest, fid) for fid, digest in hashes.items()],
+    )
+
+
+def _migrate_file_vectors(conn: sqlite3.Connection, batch: int = 20000) -> None:
+    """v9 step two: mean-pool the per-chunk vectors into one binary row per file."""
+    try:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM vectors WHERE owner_type='chunk'"
+        ).fetchone()[0]
+    except sqlite3.Error:
+        return
+    if not pending:
+        return
+    file_of = {int(row[0]): int(row[1]) for row in conn.execute("SELECT id, file_id FROM chunks")}
+    sums: dict[int, np.ndarray] = {}
+    counts: dict[int, int] = {}
+    cursor = conn.execute("SELECT owner_id, dim, vec FROM vectors WHERE owner_type='chunk'")
+    while True:
+        rows = cursor.fetchmany(batch)
+        if not rows:
+            break
+        for row in rows:
+            file_id = file_of.get(int(row["owner_id"]))
+            dim = int(row["dim"] or 0)
+            if file_id is None or not dim:
+                continue
+            vector = vecstore.dequantize_vector(row["vec"], dim)
+            if file_id in sums:
+                sums[file_id] += vector
+                counts[file_id] += 1
+            else:
+                sums[file_id] = vector.copy()
+                counts[file_id] = 1
+    packed = [
+        (file_id, int(vector.shape[0]), filevec.to_bits(vector / counts[file_id]))
+        for file_id, vector in sums.items()
+    ]
+    conn.executemany(
+        "INSERT INTO file_vectors(file_id, dim, bits) VALUES(?,?,?) "
+        "ON CONFLICT(file_id) DO UPDATE SET dim=excluded.dim, bits=excluded.bits",
+        packed,
+    )
+    conn.execute("DELETE FROM vectors WHERE owner_type='chunk'")
+
+
+def _repack_texts(conn: sqlite3.Connection) -> None:
+    """Upgrade whole-stream `file_texts` rows to block compression.
+
+    Only an index built by the first cut of v9 has such rows; a fresh one is
+    written in blocks from the start. The text is unchanged, so the hash (and
+    every `files.text_hash`) stays valid.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT hash, data FROM file_texts "
+            "WHERE block_size = 0 OR offsets IS NULL OR length(offsets) < 8"
+        ).fetchall()
+    except sqlite3.Error:
+        return
+    if not rows:
+        return
+    updates = []
+    for row in rows:
+        text = _unpack_text(row["data"])
+        _, raw_len, block_size, offsets, data = _pack_text(text)
+        updates.append((raw_len, block_size, offsets, data, row["hash"]))
+    conn.executemany(
+        "UPDATE file_texts SET raw_len=?, block_size=?, offsets=?, data=? WHERE hash=?",
+        updates,
+    )
+    conn.commit()
+
+
+def _migrate_v9(conn: sqlite3.Connection) -> None:
+    """Schema v9: text once per file, chunks as spans, one FTS, binary vectors.
+
+    Everything here is derived from what the old database already holds, so an
+    existing index upgrades in one pass — no file is read from disk again.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(chunks)")}
+    if "text" in columns:
+        _fold_chunk_text(conn)
+    for table in ("chunks_cjk", "chunks_tri", "chunks_vocab", "chunks_fts"):
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+    conn.execute("DELETE FROM meta WHERE key IN ('trigram', 'aux_fts_backfill', 'fts_v9')")
+    _migrate_file_vectors(conn)
+    conn.commit()
 
 
 class Store:
@@ -400,10 +850,12 @@ class Store:
         readonly: bool = False,
         cache: "VectorCache | None" = None,
         vector_backend: str = "pack",
+        ram_bm25: bool | None = None,
     ) -> None:
         self.path = Path(path)
         self.readonly = readonly
         self.cache = cache
+        self._ram_bm25 = _RAM_BM25_ENABLED if ram_bm25 is None else bool(ram_bm25)
         self._requested_backend = vector_backend
         if readonly:
             uri = f"file:{self.path.as_posix()}?mode=ro"
@@ -415,20 +867,25 @@ class Store:
         self.conn.create_function("regexp", 2, _regexp, deterministic=True)
         self._vec_ids: np.ndarray | None = None
         self._vec_matrix: np.ndarray | None = None
-        self._vec_key: tuple[int, int] | None = None
+        self._vec_key: tuple | None = None
+        self._vec_gen = 0  # bumped by `_invalidate_vectors`, part of that key
         self._file_key: tuple[int, int] | None = None
         self._checkout = None  # the pack this Store currently holds from PACKS
         self.dim = dim
-        self._trigram = False  # set by _migrate/_ensure_trigram below
+        self._fts_delete = True  # contentless FTS supports DELETE FROM
         vecstore.PACKS.ref(self.path)
-        self._vec_backend = "blob"
+        self._vec_backend = "filebin"
         # Read-heavy tuning, measured against the forums' standard set: mmap
         # lets SQLite read pages without a read() syscall (the FTS index and
         # vector blobs are exactly such cold reads), and a real page cache
         # keeps the hot vocabulary resident. busy_timeout softens the watcher
         # racing a manual index run for the write lock.
-        self.conn.execute("PRAGMA mmap_size=1073741824")   # 1 GB address space
-        self.conn.execute("PRAGMA cache_size=-32000")      # 32 MB page cache
+        self.conn.execute("PRAGMA mmap_size=0" if readonly else "PRAGMA mmap_size=1073741824")
+        # A read-only connection keeps its pages in the OS page cache anyway
+        # (the mmap above), so a private 32 MB cache is 24 MB of duplicated
+        # RSS per open Store. Writers keep the bigger cache: indexing is the
+        # workload where the hot vocabulary actually pays.
+        self.conn.execute("PRAGMA cache_size=-4000" if readonly else "PRAGMA cache_size=-32000")
         self.conn.execute("PRAGMA busy_timeout=5000")
         if not readonly:
             self.conn.execute("PRAGMA journal_mode=WAL")
@@ -445,36 +902,35 @@ class Store:
                 # It costs one short writable connection, once, after an upgrade.
                 self._migrate_externally()
             self._vec_backend = self._setup_vectors(dim, writable=False)
-        self._trigram = self._read_trigram_flag()
+        self._fts_delete = self._meta_flag("fts_delete", True)
         self.conn.commit()
 
+    def _meta_flag(self, key: str, default: bool) -> bool:
+        value = _meta(self.conn, key)
+        if value is None:
+            return default
+        return value == "1"
+
     def _setup_vectors(self, dim: int, writable: bool) -> str:
-        requested = self._requested_backend
-        if requested == "blob":
-            return "blob"
-        if requested == "sqlite-vec":
-            try:
-                return prepare_vectors(self.conn, dim, writable=writable)
-            except RuntimeError:
-                if writable:
-                    raise
-                return "blob"
-        # Default: the memory-mapped pack. No extension, no startup copy.
-        return "pack"
+        """Documents always use `filebin` since v9.
+
+        One binary vector per file needs no index and no side file: 14 000 rows
+        is a 5 MB matvec, which beats any structure that has to be built,
+        versioned and remapped. The `vector_backend` setting is kept for the
+        image vectors, which still go through `vectors`/`sqlite-vec`.
+        """
+        return "filebin"
 
     # ---------------------------------------------------------------- schema
 
-    def _read_trigram_flag(self) -> bool:
-        try:
-            row = self.conn.execute("SELECT value FROM meta WHERE key='trigram'").fetchone()
-        except sqlite3.Error:
-            return False
-        return bool(row and row["value"] == "1")
-
     @property
     def has_trigram(self) -> bool:
-        """The trigram typo tier exists (SQLite 3.34+ created its table)."""
-        return self._trigram
+        """Kept for callers: the 3-gram tier is gone (it cost 778 MB here).
+
+        The typo channel now reads the FTS vocabulary instead of a second copy
+        of the corpus, so there is no table to check.
+        """
+        return False
 
     def _schema_version(self) -> int:
         try:
@@ -580,65 +1036,175 @@ class Store:
     def chunk_heads(self, file_id: int, limit: int = 3) -> str:
         """The first chunks' text: a document's date lives in its header."""
         rows = self.conn.execute(
-            "SELECT text FROM chunks WHERE file_id = ? ORDER BY ord LIMIT ?",
+            "SELECT c.start, c.len, f.text_hash FROM chunks c "
+            "JOIN files f ON f.id = c.file_id WHERE c.file_id = ? ORDER BY c.ord LIMIT ?",
             (int(file_id), limit),
         ).fetchall()
-        return "\n".join(str(row["text"]) for row in rows)
+        if not rows:
+            return ""
+        text = self.text_of(rows[0]["text_hash"])
+        return "\n".join(
+            text[int(row["start"]):int(row["start"]) + int(row["len"])] for row in rows
+        )
 
-    def replace_chunks(self, file_id: int, chunks: Sequence[str], vectors: np.ndarray | None) -> int:
+    # ------------------------------------------------------------------ text
+
+    def text_of(self, text_hash: str | None) -> str:
+        """The stored document text behind a `files.text_hash`, or ""."""
+        return _read_text(self.conn, text_hash)
+
+    def text_rows(self, hashes: Iterable[str | None]) -> dict[str, sqlite3.Row]:
+        """The `file_texts` rows for several hashes, in as few queries as fit."""
+        wanted = [str(h) for h in hashes if h]
+        if not wanted:
+            return {}
+        out: dict[str, sqlite3.Row] = {}
+        for start in range(0, len(wanted), 200):
+            block = wanted[start:start + 200]
+            rows = self.conn.execute(
+                "SELECT hash, raw_len, block_size, offsets, data FROM file_texts "
+                f"WHERE hash IN ({','.join('?' * len(block))})",
+                block,
+            ).fetchall()
+            for row in rows:
+                out[str(row["hash"])] = row
+        return out
+
+    def texts_of(self, hashes: Iterable[str | None]) -> dict[str, str]:
+        """Inflate several stored texts in one query, keyed by hash."""
+        return {digest: _row_text(row) for digest, row in self.text_rows(hashes).items()}
+
+    def file_text(self, file_id: int) -> str:
+        row = self.conn.execute(
+            "SELECT text_hash FROM files WHERE id = ?", (int(file_id),)
+        ).fetchone()
+        return self.text_of(row["text_hash"]) if row else ""
+
+    def replace_chunks(
+        self,
+        file_id: int,
+        text: str | Sequence[str],
+        spans: Sequence[tuple[int, int]] | np.ndarray | None = None,
+        vectors: np.ndarray | None = None,
+    ) -> int:
+        """Write one document: its text once, its chunk spans, its vector.
+
+        `text` is the extracted document; `spans` are half-open offsets into
+        its normalised form (`core.chunker.chunk_spans`). A plain list of chunk
+        strings is still accepted — the spans are then their newline join —
+        which keeps older callers and tests honest without a second code path.
+
+        `vectors` may be one document vector, a per-chunk matrix (mean-pooled
+        here) or None. Only the file-level result is stored.
+        """
+        if isinstance(spans, np.ndarray):
+            # Older callers pass the vector matrix as the third positional
+            # argument (`replace_chunks(fid, chunks, matrix)`); it is a vector,
+            # never a span list.
+            if vectors is None:
+                vectors = spans
+            spans = None
+        if not isinstance(text, str):
+            parts = [str(part).strip() for part in text]
+            # Normalise the join first so the spans below index the same string
+            # that is stored (normalize strips the ends).
+            document = normalize("\n".join(parts))
+            spans, position = [], 0
+            for part in parts:
+                spans.append((position, position + len(part)))
+                position += len(part) + 1
+        else:
+            document = normalize(text)
+        if spans is None:
+            spans = chunk_spans(document)
         self._drop_chunks_of(file_id)
-        pending: list[tuple[int, np.ndarray]] = []
-        for order, text in enumerate(chunks):
-            cursor = self.conn.execute(
-                "INSERT INTO chunks(file_id, ord, text) VALUES(?,?,?)", (file_id, order, text)
-            )
-            chunk_id = int(cursor.lastrowid)
-            self.conn.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?,?)", (chunk_id, text))
-            # The CJK bigram table only sees runs that have something to
-            # bigram: a chunk without CJK characters would just duplicate the
-            # main index at full size for nothing.
-            transformed = cjk_bigrams(text)
-            if has_cjk(text):
-                self.conn.execute("INSERT INTO chunks_cjk(rowid, text) VALUES(?,?)", (chunk_id, transformed))
-            if self._trigram:
-                self.conn.execute("INSERT INTO chunks_tri(rowid, text) VALUES(?,?)", (chunk_id, text))
-            if vectors is not None and len(vectors) > order:
-                pending.append((chunk_id, vectors[order].astype(np.float32)))
-        if pending:
-            # `vectors` is always written: it is the source of truth that the
-            # pack and the vec0 table are both derived from. Writing only to the
-            # active backend would make switching backends lose data.
-            self.conn.executemany(
-                "INSERT INTO vectors(owner_type, owner_id, dim, vec) VALUES('chunk',?,?,?)",
-                [(chunk_id, int(vector.shape[0]), vector.tobytes()) for chunk_id, vector in pending],
-            )
-            if self._vec_backend == "sqlite-vec":
-                vecstore.insert_chunks(self.conn, pending)
+        if not document or not spans:
+            self.conn.execute("UPDATE files SET text_hash = NULL WHERE id = ?", (int(file_id),))
+            self._invalidate_vectors()
+            return 0
+
+        digest, raw_len, block_size, offsets, data = _pack_text(document)
+        # Content-addressed: a second copy of the same document costs one row
+        # in `files`, not another copy of its text or its postings.
+        self.conn.execute(
+            "INSERT INTO file_texts(hash, raw_len, block_size, offsets, data) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(hash) DO NOTHING",
+            (digest, raw_len, block_size, offsets, data),
+        )
+        self.conn.execute(
+            "UPDATE files SET text_hash = ? WHERE id = ?", (digest, int(file_id))
+        )
+        self.conn.executemany(
+            "INSERT INTO chunks(file_id, ord, start, len) VALUES(?,?,?,?)",
+            [
+                (int(file_id), order, int(start), int(end) - int(start))
+                for order, (start, end) in enumerate(spans)
+            ],
+        )
+        chunk_ids = [int(row["id"]) for row in self.conn.execute(
+            "SELECT id FROM chunks WHERE file_id = ? ORDER BY ord", (int(file_id),)
+        )]
+        self.conn.executemany(
+            "INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
+            [
+                (chunk_id, cjk_bigrams(document[int(start):int(end)]))
+                for chunk_id, (start, end) in zip(chunk_ids, spans)
+            ],
+        )
+        if vectors is not None:
+            vector = filevec.mean_pool(np.asarray(vectors, dtype=np.float32))
+            if vector.size:
+                self.conn.execute(
+                    "INSERT INTO file_vectors(file_id, dim, bits) VALUES(?,?,?) "
+                    "ON CONFLICT(file_id) DO UPDATE SET dim=excluded.dim, bits=excluded.bits",
+                    (int(file_id), int(vector.shape[0]), filevec.to_bits(vector)),
+                )
         self._invalidate_vectors()
-        return len(chunks)
+        return len(chunk_ids)
 
     def _drop_chunks_of(self, file_id: int) -> None:
-        old_ids = [row["id"] for row in self.conn.execute(
+        file_id = int(file_id)
+        row = self.conn.execute(
+            "SELECT text_hash FROM files WHERE id = ?", (file_id,)
+        ).fetchone()
+        old_hash = row["text_hash"] if row else None
+        old_ids = [int(row["id"]) for row in self.conn.execute(
             "SELECT id FROM chunks WHERE file_id = ?", (file_id,)
         )]
-        if not old_ids:
-            return
-        self.conn.executemany("DELETE FROM chunks_fts WHERE rowid = ?", [(i,) for i in old_ids])
-        self.conn.executemany("DELETE FROM chunks_cjk WHERE rowid = ?", [(i,) for i in old_ids])
-        if self._trigram:
-            self.conn.executemany("DELETE FROM chunks_tri WHERE rowid = ?", [(i,) for i in old_ids])
-        if self._vec_backend == "sqlite-vec":
-            vecstore.delete_chunks(self.conn, old_ids)
-        self.conn.execute(
-            "DELETE FROM vectors WHERE owner_type='chunk' AND owner_id IN "
-            f"({','.join('?' * len(old_ids))})", old_ids
-        )
-        # The pack cache's epoch: chunk vectors are gone, so a base pack built
-        # earlier is no longer a faithful prefix of this table — and a freed
-        # rowid can come back as a different vector. One integer here is what
-        # lets `refresh` tell deletions from cheap appends.
-        vecstore.bump_vector_epoch(self.conn)
-        self.conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
+        if old_ids:
+            if self._fts_delete:
+                self.conn.executemany(
+                    "DELETE FROM chunks_fts WHERE rowid = ?", [(i,) for i in old_ids]
+                )
+            else:
+                # Pre-3.43 SQLite: a contentless table can only unindex a row
+                # through the `'delete'` command, which wants the text back.
+                rows = self.conn.execute(
+                    "SELECT id, start, len FROM chunks WHERE file_id = ? ORDER BY ord",
+                    (file_id,),
+                ).fetchall()
+                text = self.text_of(old_hash)
+                self.conn.executemany(
+                    "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)",
+                    [
+                        (
+                            int(chunk["id"]),
+                            cjk_bigrams(
+                                text[int(chunk["start"]):int(chunk["start"]) + int(chunk["len"])]
+                            ),
+                        )
+                        for chunk in rows
+                    ],
+                )
+            self.conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
+        self.conn.execute("DELETE FROM file_vectors WHERE file_id = ?", (file_id,))
+        if old_hash:
+            still = self.conn.execute(
+                "SELECT 1 FROM files WHERE text_hash = ? AND id <> ? LIMIT 1",
+                (old_hash, file_id),
+            ).fetchone()
+            if still is None:
+                self.conn.execute("DELETE FROM file_texts WHERE hash = ?", (old_hash,))
 
     def drop_file(self, file_id: int) -> None:
         self._drop_chunks_of(file_id)
@@ -679,7 +1245,7 @@ class Store:
         the name and size keep unrelated images with a digest collision out.
         """
         rows = self.conn.execute(
-            "SELECT id AS file_id, path, size, sha256 FROM files "
+            "SELECT id AS file_id, path, size, mtime, sha256 FROM files "
             "WHERE kind = 'image' ORDER BY id"
         ).fetchall()
         groups: dict[tuple[str, int, str], list[dict]] = {}
@@ -687,16 +1253,117 @@ class Store:
             path = str(row["path"])
             name = basename(path).casefold()
             key = (name, int(row["size"]), str(row["sha256"]))
-            groups.setdefault(key, []).append(
-                {"file_id": int(row["file_id"]), "path": path}
-            )
+            groups.setdefault(key, []).append({
+                "file_id": int(row["file_id"]),
+                "path": path,
+                "size": int(row["size"] or 0),
+                "mtime": float(row["mtime"] or 0.0),
+            })
 
         duplicates = [items for items in groups.values() if len(items) > 1]
         duplicates.sort(key=lambda items: (-len(items), basename(items[0]["path"]).casefold()))
         return [
-            {"name": basename(items[0]["path"]), "items": items[:per_group]}
+            {
+                "name": basename(items[0]["path"]),
+                "kind": "image",
+                "items": items[:per_group],
+                "keep": _best_copy(items)["file_id"],
+            }
             for items in duplicates[:limit]
         ]
+
+    def duplicate_documents(
+        self, limit: int = 30, per_group: int = 500, scan_limit: int = 4000
+    ) -> list[dict]:
+        """Near-identical documents, grouped by a text fingerprint.
+
+        A copy saved as PDF and as DOCX has different bytes, so the image
+        report cannot see it. Each document's first chunks are reduced to a
+        64-bit SimHash of three-word shingles; files whose fingerprints differ
+        in at most four bits are near-duplicates. SimHash is stable across
+        line breaks, headers and reflowing, which is exactly the difference
+        between "the same text" and "the same file".
+
+        The scan is newest-first and bounded: a fuzzy pass is a convenience,
+        not a reason to walk a 100k-file index on a button press.
+        """
+        rows = self.conn.execute(
+            "SELECT f.id, f.path, f.size, f.mtime, t.hash, t.raw_len, t.block_size, "
+            "t.offsets, t.data FROM files f "
+            "JOIN file_texts t ON t.hash = f.text_hash "
+            "WHERE f.kind != 'image' "
+            "ORDER BY f.mtime DESC, f.id LIMIT ?",
+            (scan_limit,),
+        ).fetchall()
+        texts: dict[int, str] = {}
+        meta: dict[int, dict] = {}
+        for row in rows:
+            file_id = int(row["id"])
+            meta[file_id] = {
+                "file_id": file_id,
+                "path": str(row["path"]),
+                "size": int(row["size"] or 0),
+                "mtime": float(row["mtime"] or 0.0),
+            }
+            # The fingerprint reads only the head of a document, so only the
+            # first block (16 384 chars) is inflated — one block per file, not
+            # the whole corpus.
+            texts[file_id] = _row_slice(row, 0, 8000)
+
+        hashes: dict[int, int] = {}
+        for file_id, text in texts.items():
+            value = _simhash(text)
+            if value:
+                hashes[file_id] = value
+        if len(hashes) < 2:
+            return []
+
+        # Four 16-bit bands: two fingerprints within 4 bits differ in at most
+        # four bands, so at least one band is identical. Bucketing by band turns
+        # the quadratic comparison into a handful of small lists.
+        bands: dict[tuple[int, int], list[int]] = {}
+        for file_id, value in hashes.items():
+            for band in range(4):
+                key = (band, (value >> (band * 16)) & 0xFFFF)
+                bands.setdefault(key, []).append(file_id)
+
+        parent: dict[int, int] = {file_id: file_id for file_id in hashes}
+
+        def find(node: int) -> int:
+            while parent[node] != node:
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            return node
+
+        def union(left: int, right: int) -> None:
+            root_left, root_right = find(left), find(right)
+            if root_left != root_right:
+                parent[root_right] = root_left
+
+        for members in bands.values():
+            if len(members) < 2 or len(members) > 60:
+                continue
+            for index, left in enumerate(members):
+                for right in members[index + 1:]:
+                    if (hashes[left] ^ hashes[right]).bit_count() <= 4:
+                        union(left, right)
+
+        grouped: dict[int, list[int]] = {}
+        for file_id in hashes:
+            grouped.setdefault(find(file_id), []).append(file_id)
+        groups = [ids for ids in grouped.values() if len(ids) > 1]
+        groups.sort(key=len, reverse=True)
+        out: list[dict] = []
+        for ids in groups[:limit]:
+            items = [meta[file_id] for file_id in ids]
+            items.sort(key=lambda item: basename(item["path"]).casefold())
+            out.append({
+                "name": basename(items[0]["path"]),
+                "kind": "doc",
+                "items": items[:per_group],
+                "keep": _best_copy(items, prefer_size=True)["file_id"],
+            })
+        return out
 
     def image_meta(self, file_ids: Iterable[int]) -> dict[int, tuple[int, int, int]]:
         """(width, height, phash) per file, in one query.
@@ -752,7 +1419,7 @@ class Store:
         if vector is not None:
             self.conn.execute(
                 "INSERT INTO vectors(owner_type, owner_id, dim, vec) VALUES('image',?,?,?)",
-                (image_id, int(vector.shape[0]), vector.astype(np.float32).tobytes()),
+                (image_id, int(vector.shape[0]), vecstore.quantize_vector(vector)),
             )
         self._invalidate_vectors()
         return image_id
@@ -804,6 +1471,59 @@ class Store:
 
     # --------------------------------------------------------------- search
 
+    _bm25_key: tuple | None = None
+
+    def inram_bm25(self) -> "bm25mod.InRamBM25 | None":
+        """The in-RAM BM25 index for this database, or None until ready.
+
+        Off for one-shot CLI searches (`ram_bm25=False`): at 298k chunks the
+        build measured 35 s and ~1.5 GB, and the thread slowed the query that
+        started it by holding the GIL. The app and MCP servers are long-lived,
+        so there the build pays off on multi-word queries, where FTS5 prefix
+        expansion costs ~100 ms.
+
+        The first enabled call kicks a background build; until it lands the
+        caller falls back to the FTS5 path, so nothing pays the build in the
+        foreground. The cache is module-level: the API server opens a
+        short-lived Store per request, and the index must outlive any single
+        one of them."""
+        if not self._ram_bm25:
+            return None
+        try:
+            # The stamps move on any commit — this process's or the indexer's —
+            # and cost two stat() calls. `SELECT COUNT(*), MAX(id) FROM chunks`
+            # answered the same question for 3.7 ms on a 100k-chunk index,
+            # which was 13% of a warm query.
+            key = (str(self.path), *self._stamps())
+        except sqlite3.Error:
+            return None
+        if _BM25["key"] == key and _BM25["index"] is not None:
+            return _BM25["index"]
+        with _BM25_LOCK:
+            if _BM25["key"] == key and _BM25["index"] is not None:
+                return _BM25["index"]
+            if _BM25["building"] != key:
+                _BM25["building"] = key
+
+                def _build(store_path=str(self.path), build_key=key) -> None:
+                    try:
+                        conn = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
+                        conn.row_factory = sqlite3.Row
+                        try:
+                            # The generator inflates one document at a time, so
+                            # the 300 MB of text never sits in RAM as a whole.
+                            index = bm25mod.InRamBM25.build(_iter_chunk_texts(conn))
+                        finally:
+                            conn.close()
+                        with _BM25_LOCK:
+                            _BM25["index"] = index
+                            _BM25["key"] = build_key
+                    except sqlite3.Error:
+                        pass  # the database went away mid-build; FTS5 stays the path
+
+                threading.Thread(target=_build, daemon=True, name="af-bm25-build").start()
+        return None
+
     def bm25(self, match_query: str, limit: int) -> list[tuple[int, float]]:
         try:
             rows = self.conn.execute(
@@ -815,34 +1535,58 @@ class Store:
             return []
         return [(int(row["id"]), float(row["score"])) for row in rows]
 
-    def bm25_cjk(self, match_query: str, limit: int) -> list[tuple[int, float]]:
-        """The CJK bigram table: same query shape, its own index. Empty for
-        every query that never contained CJK characters."""
-        try:
-            rows = self.conn.execute(
-                "SELECT rowid AS id, bm25(chunks_cjk) AS score FROM chunks_cjk "
-                "WHERE chunks_cjk MATCH ? ORDER BY score LIMIT ?",
-                (match_query, limit),
-            ).fetchall()
-        except sqlite3.OperationalError:
-            return []
-        return [(int(row["id"]), float(row["score"])) for row in rows]
+    def bm25_typo(self, text: str, limit: int) -> list[tuple[int, float]]:
+        """The typo channel, with no index of its own.
 
-    def bm25_tri(self, match_query: str, limit: int) -> list[tuple[int, float]]:
-        """The trigram typo tier. Wildly permissive by design — the OR over
-        3-grams is what lets a mis-typed word still reach its target — so the
-        caller keeps the pool small and the fusion weight low."""
-        if not self._trigram:
+        The old tier was a second full copy of the corpus tokenized as
+        3-grams — 778 MB here — and it only ever ran when the exact channels
+        came back nearly empty. `chunks_vocab` is a view over the term
+        dictionary the FTS index already keeps, so a misspelled term can be
+        matched to the real one and re-queried for the price of one scan.
+        """
+        terms = [token for token in bm25mod.TOKEN_RE.findall(text) if len(token) >= 4]
+        corrected = []
+        for term in terms:
+            fixed = self._correct_term(term.lower())
+            if fixed:
+                corrected.append(fixed)
+        if not corrected:
             return []
+        query = " OR ".join(f'"{term}"*' for term in corrected if '"' not in term)
+        return self.bm25(query, limit) if query else []
+
+    def _correct_term(self, term: str) -> str | None:
+        """The closest vocabulary term to `term`, or None if it is spelled right.
+
+        A 2-character prefix range keeps the candidate list small: the words
+        that could be one or two edits away almost always start the same way,
+        and a full-vocabulary pass would cost more than the query it fixes.
+        """
+        if len(term) < 4 or not term[:2].isalpha():
+            return None
+        prefix = term[:2]
         try:
             rows = self.conn.execute(
-                "SELECT rowid AS id, bm25(chunks_tri) AS score FROM chunks_tri "
-                "WHERE chunks_tri MATCH ? ORDER BY score LIMIT ?",
-                (match_query, limit),
+                "SELECT term FROM chunks_vocab WHERE term >= ? AND term < ? LIMIT 4000",
+                (prefix, prefix + "\U0010ffff"),
             ).fetchall()
-        except sqlite3.OperationalError:
-            return []
-        return [(int(row["id"]), float(row["score"])) for row in rows]
+        except sqlite3.Error:
+            return None
+        if not rows:
+            return None
+        import difflib
+
+        best: tuple[float, str] | None = None
+        for row in rows:
+            candidate = str(row["term"])
+            if candidate == term:
+                return None
+            if abs(len(candidate) - len(term)) > 2 or not candidate.isalpha():
+                continue
+            ratio = difflib.SequenceMatcher(None, term, candidate).ratio()
+            if ratio >= 0.8 and (best is None or ratio > best[0]):
+                best = (ratio, candidate)
+        return best[1] if best else None
 
     def vector_index(self) -> tuple[np.ndarray, np.ndarray]:
         if self.cache is not None:
@@ -853,38 +1597,44 @@ class Store:
     def vector_backend(self) -> str:
         return self._vec_backend
 
+    @property
+    def vector_is_file_level(self) -> bool:
+        """True when `knn` returns file ids instead of chunk ids."""
+        return self._vec_backend == "filebin"
+
     def _load_vectors(self) -> tuple[np.ndarray, np.ndarray]:
-        key_row = self.conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m FROM vectors WHERE owner_type='chunk'"
-        ).fetchone()
-        key = (int(key_row["n"]), int(key_row["m"]))
+        # File stamps, not `SELECT COUNT(*), MAX(file_id)`: on a 100k-file
+        # index that count is a 3 ms scan paid on every query, which was 11%
+        # of a warm search. Two stat() calls answer the same question, and
+        # `_vec_gen` covers this connection's own writes.
+        key = (self._stamps(), self._vec_gen)
         if self._vec_key == key and self._vec_matrix is not None and self._vec_ids is not None:
             return self._vec_ids, self._vec_matrix
 
         rows = self.conn.execute(
-            "SELECT id, vec FROM vectors WHERE owner_type='chunk' ORDER BY id"
+            "SELECT file_id, bits FROM file_vectors WHERE dim = ? ORDER BY file_id",
+            (int(self.dim),),
         ).fetchall()
         if not rows:
             self._vec_ids = np.zeros(0, dtype=np.int64)
-            self._vec_matrix = np.zeros((0, 384), dtype=np.float32)
+            self._vec_matrix = np.zeros((0, self.dim), dtype=np.float32)
         else:
-            self._vec_ids = np.array([row["id"] for row in rows], dtype=np.int64)
-            self._vec_matrix = np.vstack(
-                [np.frombuffer(row["vec"], dtype=np.float32) for row in rows]
-            ).astype(np.float32)
+            # `np.fromiter` skips the intermediate 100k-element Python list
+            # `np.array([int(...) ...])` builds; ~2 ms of a cold load.
+            self._vec_ids = np.fromiter(
+                (int(row[0]) for row in rows), dtype=np.int64, count=len(rows)
+            )
+            self._vec_matrix = filevec.matrix([row[1] for row in rows], int(self.dim))
         self._vec_key = key
         return self._vec_ids, self._vec_matrix
 
     def knn(self, query_vector: np.ndarray, limit: int) -> list[tuple[int, float]]:
-        if self._vec_backend == "sqlite-vec":
-            # Nothing is loaded into the process: SQLite walks the vec0 shadow
-            # rows and returns the k nearest, which is what makes a cold start
-            # cost the same as a warm query.
-            return vecstore.knn(self.conn, query_vector, limit)
-        if self._vec_backend == "pack":
-            pack = self.pack()
-            if pack is not None:
-                return pack.search(query_vector, limit)
+        """Nearest files to a query vector.
+
+        The stored rows are ±1 sign patterns and the query stays float32, so
+        this is one matvec over ~14 000 rows — a millisecond, with no index to
+        build or keep fresh.
+        """
         return _top_k(*self.vector_index(), query_vector, limit)
 
     def pack(self):
@@ -940,7 +1690,7 @@ class Store:
         return self.pack()
 
     def image_index(self, dim: int | None = None) -> tuple[np.ndarray, np.ndarray]:
-        sql = "SELECT owner_id AS id, vec FROM vectors WHERE owner_type='image'"
+        sql = "SELECT owner_id AS id, dim, vec FROM vectors WHERE owner_type='image'"
         params: tuple = ()
         if dim is not None:
             sql += " AND dim = ?"
@@ -949,24 +1699,49 @@ class Store:
         if not rows:
             return np.zeros(0, dtype=np.int64), np.zeros((0, dim or 1), dtype=np.float32)
         ids = np.array([row["id"] for row in rows], dtype=np.int64)
-        matrix = np.vstack([np.frombuffer(row["vec"], dtype=np.float32) for row in rows]).astype(np.float32)
+        matrix = np.vstack(
+            [vecstore.dequantize_vector(row["vec"], int(row["dim"]))
+             for row in rows]
+        ).astype(np.float32)
         return ids, matrix
 
     def knn_images(self, query_vector: np.ndarray, limit: int) -> list[tuple[int, float]]:
         ids, matrix = self.image_index(dim=int(query_vector.shape[0]))
         return _top_k(ids, matrix, query_vector, limit)
 
-    def chunk_rows(self, ids: Iterable[int]) -> dict[int, sqlite3.Row]:
+    def chunk_rows(self, ids: Iterable[int]) -> dict[int, dict]:
+        """Chunk metadata plus its text slice, keyed by chunk id.
+
+        The text is cut from the file's stored blocks: a chunk is ~1 200 chars
+        inside a 16 384-char block, so a query inflates one block per hit
+        instead of the whole document.
+        """
         ids = list(ids)
         if not ids:
             return {}
         placeholders = ",".join("?" * len(ids))
         rows = self.conn.execute(
-            f"SELECT c.id, c.ord, c.text, f.id AS file_id, f.path, f.kind, f.size, f.mtime "
+            f"SELECT c.id, c.ord, c.start, c.len, f.id AS file_id, f.path, f.kind, "
+            f"f.size, f.mtime, f.text_hash "
             f"FROM chunks c JOIN files f ON f.id = c.file_id WHERE c.id IN ({placeholders})",
             ids,
         ).fetchall()
-        return {int(row["id"]): row for row in rows}
+        texts = self.text_rows({row["text_hash"] for row in rows})
+        out: dict[int, dict] = {}
+        for row in rows:
+            stored = texts.get(row["text_hash"] or "")
+            start = int(row["start"])
+            out[int(row["id"])] = {
+                "id": int(row["id"]),
+                "ord": int(row["ord"]),
+                "text": _row_slice(stored, start, start + int(row["len"])) if stored else "",
+                "file_id": int(row["file_id"]),
+                "path": row["path"],
+                "kind": row["kind"],
+                "size": int(row["size"]),
+                "mtime": float(row["mtime"]),
+            }
+        return out
 
     # ------------------------------------------------------- fuzzy / listing
 
@@ -1017,22 +1792,68 @@ class Store:
             ids,
         ).fetchall()
 
-    def regex_chunks(self, pattern: str, limit: int) -> list[sqlite3.Row]:
-        """Bounded regex scan over chunk text.
+    def regex_chunks(self, pattern: str, limit: int) -> list[dict]:
+        """Bounded regex scan over the stored document text.
 
-        SQLite has no REGEXP operator; the callback is registered in __init__.
-        This is a full scan by design — it only runs for an explicit `re:` query,
-        and the limit bounds the damage on a large index.
+        There is no `chunks.text` to ask SQLite about any more, so the scan
+        inflates each file's text once and maps every match position back to the
+        chunk that contains it. That is one regex pass over the corpus rather
+        than one per chunk, which is what keeps a `re:` query in the same
+        ballpark as the old full-table scan. It only runs for an explicit `re:`
+        query, and the limit bounds the damage.
         """
         try:
-            return self.conn.execute(
-                "SELECT c.id, c.ord, c.text, f.id AS file_id, f.path, f.kind, f.size, f.mtime "
-                "FROM chunks c JOIN files f ON f.id = c.file_id "
-                "WHERE c.text REGEXP ? LIMIT ?",
-                (pattern, limit),
-            ).fetchall()
-        except sqlite3.OperationalError:
+            rx = re.compile(pattern)
+        except re.error:
             return []
+        cursor = self.conn.execute(
+            "SELECT c.id, c.ord, c.start, c.len, f.id AS file_id, f.path, f.kind, "
+            "f.size, f.mtime, f.text_hash "
+            "FROM chunks c JOIN files f ON f.id = c.file_id ORDER BY c.file_id, c.ord"
+        )
+        # Load every text row up front in a handful of queries: asking per file
+        # would add 12 000 round trips (~0.6 s) to a scan that is already the
+        # most expensive query in the app.
+        stored = self.text_rows(
+            row[0] for row in self.conn.execute(
+                "SELECT text_hash FROM files WHERE text_hash IS NOT NULL"
+            )
+        )
+        out: list[dict] = []
+        for _, rows in groupby(cursor, key=lambda row: int(row["file_id"])):
+            rows = list(rows)
+            stored_row = stored.get(rows[0]["text_hash"] or "")
+            text = _row_text(stored_row) if stored_row else ""
+            if not text:
+                continue
+            starts = [int(row["start"]) for row in rows]
+            seen: set[int] = set()
+            for match in rx.finditer(text):
+                position = match.start()
+                index = bisect_right(starts, position) - 1
+                if index < 0:
+                    index = 0
+                row = rows[index]
+                start = int(row["start"])
+                if position >= start + int(row["len"]):
+                    continue  # the match fell in the gap between chunks
+                chunk_id = int(row["id"])
+                if chunk_id in seen:
+                    continue
+                seen.add(chunk_id)
+                out.append({
+                    "id": chunk_id,
+                    "ord": int(row["ord"]),
+                    "text": text[start:start + int(row["len"])],
+                    "file_id": int(row["file_id"]),
+                    "path": row["path"],
+                    "kind": row["kind"],
+                    "size": int(row["size"]),
+                    "mtime": float(row["mtime"]),
+                })
+                if len(out) >= limit:
+                    return out
+        return out
 
     # ---------------------------------------------------------------- usage
 
@@ -1135,6 +1956,204 @@ class Store:
         cursor = self.conn.execute("DELETE FROM aliases WHERE alias = ?", (alias,))
         return cursor.rowcount > 0
 
+    # ---------------------------------------------------------------- tags
+
+    def tags_for(self, file_ids: Iterable[int]) -> dict[int, list[str]]:
+        """Tags per file, in one query — a page of results must not cost N."""
+        ids = [int(file_id) for file_id in file_ids]
+        if not ids:
+            return {}
+        out: dict[int, list[str]] = {}
+        for start in range(0, len(ids), 400):
+            block = ids[start:start + 400]
+            try:
+                rows = self.conn.execute(
+                    "SELECT file_id, tag FROM tags WHERE file_id IN "
+                    f"({','.join('?' * len(block))}) ORDER BY lower(tag)",
+                    block,
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                _reraises_unless_missing(exc)
+                return {}
+            for row in rows:
+                out.setdefault(int(row["file_id"]), []).append(str(row["tag"]))
+        return out
+
+    def all_tags(self, limit: int = 200) -> list[dict]:
+        try:
+            rows = self.conn.execute(
+                "SELECT MIN(tag) AS tag, COUNT(*) AS n FROM tags "
+                "GROUP BY lower(tag) ORDER BY n DESC, lower(tag) LIMIT ?",
+                (limit,),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return []
+        return [{"tag": str(row["tag"]), "count": int(row["n"])} for row in rows]
+
+    def set_tag(self, file_id: int, tag: str, on: bool = True) -> bool:
+        clean = " ".join(str(tag or "").split())[:64]
+        if not clean:
+            return False
+        if on:
+            self.conn.execute(
+                "INSERT INTO tags(file_id, tag, added_at) VALUES(?, ?, ?) "
+                "ON CONFLICT(file_id, tag) DO NOTHING",
+                (int(file_id), clean, time.time()),
+            )
+        else:
+            self.conn.execute(
+                "DELETE FROM tags WHERE file_id = ? AND lower(tag) = lower(?)",
+                (int(file_id), clean),
+            )
+        return on
+
+    def set_tags(self, file_ids: Iterable[int], tag: str, on: bool = True) -> int:
+        changed = 0
+        for file_id in {int(item) for item in file_ids}:
+            self.set_tag(file_id, tag, on)
+            changed += 1
+        return changed
+
+    def file_ids_for_tags(self, tags: Sequence[str]) -> set[int]:
+        """Files carrying every one of these tags (AND, not OR)."""
+        clean = [" ".join(str(tag or "").split())[:64] for tag in tags]
+        clean = [tag for tag in clean if tag]
+        if not clean:
+            return set()
+        marks = ",".join("?" * len(clean))
+        try:
+            rows = self.conn.execute(
+                "SELECT file_id FROM tags WHERE lower(tag) IN "
+                f"({marks}) GROUP BY file_id HAVING COUNT(DISTINCT lower(tag)) = ?",
+                [*(tag.lower() for tag in clean), len({tag.lower() for tag in clean})],
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return set()
+        return {int(row["file_id"]) for row in rows}
+
+    # ---------------------------------------------------------- collections
+
+    def collections(self) -> list[dict]:
+        try:
+            rows = self.conn.execute(
+                "SELECT c.id, c.name, c.created, COUNT(cf.file_id) AS n "
+                "FROM collections c LEFT JOIN collection_files cf "
+                "ON cf.collection_id = c.id GROUP BY c.id "
+                "ORDER BY lower(c.name)"
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return []
+        return [
+            {
+                "id": int(row["id"]),
+                "name": str(row["name"]),
+                "created": float(row["created"] or 0.0),
+                "count": int(row["n"] or 0),
+            }
+            for row in rows
+        ]
+
+    def collection_by_name(self, name: str) -> sqlite3.Row | None:
+        clean = " ".join(str(name or "").split())[:96]
+        if not clean:
+            return None
+        try:
+            return self.conn.execute(
+                "SELECT id, name, created FROM collections WHERE name = ? COLLATE NOCASE",
+                (clean,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return None
+
+    def create_collection(self, name: str) -> int:
+        clean = " ".join(str(name or "").split())[:96]
+        if not clean:
+            return 0
+        existing = self.collection_by_name(clean)
+        if existing is not None:
+            return int(existing["id"])
+        self.conn.execute(
+            "INSERT INTO collections(name, created) VALUES(?, ?)",
+            (clean, time.time()),
+        )
+        row = self.collection_by_name(clean)
+        return int(row["id"]) if row else 0
+
+    def rename_collection(self, collection_id: int, name: str) -> bool:
+        clean = " ".join(str(name or "").split())[:96]
+        if not clean:
+            return False
+        cursor = self.conn.execute(
+            "UPDATE collections SET name = ? WHERE id = ?", (clean, int(collection_id))
+        )
+        return cursor.rowcount > 0
+
+    def drop_collection(self, collection_id: int) -> bool:
+        self.conn.execute(
+            "DELETE FROM collection_files WHERE collection_id = ?", (int(collection_id),)
+        )
+        cursor = self.conn.execute(
+            "DELETE FROM collections WHERE id = ?", (int(collection_id),)
+        )
+        return cursor.rowcount > 0
+
+    def collection_ids(self, collection_id: int) -> set[int]:
+        try:
+            rows = self.conn.execute(
+                "SELECT file_id FROM collection_files WHERE collection_id = ?",
+                (int(collection_id),),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return set()
+        return {int(row["file_id"]) for row in rows}
+
+    def collection_ids_for_names(self, names: Sequence[str]) -> set[int]:
+        """Files in any of these collections (union: a collection is a place)."""
+        clean = [" ".join(str(name or "").split())[:96] for name in names]
+        clean = [name for name in clean if name]
+        if not clean:
+            return set()
+        marks = ",".join("?" * len(clean))
+        try:
+            rows = self.conn.execute(
+                "SELECT DISTINCT cf.file_id FROM collection_files cf "
+                "JOIN collections c ON c.id = cf.collection_id "
+                f"WHERE c.name COLLATE NOCASE IN ({marks})",
+                clean,
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            _reraises_unless_missing(exc)
+            return set()
+        return {int(row["file_id"]) for row in rows}
+
+    def add_to_collection(self, collection_id: int, file_ids: Iterable[int]) -> int:
+        now = time.time()
+        rows = [(int(collection_id), int(file_id), now) for file_id in {int(x) for x in file_ids}]
+        if not rows:
+            return 0
+        self.conn.executemany(
+            "INSERT INTO collection_files(collection_id, file_id, added_at) "
+            "VALUES(?, ?, ?) ON CONFLICT(collection_id, file_id) DO NOTHING",
+            rows,
+        )
+        return len(rows)
+
+    def remove_from_collection(self, collection_id: int, file_ids: Iterable[int]) -> int:
+        ids = [int(item) for item in {int(x) for x in file_ids}]
+        if not ids:
+            return 0
+        marks = ",".join("?" * len(ids))
+        cursor = self.conn.execute(
+            f"DELETE FROM collection_files WHERE collection_id = ? AND file_id IN ({marks})",
+            [int(collection_id), *ids],
+        )
+        return max(0, cursor.rowcount)
+
     # -------------------------------------------------------------- symbols
 
     def replace_symbols(self, file_id: int, symbols: Sequence[tuple[str, str, int, str]]) -> int:
@@ -1203,21 +2222,29 @@ class Store:
         return {
             "files": scalar("SELECT COUNT(*) FROM files"),
             "chunks": scalar("SELECT COUNT(*) FROM chunks"),
-            "vectors": (
-                vecstore.count(self.conn) if self._vec_backend == "sqlite-vec"
-                else scalar("SELECT COUNT(*) FROM vectors WHERE owner_type='chunk'")
-            ),
+            "vectors": scalar("SELECT COUNT(*) FROM file_vectors"),
             "images": scalar("SELECT COUNT(*) FROM images"),
             "ocr_images": scalar("SELECT COUNT(*) FROM images WHERE ocr_text IS NOT NULL AND ocr_text != ''"),
             "db_bytes": self.path.stat().st_size if self.path.exists() else 0,
         }
 
     def _invalidate_vectors(self) -> None:
+        self._vec_gen += 1
         self._vec_key = None
         self._vec_ids = None
         self._vec_matrix = None
         self._pack_key = None
         self._pack = None
+
+    def _stamps(self) -> tuple[int, int]:
+        """(main file mtime_ns, -wal mtime_ns) — cheap proof nobody wrote."""
+        stamps = []
+        for candidate in (self.path, Path(str(self.path) + "-wal")):
+            try:
+                stamps.append(candidate.stat().st_mtime_ns)
+            except OSError:
+                stamps.append(0)
+        return (stamps[0], stamps[1])
 
     def touch_check(self) -> None:
         """Drop the vector cache when another connection wrote to the file.
@@ -1226,13 +2253,7 @@ class Store:
         matrix it loaded at startup. WAL writes land in -wal first, so the main
         file's mtime alone is not enough.
         """
-        stamps = []
-        for candidate in (self.path, Path(str(self.path) + "-wal")):
-            try:
-                stamps.append(candidate.stat().st_mtime_ns)
-            except OSError:
-                stamps.append(0)
-        key = (stamps[0], stamps[1])
+        key = self._stamps()
         if key != self._file_key:
             self._file_key = key
             self._invalidate_vectors()

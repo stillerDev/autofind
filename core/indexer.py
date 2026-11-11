@@ -14,6 +14,7 @@ from, and the main process no longer waits on the model at all.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, as_completed
@@ -23,10 +24,12 @@ from typing import Callable, Sequence
 
 import numpy as np
 
-from .chunker import chunk_text
+from . import filevec
+from .chunker import chunk_spans
 from .config import IndexConfig
 from .embed import get_embedder, get_visual_embedder
-from .extract import extract_text
+from .extract import extract_text, PLAIN_KINDS
+from .extract.plain import extract_plain_bytes
 from .extract.dates import find_doc_date
 from .group import dhash
 from .images import load_image, thumbnail_bytes, visual_features
@@ -95,7 +98,7 @@ def run_index(
     visual=None,
     prune: bool = False,
     progress: Progress | None = None,
-    commit_every: int = 25,
+    commit_every: int = 250,
     workers: int | None = None,
 ) -> IndexStats:
     started = time.perf_counter()
@@ -197,18 +200,24 @@ def run_index(
     # carry NULL until one pass reads their first chunks and tries the regexes.
     stats.doc_dates = backfill_doc_dates(store)
     store.commit()
-    # Build the memory-mapped vector pack now, not on the first query. The
-    # indexer already has everything on disk; the alternative is a 2.6 s stall
-    # the first time someone searches after an index run.
-    if store.vector_backend == "pack":
-        pack_started = time.perf_counter()
-        store.rebuild_pack()
-        stats.timings["pack"] = time.perf_counter() - pack_started
+    # Nothing to prebuild for vectors: one packed row per file unpacks in a few
+    # milliseconds on the first query, and the resident reader keeps it warm.
     stats.seconds = time.perf_counter() - started
     return stats
 
 
 HEAVY_KINDS = frozenset({"image", "pdf", "docx", "pptx", "xlsx", "epub", "odt"})
+
+
+def _extract_batch_job(jobs, config: IndexConfig) -> list[dict]:
+    """Worker side of a batch of light files: one pickle round-trip instead of
+    one per file. Returns results in the same order as the jobs it received,
+    so the main process can zip them back with their positions."""
+    job = _extract_image_job
+    return [
+        job(entry, config) if entry.kind == "image" else _extract_text_job(entry, config)
+        for _, entry in jobs
+    ]
 
 
 def _worth_a_pool(todo: Sequence[tuple[int, object]], neural: bool) -> bool:
@@ -219,10 +228,12 @@ def _worth_a_pool(todo: Sequence[tuple[int, object]], neural: bool) -> bool:
     that; four PDFs or screenshots already cost seconds each, so a handful of
     heavy files tips the balance long before a pile of light ones does. A
     neural embedder counts as heavy work too: its forward pass moves into the
-    workers with the text.
+    workers with the text. Volume counts too: a thousand light files in one
+    process is a hundred-fold serial stretch of work that parallelises for
+    free, so big runs take the pool even when every file is cheap.
     """
     heavy = sum(1 for _, entry in todo if entry.kind in HEAVY_KINDS)
-    return heavy >= 4 or len(todo) >= 40 and neural
+    return heavy >= 4 or len(todo) >= 1000 or len(todo) >= 40 and neural
 
 
 def _default_workers(todo: Sequence[tuple[int, object]]) -> int:
@@ -234,7 +245,15 @@ def _default_workers(todo: Sequence[tuple[int, object]]) -> int:
     takes the extra cores this machine has.
     """
     heavy = sum(1 for _, entry in todo if entry.kind in HEAVY_KINDS)
-    cap = 8 if heavy >= 16 else 4
+    # A thousand-plus light files keep the pool busy enough to pay for eight
+    # workers; very large runs (tens of thousands of files, mostly stat-only
+    # name entries) take more cores because each job is tiny.
+    if len(todo) >= 5000:
+        cap = 12
+    elif heavy >= 16 or len(todo) >= 1000:
+        cap = 8
+    else:
+        cap = 4
     return min(cap, os.cpu_count() or 2)
 
 
@@ -271,40 +290,60 @@ def _run_extraction(
                        len_todo=len(todo), done_before=done_before, commit_every=commit_every)
         return
 
-    futures = {}
+    # Light files travel in batches so the pickle round-trip (text + vectors
+    # per file) amortises over dozens of files; heavy files stay one per
+    # future so progress stays live while a single screenshot takes seconds.
+    futures: dict = {}
+    batch: list[tuple[int, object]] = []
+
+    def _flush_batch() -> None:
+        nonlocal batch
+        if batch:
+            jobs = batch
+            futures[pool.submit(_extract_batch_job, jobs, config)] = jobs
+            batch = []
+
     for position, entry in todo:
-        job = _extract_image_job if entry.kind == "image" else _extract_text_job
-        futures[pool.submit(job, entry, config)] = (position, entry)
+        if entry.kind in HEAVY_KINDS or entry.kind == "image":
+            _flush_batch()
+            futures[pool.submit(_extract_image_job, entry, config)] = [(position, entry)]
+        else:
+            batch.append((position, entry))
+            if len(batch) >= 64:
+                _flush_batch()
+    _flush_batch()
     done = done_before
     try:
         for future in as_completed(futures):
-            position, entry = futures[future]
-            done += 1
-            try:
-                mark = time.perf_counter()
-                prepared = future.result()
-                # Each worker reports its own stopwatch per file: sha, extract,
-                # chunk, embed, ocr — summed here, so a slow run answers "which
-                # stage ate the time" without a profiler attached.
-                for key, value in (prepared.get("timing") or {}).items():
-                    stats.timings[key] = stats.timings.get(key, 0.0) + float(value)
-                status = _store_prepared(entry, prepared, store, stats)
-                stats.timings["store"] = stats.timings.get("store", 0.0) + (
-                    time.perf_counter() - mark
-                )
-            except Exception as exc:  # one broken file must not stop the run
-                stats.failed += 1
-                stats.errors.append((entry.path, f"{type(exc).__name__}: {exc}"))
-                status = "error"
-            if progress:
-                progress(done, done_before + len(todo), status, entry.path)
-            if done % commit_every == 0:
-                store.commit()
+            jobs = futures[future]
+            prepared_batch = future.result()
+            if isinstance(prepared_batch, dict):
+                prepared_batch = [prepared_batch]  # single-heavy-file future
+            for (position, entry), prepared in zip(jobs, prepared_batch):
+                done += 1
+                try:
+                    mark = time.perf_counter()
+                    # Each worker reports its own stopwatch per file: sha, extract,
+                    # chunk, embed, ocr — summed here, so a slow run answers "which
+                    # stage ate the time" without a profiler attached.
+                    for key, value in (prepared.get("timing") or {}).items():
+                        stats.timings[key] = stats.timings.get(key, 0.0) + float(value)
+                    status = _store_prepared(entry, prepared, store, stats)
+                    stats.timings["store"] = stats.timings.get("store", 0.0) + (
+                        time.perf_counter() - mark
+                    )
+                except Exception as exc:  # one broken file must not stop the run
+                    stats.failed += 1
+                    stats.errors.append((entry.path, f"{type(exc).__name__}: {exc}"))
+                    status = "error"
+                if progress:
+                    progress(done, done_before + len(todo), status, entry.path)
+                if done % commit_every == 0:
+                    store.commit()
     except BrokenExecutor:
         stats.errors.append(("", "worker pool died; finishing sequentially"))
         pool.shutdown(cancel_futures=True)
-        remaining = [(position, entry) for future, (position, entry) in futures.items()
-                     if not future.done()]
+        remaining = [item for jobs in futures.values() for item in jobs]
         for position, entry in remaining:
             _store_one(position, entry, config, store, embedder, visual, stats, progress,
                        len_todo=len(todo), done_before=done_before, commit_every=commit_every)
@@ -336,9 +375,20 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
     process trusts nothing here except its own store: the same-content skip is
     re-checked against the digest."""
     status = prepared.get("status", "index")
+    if status == "name-only":
+        store.upsert_file(entry.path, entry.size, entry.mtime, "", "other")
+        stats.indexed += 1
+        return status
     if status == "undecodable":
         stats.skipped += 1
         return status
+    if status == "same-content":
+        # The worker saw this exact path already indexed (touched, bytes
+        # unchanged) and skipped the expensive image work. Refresh the row and
+        # leave the rest of the payload absent — it has no width/height/text.
+        store.upsert_file(entry.path, entry.size, entry.mtime, prepared["digest"], entry.kind)
+        stats.skipped += 1
+        return "same-content"
     if status == "seen-image":
         # A pixel-identical copy of something already indexed: refresh this
         # path's file row, count the copy, and write nothing else — no OCR,
@@ -353,16 +403,18 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
         store.upsert_file(entry.path, entry.size, entry.mtime, digest, entry.kind)
         stats.skipped += 1
         return "same-content"
-    chunks = prepared.get("chunks") or []
-    vectors = prepared.get("vectors")
-    vector_matrix = (
-        np.frombuffer(vectors, dtype=np.float32).reshape(len(chunks), -1) if vectors else None
+    chunks = prepared.get("text") or ""
+    spans = prepared.get("spans") or []
+    vector = (
+        np.frombuffer(prepared["vector"], dtype=np.float32)
+        if prepared.get("vector") is not None
+        else None
     )
     file_id = store.upsert_file(
         entry.path, entry.size, entry.mtime, digest, entry.kind,
         doc_date=prepared.get("doc_date"),
     )
-    stats.chunks += store.replace_chunks(file_id, chunks, vector_matrix)
+    stats.chunks += store.replace_chunks(file_id, chunks, spans, vector)
     symbols = prepared.get("symbols")
     if symbols:
         stats.symbols += store.replace_symbols(file_id, symbols)
@@ -442,26 +494,56 @@ def _open_pool(config: IndexConfig, workers: int | None):
 
 def _extract_text_job(entry, config: IndexConfig) -> dict:
     """Worker side of a document: read, extract, chunk, embed. Everything that
-    costs seconds happens here; the main process only writes."""
+    costs seconds happens here; the main process only writes.
+
+    Plain text and code — the bulk of any corpus — are read ONCE: the digest
+    and the text both come out of the same bytes. A file used to pay two
+    open/read round-trips (one for the hash, one for extraction), which at
+    small file sizes is nearly all the per-file cost."""
     timing: dict[str, float] = {}
     mark = time.perf_counter()
-    digest = sha256_file(entry.path)
-    timing["sha"] = time.perf_counter() - mark
-    mark = time.perf_counter()
-    text = extract_text(entry.path, entry.kind, config.max_file_bytes)
+    if entry.kind == "other":
+        # Name-only entry: no read, no hash, no chunks. The filename is the
+        # searchable surface, which is all a binary or unknown format offers.
+        return {"status": "name-only", "digest": "", "timing": timing}
+    if entry.kind in PLAIN_KINDS:
+        # Read 1 MB first: read(n) preallocates n bytes, and a 20 MB buffer per
+        # 200-byte file costs more than the file does. Only oversized files
+        # trigger the second read.
+        cap = config.max_file_bytes
+        with open(entry.path, "rb") as handle:
+            data = handle.read(min(cap, 1 << 20))
+            if len(data) == min(cap, 1 << 20) and cap > (1 << 20):
+                data += handle.read(cap - len(data))
+        digest = hashlib.sha256(data).hexdigest()  # covers the indexed prefix
+        text = extract_plain_bytes(data)
+        timing["read"] = time.perf_counter() - mark
+        mark = time.perf_counter()
+    else:
+        digest = sha256_file(entry.path)
+        timing["sha"] = time.perf_counter() - mark
+        mark = time.perf_counter()
+        text = extract_text(entry.path, entry.kind, config.max_file_bytes)
     timing["extract"] = time.perf_counter() - mark
     if not text.strip():
         return {"digest": digest, "status": "no-text", "timing": timing}
     mark = time.perf_counter()
-    chunks = chunk_text(text, config.chunk_chars, config.chunk_overlap)
+    spans = chunk_spans(text, config.chunk_chars, config.chunk_overlap)
+    chunks = [text[start:end] for start, end in spans]
     timing["chunk"] = time.perf_counter() - mark
     mark = time.perf_counter()
     vectors = _worker_embedder().encode_passages(chunks)
     timing["embed"] = time.perf_counter() - mark
     prepared = {
         "digest": digest,
-        "chunks": chunks,
-        "vectors": vectors.astype(np.float32).tobytes() if vectors is not None else None,
+        # The document text travels once and the spans point into it, instead
+        # of shipping a list of overlapping chunk strings that the writer then
+        # has to store a second time.
+        "text": text,
+        "spans": spans,
+        "vector": (
+            filevec.mean_pool(vectors).astype(np.float32).tobytes() if vectors is not None else None
+        ),
         "doc_date": find_doc_date(text),
         "timing": timing,
     }
@@ -518,7 +600,8 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
         timing["ocr"] = time.perf_counter() - mark
 
     mark = time.perf_counter()
-    chunks = chunk_text(ocr_text, config.chunk_chars, config.chunk_overlap) if ocr_text.strip() else []
+    spans = chunk_spans(ocr_text, config.chunk_chars, config.chunk_overlap) if ocr_text.strip() else []
+    chunks = [ocr_text[start:end] for start, end in spans]
     vectors = _worker_embedder().encode_passages(chunks) if chunks else None
     timing["embed"] = time.perf_counter() - mark
     mark = time.perf_counter()
@@ -527,8 +610,11 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
     timing["visual"] = time.perf_counter() - mark
     return {
         "digest": digest,
-        "chunks": chunks,
-        "vectors": vectors.astype(np.float32).tobytes() if vectors is not None else None,
+        "text": ocr_text,
+        "spans": spans,
+        "vector": (
+            filevec.mean_pool(vectors).astype(np.float32).tobytes() if vectors is not None else None
+        ),
         "ocr_text": ocr_text,
         "engine": engine_name,
         "width": image.size[0],
@@ -655,6 +741,10 @@ def backfill_symbols(store: Store, limit: int = 100_000) -> int:
 def _index_one(entry, config: IndexConfig, store: Store, embedder, visual, stats: IndexStats) -> str:
     if entry.kind == "image":
         return _index_image(entry, config, store, embedder, visual, stats)
+    if entry.kind == "other":
+        store.upsert_file(entry.path, entry.size, entry.mtime, "", "other")
+        stats.indexed += 1
+        return "name-only"
 
     digest = sha256_file(entry.path)
     existing = store.get_file(entry.path)
@@ -668,13 +758,14 @@ def _index_one(entry, config: IndexConfig, store: Store, embedder, visual, stats
         stats.skipped += 1
         return "no-text"
 
-    chunks = chunk_text(text, config.chunk_chars, config.chunk_overlap)
+    spans = chunk_spans(text, config.chunk_chars, config.chunk_overlap)
+    chunks = [text[start:end] for start, end in spans]
     vectors = embedder.encode_passages(chunks)
     file_id = store.upsert_file(
         entry.path, entry.size, entry.mtime, digest, entry.kind,
         doc_date=find_doc_date(text),
     )
-    stats.chunks += store.replace_chunks(file_id, chunks, vectors)
+    stats.chunks += store.replace_chunks(file_id, text, spans, vectors)
     if entry.kind == "code":
         # Definitions come from the text that was just extracted, so this costs
         # one regex pass over a file that has already been read and chunked.
@@ -716,9 +807,10 @@ def _index_image(entry, config: IndexConfig, store: Store, embedder, visual, sta
     if not ocr_text.strip():
         stats.ocr_empty += 1
 
-    chunks = chunk_text(ocr_text, config.chunk_chars, config.chunk_overlap) if ocr_text.strip() else []
+    spans = chunk_spans(ocr_text, config.chunk_chars, config.chunk_overlap) if ocr_text.strip() else []
+    chunks = [ocr_text[start:end] for start, end in spans]
     vectors = embedder.encode_passages(chunks) if chunks else None
-    stats.chunks += store.replace_chunks(file_id, chunks, vectors)
+    stats.chunks += store.replace_chunks(file_id, ocr_text, spans, vectors)
     doc = find_doc_date(ocr_text) if ocr_text.strip() else None
     if doc:
         store.set_doc_date(file_id, doc)

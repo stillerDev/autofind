@@ -24,11 +24,13 @@ import difflib
 import math
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Sequence
 
 from . import nameindex
 from . import cjk
+from .bm25 import tokenize
 from .cjk import cjk_query_phrase
 from .group import group_hits
 from .nameindex import subsequence_score
@@ -96,6 +98,10 @@ class Hit:
     # hit carries the definition it matched so the row can say which one.
     pinned: bool = False
     symbol: str = ""
+    # Why-found reads these: a file opened twenty times is a stronger reason to
+    # show it than a file matched by a single vector collision.
+    opens: int = 0
+    last_open: float = 0.0
 
     @property
     def is_image(self) -> bool:
@@ -151,10 +157,10 @@ def build_match_query(text: str, max_terms: int = 16) -> str | None:
     left alone: «база» -> «ба» would match half the corpus.
 
     CJK runs become phrases of the same bigrams the index stored
-    (see core/cjk.py): `数据库` arrives as `"数据 据库"`, which matches the
-    chunks_cjk table and enforces the original character order.
+    (see core/cjk.py): `数据库` arrives as `"数据 据库"`, which is a phrase in
+    the one FTS table and enforces the original character order.
     """
-    terms: list[str] = []
+    groups: list[list[str]] = []
     for token in TOKEN_RE.findall(text):
         token = token.lower()
         # Split into alternating CJK / non-CJK pieces, keeping both: a mixed
@@ -164,46 +170,40 @@ def build_match_query(text: str, max_terms: int = 16) -> str | None:
                 continue
             if CJK_RE.fullmatch(segment):
                 if len(segment) == 1:
-                    terms.append(f'"{segment}"')  # an exact char, a star is noise
+                    groups.append([f'"{segment}"'])  # an exact char, a star is noise
                     continue
                 phrase = cjk_query_phrase(segment)
                 if phrase:
-                    terms.append(f'"{phrase}"')
+                    groups.append([f'"{phrase}"'])
                 continue
             if len(segment) < 2:
                 continue
-            terms.append(segment)
+            # One group per word: the full spelling and, for long words, its
+            # shortened prefix (cheap stemming) are OR'd together; separate
+            # words are AND'd so FTS5 ranks an intersection, not a union.
+            group = [f'"{segment}"*']
             if len(segment) >= 6:
-                terms.append(segment[:-2])
-    terms = list(dict.fromkeys(terms))[:max_terms]
-    if not terms:
+                group.append(f'"{segment[:-2]}"*')
+            groups.append(group)
+    groups = groups[:max_terms]
+    if not groups:
         return None
-    # CJK phrases carry their own quotes; plain terms get quoting plus the
-    # prefix star.
-    return " OR ".join(
-        term if term.startswith('"') else f'"{term}"*' for term in terms
+    # AND, not OR: a two-word query that ORs two prefix terms makes FTS5 rank
+    # every chunk containing either word (tens of thousands), which measured
+    # at ~20 ms versus ~1 ms for the intersection. The caller falls back to the
+    # OR form when the strict query finds almost nothing.
+    return " AND ".join(
+        group[0] if len(group) == 1 else "(" + " OR ".join(group) + ")"
+        for group in groups
     )
 
 
-def build_tri_query(text: str, max_terms: int = 8) -> str | None:
-    """The typo tier's query: every long term broken into OR-ed 3-grams.
-
-    A mis-typed `invoive` still shares inv, nvo, voi and ive with `invoice`,
-    and bm25 inside the trigram table ranks the documents that share more
-    grams higher. Far too permissive to be a primary channel, which is why it
-    only runs when the exact tiers came back thin — and only at weight 0.55.
-    """
-    grams: list[str] = []
-    for token in TOKEN_RE.findall(text):
-        token = token.lower()
-        if CJK_RE.search(token) or len(token) < 4:
-            continue
-        for start in range(len(token) - 2):
-            grams.append(token[start : start + 3])
-    grams = list(dict.fromkeys(grams))[: 8]
-    if not grams:
+def build_match_query_or(text: str, max_terms: int = 16) -> str | None:
+    """The recall-first fallback: same term groups, OR-joined."""
+    strict = build_match_query(text, max_terms)
+    if strict is None:
         return None
-    return " OR ".join(f'"{gram}"' for gram in grams)
+    return strict.replace(" AND ", " OR ")
 
 
 def scoped_file_ids(store: Store, prefixes: list[str]) -> set[int]:
@@ -365,6 +365,8 @@ def _listing(
     filter-only query does not re-materialise the whole files table.
     """
     index = nameindex.load(store)
+    usage = store.usage_map()
+    scope = _tag_collection_scope(store, parsed)
     hits: list[Hit] = []
     kinds: list[str] = []
     for position in range(len(index)):
@@ -372,14 +374,18 @@ def _listing(
         kind = index.kind(position)
         size = int(index.sizes[position])
         mtime = float(index.mtimes[position])
+        file_id = int(index.ids[position])
+        if scope is not None and file_id not in scope:
+            continue
         if since is not None and mtime < since:
             continue
         if not parsed.matches(path, kind, size, mtime):
             continue
         kinds.append(kind)
+        opens, last_open = usage.get(file_id, (0, 0.0))
         hits.append(
             Hit(
-                file_id=int(index.ids[position]),
+                file_id=file_id,
                 path=path,
                 kind=kind,
                 score=0.0,
@@ -389,6 +395,8 @@ def _listing(
                 mtime=mtime,
                 size=size,
                 channels=("filter",),
+                opens=int(opens),
+                last_open=float(last_open),
             )
         )
     image_hits = [hit for hit in hits if hit.is_image]
@@ -415,6 +423,25 @@ def _facets(kinds: Sequence[str]) -> dict[str, int]:
     return counts
 
 
+def _tag_collection_scope(store: Store, parsed: ParsedQuery) -> set[int] | None:
+    """The file ids a `tag:` / `collection:` filter admits, or None if unfiltered.
+
+    Tags are AND: `tag:invoice tag:2025` means both. Collections are a union:
+    `collection:Work collection:Home` means either, because a collection is a
+    place a file lives, and a file can live in two places.
+    """
+    if not parsed.tags and not parsed.collections:
+        return None
+    scope: set[int] | None = None
+    if parsed.tags:
+        tagged = store.file_ids_for_tags(parsed.tags)
+        scope = tagged if scope is None else scope & tagged
+    if parsed.collections:
+        places = store.collection_ids_for_names(parsed.collections)
+        scope = places if scope is None else scope & places
+    return scope if scope is not None else set()
+
+
 # -------------------------------------------------------------------- search
 
 def _files_from_chunks(store: Store, results: Sequence[tuple[int, float]]):
@@ -434,6 +461,13 @@ def _files_from_chunks(store: Store, results: Sequence[tuple[int, float]]):
         ordered.append(file_id)
         best_chunk[file_id] = row
     return ordered, best_chunk
+
+
+# The three retrieval channels (BM25 on SQLite, vectors on the pack, fuzzy
+# names on the numpy index) run in parallel: each one releases the GIL for its
+# real work (sqlite3_step, BLAS matvec, searchsorted), so a warm query costs
+# the slowest channel instead of the sum of all three.
+_CHANNEL_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="af-channel")
 
 
 def _rank(
@@ -498,29 +532,71 @@ def _rank(
         symbol_files.append(file_id)
 
     pinned = store.pinned_ids()
-    match = build_match_query(bm25_text) if "bm25" in channels else None
-    lexical = store.bm25(match, pool) if match else []
-    # The CJK bigram table is queried with the same match query: CJK runs in
-    # it arrive as bigram phrases, everything else simply matches nothing.
-    cjk_lexical = store.bm25_cjk(match, pool) if match else []
-    # The typo tier only pays its way when the exact tiers came back nearly
-    # empty — an OR over common 3-grams on a large index costs ~100 ms, so a
-    # threshold any looser would tax ordinary queries to reproduce hits bm25
-    # already has. Its pool is small for the same reason.
+    use_bm25 = "bm25" in channels
+    match = build_match_query(bm25_text) if use_bm25 else None
+
+    def _lexical_channel():
+        # The in-RAM BM25 (numpy postings) answers in single-digit ms where
+        # FTS5 needs ~100; it is built in the background, so the first
+        # requests of a fresh server still ride the FTS5 path below. It applies
+        # the same CJK bigram transform as the index, so CJK queries work here
+        # too — there is one tier, not a main table plus a CJK copy.
+        index = store.inram_bm25()
+        if index is not None:
+            return index.search(bm25_text, pool)
+        if not match:
+            return []
+        hits = store.bm25(match, pool)
+        if len(hits) < 3:
+            # Strict AND is fast but requires every word; when it finds almost
+            # nothing, re-run the OR form so partial matches still surface.
+            wide = build_match_query_or(bm25_text)
+            if wide and wide != match:
+                broader = store.bm25(wide, pool)
+                if len(broader) > len(hits):
+                    hits = broader
+        return hits
+
+    def _vector_channel(lexical_hits: list[tuple[int, float]]):
+        if "vector" not in channels or not (bm25_text or parsed.text):
+            return []
+        # A hashed embedder has no notion of meaning — its "semantic" pass is a
+        # lexical blur, so on a single-term query the exact channel has already
+        # answered it costs a 100k-row matvec (5 ms) and reorders nothing:
+        # measured top-12 overlap against the gated run is 100% on the
+        # benchmark corpus and 92-100% on the real index. A real embedder still
+        # gets the pass, and so does a term the lexical channel missed.
+        # Filters keep it too: the exact channel can be empty *after* the
+        # predicate, and then the vectors are the only recall left.
+        if (
+            lexical_hits
+            and not parsed.has_filters
+            and not getattr(embedder, "semantic", False)
+            and len(tokenize(bm25_text or parsed.text)) <= 1
+        ):
+            return []
+        return store.knn(embedder.encode_query(bm25_text or parsed.text), pool)
+
+    def _fuzzy_channel():
+        if "fuzzy" in channels and fuzzy_text:
+            return fuzzy_files(store, fuzzy_text, pool)
+        return []
+
+    # Fuzzy is submitted first and lexical runs inline, so the vector gate can
+    # see the lexical result before paying for the matvec. The vector pass runs
+    # on this thread, which still overlaps the fuzzy scan — the pool only had
+    # three slots, and one of them was wasted submitting a gated no-op.
+    fuzzy_future = _CHANNEL_POOL.submit(_fuzzy_channel)
+    lexical = _lexical_channel()
+    semantic = _vector_channel(lexical)
+    fuzzy = fuzzy_future.result()
+    # The typo channel only pays its way when the exact channel came back
+    # nearly empty: it re-queries the vocabulary for a corrected spelling, and
+    # an ordinary query must not spend that. Its pool is small for the same
+    # reason.
     tri = []
-    if (
-        "bm25" in channels
-        and store.has_trigram
-        and len(lexical) < 3
-        and (tri_match := build_tri_query(bm25_text)) is not None
-    ):
-        tri = store.bm25_tri(tri_match, min(pool, 25))
-    semantic = (
-        store.knn(embedder.encode_query(bm25_text or parsed.text), pool)
-        if "vector" in channels and (bm25_text or parsed.text)
-        else []
-    )
-    fuzzy = fuzzy_files(store, fuzzy_text, pool) if "fuzzy" in channels and fuzzy_text else []
+    if use_bm25 and len(lexical) < 3 and bm25_text:
+        tri = store.bm25_typo(bm25_text, min(pool, 25))
     regex_rows = []
     if parsed.regexes:
         regex_rows = store.regex_chunks("|".join(f"(?:{r})" for r in parsed.regexes), pool * 2)
@@ -531,7 +607,6 @@ def _rank(
     if (
         "bm25" in channels
         and not lexical
-        and not cjk_lexical
         and not tri
         and not fuzzy
         and not regex_rows
@@ -541,12 +616,16 @@ def _rank(
         return [], {}
 
     lexical_files, chunk_rows = _files_from_chunks(store, lexical)
-    cjk_files, cjk_chunk_rows = _files_from_chunks(store, cjk_lexical)
-    chunk_rows.update(cjk_chunk_rows)
     tri_files, tri_chunk_rows = _files_from_chunks(store, tri)
     tri_files = _verify_tri(tri_files, tri_chunk_rows, bm25_text)
     chunk_rows.update(tri_chunk_rows)
-    semantic_files, semantic_rows = _files_from_chunks(store, semantic)
+    if store.vector_is_file_level:
+        # One vector per file: the ids are already file ids, so there is no
+        # chunk to collapse and no per-chunk snippet to keep.
+        semantic_files = [int(file_id) for file_id, _ in semantic]
+        semantic_rows: dict = {}
+    else:
+        semantic_files, semantic_rows = _files_from_chunks(store, semantic)
     chunk_rows.update(semantic_rows)
     regex_files, regex_chunk_rows = _files_from_chunks(
         store, [(int(row["id"]), 0.0) for row in regex_rows]
@@ -559,7 +638,7 @@ def _rank(
     missing = {
         file_id
         for file_id in (
-            *lexical_files, *cjk_files, *tri_files, *semantic_files, *fuzzy_files_ids(fuzzy),
+            *lexical_files, *tri_files, *semantic_files, *fuzzy_files_ids(fuzzy),
             *regex_files, *symbol_files,
         )
         if file_id not in file_rows
@@ -581,14 +660,13 @@ def _rank(
         if not scope_ids:
             scope_ids = set()
         ranked_scope = {
-            "bm25": lexical_files, "cjk": cjk_files, "tri": tri_files,
+            "bm25": lexical_files, "tri": tri_files,
             "vector": semantic_files, "fuzzy": fuzzy_files_ids(fuzzy),
             "regex": regex_files, "symbol": symbol_files,
         }
         for name, files in ranked_scope.items():
             ranked_scope[name] = [fid for fid in files if fid in scope_ids]
         lexical_files = ranked_scope["bm25"]
-        cjk_files = ranked_scope["cjk"]
         tri_files = ranked_scope["tri"]
         semantic_files = ranked_scope["vector"]
 
@@ -624,15 +702,21 @@ def _rank(
     # sliced page — so `type:` tabs can show real counts, the way kensaku
     # counts its matched set.
     allowed_ids = {fid for fid in file_rows if allowed(fid)}
+    # Tags and collections are a set of file ids the index already knows. The
+    # intersection happens here, before the facets, so the tab counts describe
+    # the same set the page will show.
+    scope = _tag_collection_scope(store, parsed)
+    if scope is not None:
+        allowed_ids &= scope
     kind_facets: dict[str, int] = {}
     for fid in allowed_ids:
         kind = file_rows[fid]["kind"]
         kind_facets[kind] = kind_facets.get(kind, 0) + 1
 
-    # Did-you-mean: the trigram tier found files for a query the exact tiers
+    # Did-you-mean: the typo channel found files for a query the exact channel
     # could not read — one of its chunks probably spells the word right.
-    if not cjk_lexical and tri and bm25_text:
-        # The typo tier only runs on thin-lexical queries, so a suggestion
+    if tri and bm25_text:
+        # The typo channel only runs on thin-lexical queries, so a suggestion
         # here is a correction of a degraded query, not noise on a good one.
         suggestion = _suggest_term(bm25_text, tri_chunk_rows)
         if suggestion:
@@ -640,7 +724,6 @@ def _rank(
 
     ranked = {
         "bm25": lexical_files,
-        "cjk": cjk_files,
         "tri": tri_files,
         "vector": semantic_files,
         "fuzzy": fuzzy_files_ids(fuzzy),
@@ -692,6 +775,8 @@ def _rank(
                 size=int(row["size"]),
                 channels=tuple(matched_channels.get(file_id, [])),
                 pinned=file_id in pinned,
+                opens=int(usage.get(file_id, (0, 0.0))[0]),
+                last_open=float(usage.get(file_id, (0, 0.0))[1]),
                 symbol=(
                     f"{symbol_best[file_id]['kind']} {symbol_best[file_id]['name']}"
                     if file_id in symbol_best else ""

@@ -9,18 +9,28 @@ import time
 from pathlib import Path
 
 from .config import IndexConfig
-from .doctor import collect as collect_doctor
-from .doctor import format_report as format_doctor
-from .embed import get_embedder, get_visual_embedder
-from .evaluate import compare_channels, evaluate, format_report, load_labels
-from .indexer import run_index
-from .ocr import engine_report
 from .personal import expand_aliases
-from .privacy import indexed_sensitive, purge_indexed
 from .query import understand
 from .search import search_page
 from .store import Store
-from .watch import Watcher, watch_forever
+
+
+def get_embedder(*args, **kwargs):
+    # Imported lazily: the embedder module pulls numpy and Pillow, and a cold
+    # CLI search should not pay for the visual stack it never touches.
+    from .embed import get_embedder as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def get_visual_embedder(*args, **kwargs):
+    from .embed import get_visual_embedder as _impl
+
+    return _impl(*args, **kwargs)
+
+# doctor / evaluate / indexer / ocr / privacy / watch are imported inside the
+# subcommands that need them: `autofind search` would otherwise pay ~200 ms of
+# startup (doctor alone pulls the OCR stack) for machinery it never touches.
 
 BAR_WIDTH = 28
 
@@ -331,6 +341,9 @@ def _cmd_app(args, config: IndexConfig, db_path: Path) -> int:
 
 
 def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
+    from .indexer import run_index
+    from .ocr import engine_report
+
     config.ensure_home()
     if args.no_ocr:
         config.ocr_enabled = False
@@ -385,7 +398,8 @@ def _cmd_search(args, config: IndexConfig, db_path: Path) -> int:
         print(f"no index at {db_path}; run: autofind index <folder>", file=sys.stderr)
         return 2
     embedder = get_embedder(args.embedder, config.model_dir)
-    store = Store(db_path, embedder.name, embedder.dim, readonly=True, vector_backend=config.vector_backend)
+    store = Store(db_path, embedder.name, embedder.dim, readonly=True,
+                  vector_backend=config.vector_backend, ram_bm25=False)
     try:
         query = " ".join(args.query)
         started = time.perf_counter()
@@ -520,6 +534,8 @@ def _cmd_cheat() -> int:
 
 
 def _cmd_watch(args, config: IndexConfig, db_path: Path) -> int:
+    from .watch import Watcher, watch_forever
+
     config.ensure_home()
     if getattr(args, "allow_sensitive", False):
         config.allow_sensitive = True
@@ -549,6 +565,8 @@ def _cmd_watch(args, config: IndexConfig, db_path: Path) -> int:
 
 
 def _cmd_eval(args, config: IndexConfig, db_path: Path) -> int:
+    from .evaluate import compare_channels, evaluate, format_report, load_labels
+
     if not db_path.exists():
         print(f"no index at {db_path}; run: autofind index <folder>", file=sys.stderr)
         return 2
@@ -589,6 +607,9 @@ def _cmd_eval(args, config: IndexConfig, db_path: Path) -> int:
 
 
 def _cmd_doctor(args, config: IndexConfig, db_path: Path) -> int:
+    from .doctor import collect as collect_doctor
+    from .doctor import format_report as format_doctor
+
     data = collect_doctor(config, db_path)
     if args.json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
@@ -669,6 +690,8 @@ def _probe_image():
 
 
 def _cmd_privacy(args, config: IndexConfig, db_path: Path) -> int:
+    from .privacy import indexed_sensitive, purge_indexed
+
     if not db_path.exists():
         print(f"no index at {db_path}", file=sys.stderr)
         return 2
@@ -706,6 +729,8 @@ def _cmd_privacy(args, config: IndexConfig, db_path: Path) -> int:
 
 
 def _cmd_stats(config: IndexConfig, db_path: Path) -> int:
+    from .ocr import engine_report
+
     if not db_path.exists():
         print(f"no index at {db_path}")
         return 2

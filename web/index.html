@@ -228,6 +228,8 @@
         <button class="chip" data-kind="pdf" data-i18n="kind.pdf">PDF</button>
         <button class="chip" data-kind="docx" data-i18n="kind.docx">DOCX</button>
         <button class="chip" data-kind="image" data-i18n="kind.image">Screenshots</button>
+        <button class="chip" data-kind="email" data-i18n="kind.email">Mail</button>
+        <button class="chip" data-kind="archive" data-i18n="kind.archive">Archives</button>
       </nav>
     </div>
   </header>
@@ -237,9 +239,15 @@
       <span class="dot" id="status-dot"></span>
       <span id="status-text" data-i18n="status.checking">checking the index…</span>
     </span>
-    <label class="field">
+    <label class="field folder-field">
       <span data-i18n="tools.folder">folder</span>
       <input id="folder" data-i18n-placeholder="tools.any" autocomplete="off">
+      <svg class="field-edit" viewBox="0 0 24 24" width="12" height="12" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 20l4.2-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20z"></path>
+        <path d="M13.5 7.5l3 3"></path>
+      </svg>
     </label>
     <div class="field date-field">
       <span data-i18n="tools.since">since</span>
@@ -282,20 +290,184 @@
           <button class="cal-act" type="button" data-cal="today"
                   data-i18n="cal.today">today</button>
           <button class="cal-act" type="button" data-cal="docdate" id="doc-date-toggle"
+                  data-i18n="cal.docDateLabel"
                   data-i18n-title="cal.docDate" data-i18n-aria="cal.docDate">date</button>
         </div>
       </div>
     </div>
-    <label class="field">
-      <span data-i18n="tools.sort">sort</span>
-      <select id="sort">
-        <option value="best" data-i18n="sort.best">best match</option>
-        <option value="newest" data-i18n="sort.newest">newest</option>
-        <option value="oldest" data-i18n="sort.oldest">oldest</option>
-        <option value="largest" data-i18n="sort.largest">largest</option>
-        <option value="name" data-i18n="sort.name">by name</option>
-      </select>
-    </label>
+    <div class="field sort-field">
+      <button class="sort-trigger" id="sort-btn" type="button"
+              aria-haspopup="listbox" aria-expanded="false" aria-controls="sort-menu"
+              data-i18n-aria="tools.sort">
+        <span data-i18n="tools.sort">sort</span>
+        <span class="sort-value" id="sort-value" data-i18n="sort.best">best match</span>
+        <svg class="sort-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+             stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 9.5l6 6 6-6"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="sort-menu" id="sort-menu" role="listbox"
+         data-i18n-aria="tools.sort" hidden>
+      <button type="button" role="option" data-sort="best" data-i18n="sort.best">best match</button>
+      <button type="button" role="option" data-sort="newest" data-i18n="sort.newest">newest</button>
+      <button type="button" role="option" data-sort="oldest" data-i18n="sort.oldest">oldest</button>
+      <button type="button" role="option" data-sort="largest" data-i18n="sort.largest">largest</button>
+      <button type="button" role="option" data-sort="name" data-i18n="sort.name">by name</button>
+    </div>
+    <!-- The filter builder writes real query tokens, so what it builds can be
+         read, edited, and saved like anything typed by hand. -->
+    <button class="tool-btn" id="filters-btn" type="button"
+            data-i18n="filters.open" aria-expanded="false" aria-controls="filter-builder">Filters</button>
+    <div class="filter-builder" id="filter-builder" hidden>
+      <div class="filter-grid">
+        <label class="filter-field">
+          <span data-i18n="filters.type">type</span>
+          <span class="filter-picker" data-picker="f-type">
+            <select id="f-type" hidden>
+              <option value="" data-i18n="filters.any">any</option>
+              <option value="docs" data-i18n="kind.docs">Documents</option>
+              <option value="code" data-i18n="kind.code">Code</option>
+              <option value="pdf" data-i18n="kind.pdf">PDF</option>
+              <option value="image" data-i18n="kind.image">Screenshots</option>
+              <option value="email" data-i18n="kind.email">Mail</option>
+              <option value="archive" data-i18n="kind.archive">Archives</option>
+            </select>
+            <button class="filter-picker-btn" type="button" aria-haspopup="listbox"
+                    aria-expanded="false" aria-controls="f-type-menu"
+                    data-i18n-aria="filters.type">
+              <span class="filter-picker-value" data-i18n="filters.any">any</span>
+              <svg class="filter-picker-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                   stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                   stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 9.5l6 6 6-6"></path>
+              </svg>
+            </button>
+            <span class="filter-menu" id="f-type-menu" role="listbox"
+                  data-i18n-aria="filters.type" hidden></span>
+          </span>
+        </label>
+        <label class="filter-field">
+          <span data-i18n="filters.folder">folder</span>
+          <input id="f-folder" autocomplete="off" spellcheck="false"
+                 data-i18n-placeholder="filters.folderAny">
+        </label>
+        <label class="filter-field">
+          <span data-i18n="filters.sizeMin">min size</span>
+          <span class="filter-size">
+            <input id="f-size-min" type="number" min="0" step="1" inputmode="numeric">
+            <span class="unit-picker">
+              <input type="hidden" id="f-size-min-unit" value="mb">
+              <button class="unit-trigger" type="button" aria-haspopup="listbox"
+                      aria-expanded="false" aria-controls="f-size-min-unit-menu"
+                      data-i18n-aria="filters.sizeUnit">
+                <span class="unit-value" data-i18n="unit.mb">MB</span>
+                <svg class="unit-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                     stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                     stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 9.5l6 6 6-6"></path>
+                </svg>
+              </button>
+              <span class="unit-menu" id="f-size-min-unit-menu" role="listbox"
+                    data-i18n-aria="filters.sizeUnit" hidden>
+                <button type="button" role="option" data-unit="b" data-i18n="unit.b">B</button>
+                <button type="button" role="option" data-unit="kb" data-i18n="unit.kb">KB</button>
+                <button type="button" role="option" data-unit="mb" data-i18n="unit.mb" aria-selected="true">MB</button>
+                <button type="button" role="option" data-unit="gb" data-i18n="unit.gb">GB</button>
+              </span>
+            </span>
+          </span>
+        </label>
+        <label class="filter-field">
+          <span data-i18n="filters.sizeMax">max size</span>
+          <span class="filter-size">
+            <input id="f-size-max" type="number" min="0" step="1" inputmode="numeric">
+            <span class="unit-picker">
+              <input type="hidden" id="f-size-max-unit" value="mb">
+              <button class="unit-trigger" type="button" aria-haspopup="listbox"
+                      aria-expanded="false" aria-controls="f-size-max-unit-menu"
+                      data-i18n-aria="filters.sizeUnit">
+                <span class="unit-value" data-i18n="unit.mb">MB</span>
+                <svg class="unit-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                     stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                     stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 9.5l6 6 6-6"></path>
+                </svg>
+              </button>
+              <span class="unit-menu" id="f-size-max-unit-menu" role="listbox"
+                    data-i18n-aria="filters.sizeUnit" hidden>
+                <button type="button" role="option" data-unit="b" data-i18n="unit.b">B</button>
+                <button type="button" role="option" data-unit="kb" data-i18n="unit.kb">KB</button>
+                <button type="button" role="option" data-unit="mb" data-i18n="unit.mb" aria-selected="true">MB</button>
+                <button type="button" role="option" data-unit="gb" data-i18n="unit.gb">GB</button>
+              </span>
+            </span>
+          </span>
+        </label>
+        <label class="filter-field">
+          <span data-i18n="filters.period">modified</span>
+          <span class="filter-picker" data-picker="f-period">
+            <select id="f-period" hidden>
+              <option value="" data-i18n="filters.anyTime">any time</option>
+              <option value="<1d" data-i18n="filters.today">today</option>
+              <option value="<7d" data-i18n="filters.week">past week</option>
+              <option value="<31d" data-i18n="filters.month">past month</option>
+              <option value="<365d" data-i18n="filters.year">past year</option>
+            </select>
+            <button class="filter-picker-btn" type="button" aria-haspopup="listbox"
+                    aria-expanded="false" aria-controls="f-period-menu"
+                    data-i18n-aria="filters.period">
+              <span class="filter-picker-value" data-i18n="filters.anyTime">any time</span>
+              <svg class="filter-picker-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                   stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                   stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 9.5l6 6 6-6"></path>
+              </svg>
+            </button>
+            <span class="filter-menu" id="f-period-menu" role="listbox"
+                  data-i18n-aria="filters.period" hidden></span>
+          </span>
+        </label>
+        <label class="filter-field">
+          <span data-i18n="filters.tag">tag</span>
+          <input id="f-tag" list="filter-tag-list" autocomplete="off" spellcheck="false"
+                 data-i18n-placeholder="filters.tagAny">
+          <datalist id="filter-tag-list"></datalist>
+        </label>
+        <label class="filter-field">
+          <span data-i18n="filters.collection">collection</span>
+          <span class="filter-picker" data-picker="f-collection">
+            <select id="f-collection" hidden>
+              <option value="" data-i18n="filters.any">any</option>
+            </select>
+            <button class="filter-picker-btn" type="button" aria-haspopup="listbox"
+                    aria-expanded="false" aria-controls="f-collection-menu"
+                    data-i18n-aria="filters.collection">
+              <span class="filter-picker-value" data-i18n="filters.any">any</span>
+              <svg class="filter-picker-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                   stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                   stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 9.5l6 6 6-6"></path>
+              </svg>
+            </button>
+            <span class="filter-menu" id="f-collection-menu" role="listbox"
+                  data-i18n-aria="filters.collection" hidden></span>
+          </span>
+        </label>
+      </div>
+      <div class="filter-actions">
+        <span class="filter-preview" id="filter-preview"></span>
+        <button class="btn mini" id="filter-clear" type="button" data-i18n="filters.clear">Clear</button>
+        <button class="btn primary mini" id="filter-apply" type="button" data-i18n="filters.apply">Apply</button>
+      </div>
+    </div>
+    <button class="tool-btn" id="export-btn" type="button"
+            data-i18n="export.open" aria-expanded="false" aria-controls="export-menu">Export</button>
+    <div class="export-menu" id="export-menu" hidden>
+      <button type="button" data-export="csv">CSV</button>
+      <button type="button" data-export="json">JSON</button>
+    </div>
     <div class="meta-line" id="meta"></div>
   </div>
 
@@ -406,6 +578,20 @@
               data-i18n-aria="preview.close" aria-label="close">×</button>
     </div>
   </div>
+  <div class="dups-mode" id="dups-mode" role="tablist">
+    <button type="button" class="dup-mode active" data-dup-mode="images"
+            data-i18n="dups.modeImages">Screenshots</button>
+    <button type="button" class="dup-mode" data-dup-mode="docs"
+            data-i18n="dups.modeDocs">Documents</button>
+  </div>
+  <div class="dups-actions">
+    <button class="dup-action" id="dups-smart" type="button"
+            data-i18n="dups.smartSelect">Keep the best</button>
+    <button class="dup-action" id="dups-select-all" type="button"
+            data-i18n="dups.selectAll">Select all</button>
+    <button class="dup-action" id="dups-clear" type="button"
+            data-i18n="dups.clearSelection">Clear selection</button>
+  </div>
   <p class="panel-note" data-i18n="panel.duplicatesNote"></p>
   <div class="dups-body" id="dups-body"></div>
 </aside>
@@ -423,13 +609,40 @@
   </div>
 </div>
 
+<div class="bulk-bar" id="bulk-bar" hidden>
+  <span class="bulk-count" id="bulk-count"></span>
+  <button class="bulk-act" type="button" id="bulk-pin" data-i18n="bulk.pin">Pin</button>
+  <button class="bulk-act" type="button" id="bulk-tag" data-i18n="bulk.tag">Tag</button>
+  <button class="bulk-act" type="button" id="bulk-collection" data-i18n="bulk.collection">Collection</button>
+  <button class="bulk-act" type="button" id="bulk-copy" data-i18n="bulk.copy">Copy paths</button>
+  <button class="bulk-act" type="button" id="bulk-export" data-i18n="bulk.export">Export</button>
+  <button class="bulk-clear" type="button" id="bulk-clear"
+          data-i18n-aria="bulk.clear" data-i18n-title="bulk.clear">×</button>
+</div>
+
+<div class="popover" id="annotate" hidden>
+  <div class="popover-head">
+    <b id="annotate-title"></b>
+    <button class="popover-x" type="button" id="annotate-close"
+            data-i18n-aria="preview.close">×</button>
+  </div>
+  <div class="popover-body" id="annotate-body"></div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <div class="modal" id="preview">
   <div class="modal-card preview-card">
     <div class="modal-head">
       <h3 data-i18n="preview.title">Preview</h3>
-      <button class="close" id="preview-close" data-i18n="preview.close">close</button>
+      <button class="close close-icon" id="preview-close" type="button"
+              data-i18n-title="preview.close" data-i18n-aria="preview.close">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             aria-hidden="true">
+          <path d="M6 6l12 12M18 6L6 18"></path>
+        </svg>
+      </button>
     </div>
     <div id="preview-body"></div>
   </div>
@@ -449,9 +662,27 @@
   <div class="modal-card settings-card" tabindex="-1">
     <div class="modal-head">
       <h3 data-i18n="settings.title">Settings</h3>
-      <button class="close" id="settings-close" data-i18n="settings.close">close</button>
+      <button class="close close-icon" id="settings-close" type="button"
+              data-i18n-title="settings.close" data-i18n-aria="settings.close">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             aria-hidden="true">
+          <path d="M6 6l12 12M18 6L6 18"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="settings-tabs" id="settings-tabs" role="tablist">
+      <button type="button" class="settings-tab active" data-tab="general"
+              role="tab" data-i18n="settings.tab.general">General</button>
+      <button type="button" class="settings-tab" data-tab="search"
+              role="tab" data-i18n="settings.tab.search">Search</button>
+      <button type="button" class="settings-tab" data-tab="keys"
+              role="tab" data-i18n="settings.tab.keys">Hotkeys</button>
+      <button type="button" class="settings-tab" data-tab="data"
+              role="tab" data-i18n="settings.tab.data">Data</button>
     </div>
     <div class="settings-body">
+      <div class="settings-pane active" data-pane="general">
       <section class="settings-section">
         <h4 data-i18n="settings.appearance">Appearance</h4>
         <div class="wall-row" id="wall-row" role="radiogroup" data-i18n-aria="settings.background">
@@ -501,6 +732,8 @@
         </div>
         <p class="settings-note" data-i18n="settings.languageNote"></p>
       </section>
+      </div>
+      <div class="settings-pane" data-pane="search">
       <section class="settings-section">
         <h4 data-i18n="alias.title">Dictionary</h4>
         <p class="settings-note" data-i18n="alias.note"></p>
@@ -513,11 +746,43 @@
         </div>
       </section>
       <section class="settings-section">
+        <div class="types-head">
+          <h4 data-i18n="types.title">File types</h4>
+          <button class="btn mini" id="types-add" type="button"
+                  data-i18n="types.add">+ type</button>
+        </div>
+        <p class="settings-note" data-i18n="types.note"></p>
+        <div class="types-list" id="types-list"></div>
+        <p class="settings-note types-example" data-i18n="types.example"></p>
+      </section>
+      </div>
+      <div class="settings-pane" data-pane="keys">
+        <section class="settings-section">
+          <h4 data-i18n="hotkeys.title">Keyboard shortcuts</h4>
+          <p class="settings-note" data-i18n="hotkeys.note"></p>
+          <div class="hotkeys-list" id="hotkeys-list"></div>
+          <div class="hotkeys-foot">
+            <button class="btn mini" id="hotkeys-reset" type="button"
+                    data-i18n="hotkeys.reset">Reset to defaults</button>
+            <span class="hotkeys-status" id="hotkeys-status"></span>
+          </div>
+        </section>
+      </div>
+      <div class="settings-pane" data-pane="data">
+      <section class="settings-section">
         <h4 data-i18n="settings.about">About</h4>
         <dl class="about-grid" id="about"></dl>
         <button class="btn mini settings-replay" id="replay-onboarding" type="button"
                 data-i18n="settings.replayWelcome">Show the welcome screen again</button>
-      </section>    </div>
+      </section>
+      <section class="settings-section">
+        <h4 data-i18n="audit.title">Your data</h4>
+        <p class="settings-note" data-i18n="audit.note"></p>
+        <div class="audit-list" id="audit-list"></div>
+        <p class="audit-warn" id="audit-warn"></p>
+      </section>
+      </div>
+    </div>
   </div>
 </div>
 

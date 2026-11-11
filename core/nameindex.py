@@ -26,6 +26,7 @@ UI server picks up an index run without a restart.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -53,6 +54,10 @@ BOUNDARY_BYTES = np.frombuffer(b" ._-(", dtype=np.uint8)
 # digits. A query byte outside it (punctuation, non-ASCII) sends the whole
 # query to the Python scorer.
 ALPHABET = np.frombuffer(b"abcdefghijklmnopqrstuvwxyz0123456789", dtype=np.uint8)
+# Bytes the vectorised scorer's position table actually knows. Any other
+# ASCII byte (`_`, `-`, `.`, space…) has no indexed positions, so such queries
+# take the Python scorer, exactly like non-ASCII ones.
+ALPHABET_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 
 
 def subsequence_score(query: str, name: str) -> float | None:
@@ -234,6 +239,71 @@ class NameIndex:
     def __len__(self) -> int:
         return int(self.ids.shape[0])
 
+    # ------------------------------------------------------- disk persistence
+
+    SIDE_SUFFIX = ".nameidx"
+
+    def save_sidecar(self, path, stamps: tuple[int, int]) -> None:
+        """Persist every build product to `<db>.nameidx` so the next process
+        can `np.load` it instead of re-encoding 100k rows (~450 ms). Best
+        effort by design: a failed save just costs the next process a rebuild.
+        """
+        payload = {
+            "ids": self.ids, "masks": self.masks,
+            "sizes": self.sizes, "mtimes": self.mtimes,
+            "blob": self.blob_array, "name_len": self.name_len,
+            "name_chars": self.name_chars, "offsets": self.offsets,
+            "name_blob": self.name_blob_array, "name_offsets": self.name_offsets,
+            "path_blob": self.path_blob_array, "path_offsets": self.path_offsets,
+            "path_lower_blob": self.path_lower_array, "path_lower_offsets": self.path_lower_offsets,
+            "kind_codes": self.kind_codes,
+            "kind_vocab": np.array(self.kind_vocab, dtype=np.str_),
+            "alpha_starts": self.alpha_starts, "alpha_positions": self.alpha_positions,
+            "stamps": np.array(stamps, dtype=np.float64),
+            "build_seconds": np.array([self.build_seconds], dtype=np.float64),
+        }
+        # Written straight to the final path: on Windows a just-closed file can
+        # stay locked for a while by antivirus scans, which made the classic
+        # tmp-then-replace dance fail repeatedly. A torn write here is safe —
+        # the loader validates the npz and falls back to a rebuild.
+        with open(path, "wb") as fh:
+            np.savez(fh, **payload)
+
+    @classmethod
+    def from_arrays(cls, arrays: dict, build_seconds: float = 0.0) -> "NameIndex":
+        """Rebuild from a sidecar's payloads. The blobs arrive as uint8
+        arrays; the byte-string views the accessors slice are materialised
+        once here (three `bytes()` copies of a few MB each, not 100k rows)."""
+        index = cls.__new__(cls)
+        index.ids = arrays["ids"]
+        index.masks = arrays["masks"]
+        index.sizes = arrays["sizes"]
+        index.mtimes = arrays["mtimes"]
+        index.build_seconds = build_seconds
+        index._names_view = None
+        index._lowered_view = None
+        index._paths_view = None
+        index._kinds_view = None
+        index.blob = bytes(arrays["blob"])
+        index.blob_array = np.frombuffer(index.blob, dtype=np.uint8)
+        index.name_len = arrays["name_len"]
+        index.name_chars = arrays["name_chars"]
+        index.offsets = arrays["offsets"]
+        index.name_blob = bytes(arrays["name_blob"])
+        index.name_blob_array = np.frombuffer(index.name_blob, dtype=np.uint8)
+        index.name_offsets = arrays["name_offsets"]
+        index.path_blob = bytes(arrays["path_blob"])
+        index.path_blob_array = np.frombuffer(index.path_blob, dtype=np.uint8)
+        index.path_offsets = arrays["path_offsets"]
+        index.path_lower_blob = bytes(arrays["path_lower_blob"])
+        index.path_lower_array = np.frombuffer(index.path_lower_blob, dtype=np.uint8)
+        index.path_lower_offsets = arrays["path_lower_offsets"]
+        index.kind_vocab = [str(k) for k in arrays["kind_vocab"].tolist()]
+        index.kind_codes = arrays["kind_codes"]
+        index.alpha_starts = arrays["alpha_starts"]
+        index.alpha_positions = arrays["alpha_positions"]
+        return index
+
     # -------------------------------------------------------------- accessors
 
     def name(self, position: int) -> str:
@@ -391,7 +461,7 @@ class NameIndex:
             if not len(candidates):
                 return []
 
-        if needle.isascii():
+        if needle.isascii() and ALPHABET_CHARS.issuperset(needle):
             positions, scores = self._vectorised_scores(needle, candidates)
             if not len(positions):
                 return []
@@ -421,7 +491,8 @@ class NameIndex:
             # One vectorised AND over the whole corpus. This is the line that
             # replaced a full table scan with a Python row object per file.
             positions = np.nonzero((self.masks & mask) == mask)[0]
-        if len(positions) > HARD_CAP and not needle.isascii():
+        falls_back = not needle.isascii() or not ALPHABET_CHARS.issuperset(needle)
+        if len(positions) > HARD_CAP and falls_back:
             # Keep the newest: an old build artifact is a worse answer than the
             # file you downloaded yesterday. Only the Python fallback needs the
             # cap — the vectorised path stays exact and uncapped.
@@ -648,7 +719,22 @@ def load(store) -> NameIndex:
     return NAME_CACHE.get(store, lambda: _build(store))
 
 
+def _fingerprint(store) -> tuple[int, int, float, float]:
+    """Content stamp of the files table. File mtimes are not usable here: even
+    a read-only WAL open can touch the -wal file's clock, which would make the
+    sidecar look stale after every process start. Row facts cannot lie."""
+    row = store.conn.execute(
+        "SELECT COUNT(*), COALESCE(MAX(id), 0), COALESCE(MAX(mtime), 0.0), "
+        "COALESCE(MAX(indexed_at), 0.0) FROM files"
+    ).fetchone()
+    return (int(row[0]), int(row[1]), float(row[2]), float(row[3]))
+
+
 def _build(store) -> NameIndex:
+    fingerprint = _fingerprint(store)
+    index = _load_sidecar(store, fingerprint)
+    if index is not None:
+        return index
     started = time.perf_counter()
     try:
         rows = store.conn.execute(
@@ -656,7 +742,49 @@ def _build(store) -> NameIndex:
         ).fetchall()
     except Exception:
         rows = []
-    return NameIndex.from_rows(rows, time.perf_counter() - started)
+    index = NameIndex.from_rows(rows, time.perf_counter() - started)
+    try:
+        index.save_sidecar(Path(str(store.path) + NameIndex.SIDE_SUFFIX), fingerprint)
+    except Exception:
+        pass  # the sidecar is a cache, never a requirement
+    return index
+
+
+def _load_sidecar(store, fingerprint: tuple[int, int, float, float]) -> NameIndex | None:
+    """Restore the persisted index when the files table has not moved. ~456 ms
+    of row decoding becomes one ~40 MB sequential read."""
+    path = Path(str(store.path) + NameIndex.SIDE_SUFFIX)
+    try:
+        if not path.exists():
+            return None
+        with np.load(path, allow_pickle=False) as data:
+            saved = tuple(data["stamps"].tolist())
+            if len(saved) == 2:
+                saved = (saved[0], saved[1], 0.0, 0.0)  # sidecar predates the fingerprint switch
+            elif len(saved) != 4:
+                return None
+            if saved != fingerprint:
+                return None
+            index = NameIndex.from_arrays(
+                {name: data[name] for name in data.files},
+                build_seconds=float(data["build_seconds"][0]),
+            )
+        if len(index.ids) == 0 and _row_count(store) > 0:
+            return None
+        return index
+    except Exception:
+        try:
+            path.unlink()  # a torn or stale sidecar must not linger
+        except OSError:
+            pass
+        return None
+
+
+def _row_count(store) -> int:
+    try:
+        return int(store.conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
+    except Exception:
+        return 0
 
 
 def invalidate() -> None:

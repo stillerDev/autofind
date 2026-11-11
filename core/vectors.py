@@ -169,6 +169,39 @@ def count(conn: sqlite3.Connection) -> int:
         return 0
 
 
+# ------------------------------------------------------------------ i8 storage
+# The `vectors` table is the source of truth every backend is derived from, and
+# at float32 it was the single biggest thing in the database (215 MB of the
+# bench index's 383 MB; ~460 MB of a real 1.98 GB index). Storing each vector
+# as a float32 scale plus an int8 payload quarters that at a quality cost the
+# RRF fusion does not register: on the 100k-file bench corpus the top-10 of a
+# quantized scan overlapped the float32 scan 10/10. Old float32 rows still
+# read fine — the blob length tells the formats apart.
+
+
+def quantize_vector(vector: np.ndarray) -> bytes:
+    """One float32 vector -> float32 scale + int8 payload."""
+    v = np.asarray(vector, dtype=np.float32).reshape(-1)
+    peak = float(np.abs(v).max()) if v.size else 0.0
+    if peak <= 0.0:
+        return struct.pack("<f", 0.0) + b"\x00" * v.size
+    q = np.clip(np.round(v / peak * 127.0), -127, 127).astype(np.int8)
+    return struct.pack("<f", peak) + q.tobytes()
+
+
+def dequantize_vector(blob, dim: int | None = None) -> np.ndarray:
+    """`vectors.vec` blob -> float32 vector. Legacy float32 rows (length
+    dim*4) pass through; i8 rows (length dim+4) are scaled back."""
+    blob = bytes(blob)
+    if dim is not None and len(blob) == dim * 4:
+        return np.frombuffer(blob, dtype=np.float32).astype(np.float32)
+    scale = struct.unpack("<f", blob[:4])[0]
+    payload = np.frombuffer(blob[4:], dtype=np.int8).astype(np.float32)
+    if scale <= 0.0 or not payload.size:
+        return np.zeros(payload.size, dtype=np.float32)
+    return payload * (scale / 127.0)
+
+
 def migrate_from_blobs(conn: sqlite3.Connection, dim: int, batch: int = 4096) -> int:
     """Mirror `vectors` into vec0. The blobs are the source of truth and stay.
 
@@ -195,7 +228,7 @@ def migrate_from_blobs(conn: sqlite3.Connection, dim: int, batch: int = 4096) ->
             break
         conn.executemany(
             f"INSERT OR REPLACE INTO {VEC_TABLE}(chunk_id, embedding) VALUES (?, ?)",
-            [(int(row["id"]), row["vec"]) for row in rows],
+            [(int(row["id"]), dequantize_vector(row["vec"], dim).tobytes()) for row in rows],
         )
         moved += len(rows)
     conn.commit()
@@ -534,7 +567,7 @@ def build_pack(conn: sqlite3.Connection, db_path: str | Path, dim: int) -> Pack 
     matrix = np.zeros((count, dim), dtype=np.float32)
     for position, row in enumerate(rows):
         ids[position] = int(row["id"])
-        vector = np.frombuffer(row["vec"], dtype=np.float32)
+        vector = dequantize_vector(row["vec"], dim)
         if vector.shape[0] == dim:
             matrix[position] = vector
 
@@ -775,7 +808,7 @@ class HotLayer:
         matrix = np.zeros((len(rows), dim), dtype=np.float32)
         for position, row in enumerate(rows):
             ids[position] = int(row["id"])
-            vector = np.frombuffer(row["vec"], dtype=np.float32)
+            vector = dequantize_vector(row["vec"], dim)
             if vector.shape[0] == dim:
                 matrix[position] = vector
         return cls(ids, matrix, dim)

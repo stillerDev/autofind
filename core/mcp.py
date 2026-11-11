@@ -292,10 +292,7 @@ class McpServer:
         row = store.get_file(path)
         if row is None:
             return _error(f"not in the index: {path}")
-        chunks = store.conn.execute(
-            "SELECT text FROM chunks WHERE file_id = ? ORDER BY ord LIMIT 40", (int(row["id"]),)
-        ).fetchall()
-        body = "\n".join(chunk["text"] for chunk in chunks)
+        body = store.file_text(int(row["id"]))
         if query:
             position = body.lower().find(query.lower())
             if position != -1:

@@ -10,7 +10,16 @@ BINARY_MARKERS = (b"\x00", b"\xff\xd8\xff", b"PK\x03\x04", b"%PDF")
 
 def extract_plain(path: str | Path, max_bytes: int = 20 * 1024 * 1024) -> str:
     """Read a text file, guessing the encoding. Returns '' for binaries."""
-    data = Path(path).read_bytes()[:max_bytes]
+    with open(path, "rb") as handle:
+        data = handle.read(max_bytes)
+    return extract_plain_bytes(data)
+
+
+def extract_plain_bytes(data: bytes) -> str:
+    """Decode already-read bytes, guessing the encoding. Returns '' for binaries.
+
+    Lets the indexer hash and extract from ONE read of the file instead of
+    paying two open/read round-trips per file."""
     if not data:
         return ""
     if b"\x00" in data[:4096]:

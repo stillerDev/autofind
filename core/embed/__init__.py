@@ -14,7 +14,6 @@ from pathlib import Path
 from .hashing import HashingEmbedder
 from .onnx_e5 import EmbedderUnavailable, OnnxE5
 from .static import StaticEmbedder, StaticUnavailable
-from .visual import ClipOnnx, LayoutEmbedder, get_visual_embedder
 
 __all__ = [
     "get_embedder",
@@ -27,6 +26,17 @@ __all__ = [
     "EmbedderUnavailable",
     "StaticUnavailable",
 ]
+
+
+def get_visual_embedder(model_dir=None):
+    # Imported lazily so a text-only search (`autofind search`) does not pay
+    # Pillow's import cost. The visual stack is only needed for screenshot
+    # indexing and image similarity.
+    from .visual import ClipOnnx, LayoutEmbedder, get_visual_embedder as _get
+
+    globals()["ClipOnnx"] = ClipOnnx
+    globals()["LayoutEmbedder"] = LayoutEmbedder
+    return _get(model_dir)
 
 
 def get_embedder(prefer: str = "auto", model_dir: str | Path | None = None):

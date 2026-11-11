@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .archive import extract_archive
 from .docx import extract_docx
+from .email import extract_email
 from .office import (
     extract_epub,
     extract_opendocument,
@@ -25,9 +27,12 @@ EXTRACTORS = {
     "epub": extract_epub,
     "odt": extract_opendocument,
     "rtf": extract_rtf,
+    "archive": extract_archive,
+    "email": extract_email,
 }
 
 PLAIN_KINDS = ("text", "code")
+BUDGET_KINDS = ("archive", "email")
 
 
 def extract_text(path: str | Path, kind: str, max_bytes: int = 20 * 1024 * 1024) -> str:
@@ -35,7 +40,7 @@ def extract_text(path: str | Path, kind: str, max_bytes: int = 20 * 1024 * 1024)
     if extractor is None:
         return ""
     try:
-        if kind in PLAIN_KINDS:
+        if kind in PLAIN_KINDS or kind in BUDGET_KINDS:
             return extractor(path, max_bytes)  # type: ignore[call-arg]
         return extractor(path)
     except (OSError, ValueError, KeyError):
@@ -48,7 +53,9 @@ def extract_text(path: str | Path, kind: str, max_bytes: int = 20 * 1024 * 1024)
 __all__ = [
     "extract_text",
     "EXTRACTORS",
+    "extract_archive",
     "extract_docx",
+    "extract_email",
     "extract_epub",
     "extract_opendocument",
     "extract_pdf",
