@@ -15,6 +15,7 @@ than any index would be. See `core.filevec`.
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 import sqlite3
@@ -31,6 +32,7 @@ from typing import Callable, Iterable, Iterator, Sequence
 from .lazynp import np
 
 from . import vectors as vecstore
+from . import vault as vault_mod
 from . import bm25 as bm25mod
 from . import filevec
 from .chunker import chunk_spans, normalize
@@ -560,6 +562,23 @@ def _pack_text(text: str) -> tuple[str, int, int, bytes, bytes]:
     )
 
 
+def _data_of(row) -> bytes:
+    """`file_texts.data`, unsealed when paranoid mode sealed it.
+
+    Sealed rows carry the `AFS1` prefix, so the check costs nothing and both
+    layouts answer through the same call sites."""
+    data = row["data"]
+    if vault_mod.Vault.is_sealed(data):
+        vault = vault_mod.current()
+        if vault is None:
+            raise vault_mod.VaultError(
+                "the index is sealed but the vault key is not loaded; "
+                "run 'autofind seal status' or restore vault.key"
+            )
+        return vault.open_bytes(data)
+    return data
+
+
 def _unpack_text(blob: bytes | None) -> str:
     """A whole document from a legacy single-stream blob."""
     if not blob:
@@ -576,7 +595,7 @@ def _row_slice(row: sqlite3.Row, start: int, end: int) -> str:
     Rows written before block compression (`block_size = 0`) fall back to
     inflating the whole stream; `_repack_texts` upgrades them on first open.
     """
-    data = row["data"]
+    data = _data_of(row)
     block_size = int(row["block_size"] or 0)
     offsets = row["offsets"]
     if not data:
@@ -612,10 +631,11 @@ def _row_slice(row: sqlite3.Row, start: int, end: int) -> str:
 
 
 def _row_text(row: sqlite3.Row) -> str:
-    if not row["data"]:
+    data = _data_of(row)
+    if not data:
         return ""
     if not int(row["block_size"] or 0):
-        return _unpack_text(row["data"])
+        return _unpack_text(data)
     return _row_slice(row, 0, int(row["raw_len"] or 0))
 
 
@@ -677,6 +697,11 @@ def _ensure_fts(conn: sqlite3.Connection) -> None:
     a column that no longer exists. Anything older (or half-built) is dropped
     and refilled — that is one pass over the corpus, not a re-extraction.
     """
+    if _meta(conn, "sealed") == "1":
+        # Paranoid mode: no postings on disk. Content search rides the
+        # in-RAM BM25; recreating FTS here would write the whole vocabulary
+        # back in plaintext.
+        return
     sql = _fts_sql(conn)
     if sql is not None:
         flat = sql.replace(" ", "").lower()
@@ -1009,6 +1034,14 @@ class Store:
                 "Reindex into a fresh database or pass --db."
             )
 
+    @property
+    def sealed(self) -> bool:
+        """Paranoid mode: content blobs are sealed at rest."""
+        try:
+            return self._meta_flag("sealed", False)
+        except Exception:
+            return False
+
     def get_meta(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else None
@@ -1165,7 +1198,16 @@ class Store:
             packed if packed is not None else _pack_text(document)
         )
         # Content-addressed: a second copy of the same document costs one row
-        # in `files`, not another copy of its text or its postings.
+        # in `files`, not another copy of its text or its postings. Under
+        # seal the blob goes down as AES-256-GCM ciphertext (the digest stays
+        # a plaintext-content hash - a list of content hashes leaks nothing).
+        if self.sealed:
+            vault = vault_mod.current()
+            if vault is None:
+                raise vault_mod.VaultError(
+                    "the index is sealed but the vault key is not loaded"
+                )
+            data = vault.seal(data)
         self.conn.execute(
             "INSERT INTO file_texts(hash, raw_len, block_size, offsets, data) "
             "VALUES(?,?,?,?,?) ON CONFLICT(hash) DO NOTHING",
@@ -1184,13 +1226,14 @@ class Store:
         chunk_ids = [int(row["id"]) for row in self.conn.execute(
             "SELECT id FROM chunks WHERE file_id = ? ORDER BY ord", (int(file_id),)
         )]
-        self.conn.executemany(
-            "INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
-            [
-                (chunk_id, cjk_bigrams(document[int(start):int(end)]))
-                for chunk_id, (start, end) in zip(chunk_ids, spans)
-            ],
-        )
+        if not self.sealed:
+            self.conn.executemany(
+                "INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
+                [
+                    (chunk_id, cjk_bigrams(document[int(start):int(end)]))
+                    for chunk_id, (start, end) in zip(chunk_ids, spans)
+                ],
+            )
         if vectors is not None:
             vector = filevec.mean_pool(np.asarray(vectors, dtype=np.float32))
             if vector.size:
@@ -1458,8 +1501,8 @@ class Store:
             "width=excluded.width, height=excluded.height, size=excluded.size, mtime=excluded.mtime, "
             "thumb=excluded.thumb, ocr_text=excluded.ocr_text, ocr_engine=excluded.ocr_engine, "
             "phash=excluded.phash, indexed_at=excluded.indexed_at",
-            (path, file_id, sha256, width, height, size, mtime, thumb, ocr_text, ocr_engine,
-             int(phash), time.time()),
+            (path, file_id, sha256, width, height, size, mtime,
+             *self._seal_pair(thumb, ocr_text), ocr_engine, int(phash), time.time()),
         )
         row = self.conn.execute("SELECT id FROM images WHERE path = ?", (path,)).fetchone()
         image_id = int(row["id"])
@@ -1506,9 +1549,43 @@ class Store:
     def set_phash(self, image_id: int, phash: int) -> None:
         self.conn.execute("UPDATE images SET phash = ? WHERE id = ?", (int(phash), int(image_id)))
 
+    def _seal_pair(self, thumb: bytes | None, ocr_text: str | None) -> tuple:
+        """Thumb and OCR text go down sealed when paranoid mode is on."""
+        if not self.sealed:
+            return thumb, ocr_text
+        vault = vault_mod.current()
+        if vault is None:
+            raise vault_mod.VaultError(
+                "the index is sealed but the vault key is not loaded"
+            )
+        sealed_thumb = vault.seal(thumb) if thumb else thumb
+        sealed_ocr = vault.seal(ocr_text.encode("utf-8")) if ocr_text else ocr_text
+        return sealed_thumb, sealed_ocr
+
+    def _unseal_text(self, value) -> str:
+        """OCR text comes back as bytes when sealed, str when legacy."""
+        if isinstance(value, (bytes, bytearray)) and vault_mod.Vault.is_sealed(value):
+            vault = vault_mod.current()
+            if vault is None:
+                raise vault_mod.VaultError(
+                    "the index is sealed but the vault key is not loaded"
+                )
+            return vault.open_bytes(bytes(value)).decode("utf-8", "replace")
+        return value
+
     def thumb(self, file_id: int) -> bytes | None:
         row = self.conn.execute("SELECT thumb FROM images WHERE file_id = ?", (file_id,)).fetchone()
-        return bytes(row["thumb"]) if row and row["thumb"] else None
+        if not row or not row["thumb"]:
+            return None
+        blob = bytes(row["thumb"])
+        if vault_mod.Vault.is_sealed(blob):
+            vault = vault_mod.current()
+            if vault is None:
+                raise vault_mod.VaultError(
+                    "the index is sealed but the vault key is not loaded"
+                )
+            return vault.open_bytes(blob)
+        return blob
 
     def image_rows(self, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -1535,7 +1612,8 @@ class Store:
         foreground. The cache is module-level: the API server opens a
         short-lived Store per request, and the index must outlive any single
         one of them."""
-        if not self._ram_bm25:
+        sealed = self.sealed
+        if not (self._ram_bm25 or sealed):
             return None
         try:
             # The stamps move on any commit — this process's or the indexer's —
@@ -1550,10 +1628,27 @@ class Store:
         with _BM25_LOCK:
             if _BM25["key"] == key and _BM25["index"] is not None:
                 return _BM25["index"]
+            fp = self._chunks_fingerprint()
+            if _BM25.get("fp") == fp and _BM25["index"] is not None:
+                # Same corpus, files were merely touched: keep serving the
+                # index that is already in RAM.
+                _BM25["key"] = key
+                return _BM25["index"]
+            if sealed:
+                # Paranoid mode: the sealed sidecar decrypts in ~100 ms, so
+                # load it on the calling thread instead of falling back to a
+                # path that no longer exists (FTS is dropped under seal).
+                index = self._load_sealed_bm25(fp)
+                if index is not None:
+                    _BM25["index"] = index
+                    _BM25["key"] = key
+                    _BM25["fp"] = fp
+                    return index
             if _BM25["building"] != key:
                 _BM25["building"] = key
 
-                def _build(store_path=str(self.path), build_key=key) -> None:
+                def _build(store_path=str(self.path), build_key=key, build_fp=fp,
+                           was_sealed=sealed) -> None:
                     try:
                         conn = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
                         conn.row_factory = sqlite3.Row
@@ -1563,14 +1658,160 @@ class Store:
                             index = bm25mod.InRamBM25.build(_iter_chunk_texts(conn))
                         finally:
                             conn.close()
+                        index.fingerprint = build_fp
                         with _BM25_LOCK:
                             _BM25["index"] = index
                             _BM25["key"] = build_key
-                    except sqlite3.Error:
+                            _BM25["fp"] = build_fp
+                        if was_sealed:
+                            self._write_sealed_bm25(index)
+                    except Exception:
                         pass  # the database went away mid-build; FTS5 stays the path
 
                 threading.Thread(target=_build, daemon=True, name="af-bm25-build").start()
         return None
+
+    def _chunks_fingerprint(self) -> tuple[int, int]:
+        row = self.conn.execute("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM chunks").fetchone()
+        return (int(row[0]), int(row[1]))
+
+    def _sealed_bm25_path(self):
+        from pathlib import Path as _Path
+
+        return _Path(str(self.path) + ".bm25seal")
+
+    def _write_sealed_bm25(self, index) -> None:
+        """Serialize the CSR, seal it, write `<db>.bm25seal`."""
+        vault = vault_mod.current()
+        if vault is None:
+            raise vault_mod.VaultError(
+                "the index is sealed but the vault key is not loaded"
+            )
+        bio = io.BytesIO()
+        np.savez(bio, **index.to_arrays())
+        self._sealed_bm25_path().write_bytes(vault.seal(bio.getvalue()))
+
+    def _load_sealed_bm25(self, fp):
+        vault = vault_mod.current()
+        if vault is None:
+            return None
+        path = self._sealed_bm25_path()
+        if not path.exists():
+            return None
+        raw = vault.open_bytes(path.read_bytes())
+        data = np.load(io.BytesIO(raw), allow_pickle=False)
+        index = bm25mod.InRamBM25.from_arrays({name: data[name] for name in data.files})
+        if index.fingerprint is not None and tuple(index.fingerprint) != tuple(fp):
+            return None  # the corpus moved since it was sealed
+        return index
+
+    def reseal_bm25(self) -> None:
+        """Rebuild the in-RAM BM25 from the sealed corpus and re-encrypt the
+        sidecar. Called after an index run in paranoid mode."""
+        index = bm25mod.InRamBM25.build(_iter_chunk_texts(self.conn))
+        fp = self._chunks_fingerprint()
+        index.fingerprint = fp
+        self._write_sealed_bm25(index)
+        with _BM25_LOCK:
+            _BM25["index"] = index
+            _BM25["key"] = (str(self.path), *self._stamps())
+            _BM25["fp"] = fp
+
+    def seal_index(self) -> None:
+        """Encrypt every content blob at rest and drop FTS from disk."""
+        vault = vault_mod.current()
+        if vault is None:
+            raise vault_mod.VaultError("no vault installed; call vault.enable() first")
+        rows = self.conn.execute("SELECT hash, data FROM file_texts").fetchall()
+        for row in rows:
+            if vault.is_sealed(row["data"]):
+                continue
+            self.conn.execute(
+                "UPDATE file_texts SET data = ? WHERE hash = ?",
+                (vault.seal(row["data"]), row["hash"]),
+            )
+        rows = self.conn.execute("SELECT id, ocr_text, thumb FROM images").fetchall()
+        for row in rows:
+            sets, vals = [], []
+            ocr = row["ocr_text"]
+            if ocr and not vault.is_sealed(ocr if isinstance(ocr, bytes) else ocr.encode("utf-8")):
+                sets.append("ocr_text = ?")
+                vals.append(vault.seal(ocr.encode("utf-8")))
+            thumb = row["thumb"]
+            if thumb and not vault.is_sealed(thumb):
+                sets.append("thumb = ?")
+                vals.append(vault.seal(thumb))
+            if sets:
+                vals.append(int(row["id"]))
+                self.conn.execute(
+                    "UPDATE images SET " + ", ".join(sets) + " WHERE id = ?", vals
+                )
+        rows = self.conn.execute("SELECT rowid, text FROM symbols").fetchall()
+        for row in rows:
+            text = row["text"]
+            if isinstance(text, bytes) and vault.is_sealed(text):
+                continue
+            self.conn.execute(
+                "UPDATE symbols SET text = ? WHERE rowid = ?",
+                (vault.seal(text.encode("utf-8")), int(row["rowid"])),
+            )
+        _set_meta(self.conn, "sealed", "1")
+        self.conn.commit()
+        # No postings on disk: the vocabulary would reconstruct the texts.
+        self.conn.execute("DROP TABLE IF EXISTS chunks_fts")
+        # `chunks_vocab` is an fts5vocab *table* in v9 (a view in older layouts).
+        self.conn.execute("DROP TABLE IF EXISTS chunks_vocab")
+        self.conn.execute("DROP VIEW IF EXISTS chunks_vocab")
+        self.conn.commit()
+        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.conn.execute("VACUUM")
+        self.conn.commit()
+        self.reseal_bm25()
+
+    def unseal_index(self) -> None:
+        """Decrypt everything back and rebuild FTS (paranoid mode off)."""
+        vault = vault_mod.current()
+        if vault is None:
+            raise vault_mod.VaultError("no vault installed; the sealed index cannot be read")
+        rows = self.conn.execute("SELECT hash, data FROM file_texts").fetchall()
+        for row in rows:
+            data = row["data"]
+            if vault.is_sealed(data):
+                self.conn.execute(
+                    "UPDATE file_texts SET data = ? WHERE hash = ?",
+                    (vault.open_bytes(data), row["hash"]),
+                )
+        rows = self.conn.execute("SELECT id, ocr_text, thumb FROM images").fetchall()
+        for row in rows:
+            sets, vals = [], []
+            ocr = row["ocr_text"]
+            if isinstance(ocr, (bytes, bytearray)) and vault.is_sealed(ocr):
+                sets.append("ocr_text = ?")
+                vals.append(vault.open_bytes(bytes(ocr)).decode("utf-8", "replace"))
+            thumb = row["thumb"]
+            if thumb and vault.is_sealed(thumb):
+                sets.append("thumb = ?")
+                vals.append(vault.open_bytes(bytes(thumb)))
+            if sets:
+                vals.append(int(row["id"]))
+                self.conn.execute(
+                    "UPDATE images SET " + ", ".join(sets) + " WHERE id = ?", vals
+                )
+        rows = self.conn.execute("SELECT rowid, text FROM symbols").fetchall()
+        for row in rows:
+            text = row["text"]
+            if isinstance(text, (bytes, bytearray)) and vault.is_sealed(text):
+                self.conn.execute(
+                    "UPDATE symbols SET text = ? WHERE rowid = ?",
+                    (vault.open_bytes(bytes(text)).decode("utf-8", "replace"), int(row["rowid"])),
+                )
+        _set_meta(self.conn, "sealed", "0")
+        self.conn.commit()
+        _rebuild_fts(self.conn)
+        self.conn.commit()
+        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.conn.execute("VACUUM")
+        self.conn.commit()
 
     def bm25(self, match_query: str, limit: int) -> list[tuple[int, float]]:
         try:
@@ -1592,6 +1833,10 @@ class Store:
         dictionary the FTS index already keeps, so a misspelled term can be
         matched to the real one and re-queried for the price of one scan.
         """
+        if self.sealed:
+            # chunks_vocab rides chunks_fts, which paranoid mode drops from
+            # disk; the in-RAM BM25 prefix scan covers near-terms instead.
+            return []
         terms = [token for token in bm25mod.TOKEN_RE.findall(text) if len(token) >= 4]
         corrected = []
         for term in terms:
@@ -2230,9 +2475,19 @@ class Store:
         self.conn.execute("DELETE FROM symbols WHERE file_id = ?", (file_id,))
         if not symbols:
             return 0
+        sealed = self.sealed
+        vault = vault_mod.current() if sealed else None
+        if sealed and vault is None:
+            raise vault_mod.VaultError(
+                "the index is sealed but the vault key is not loaded"
+            )
         self.conn.executemany(
             "INSERT INTO symbols(file_id, name, lowered, kind, line, text) VALUES(?, ?, ?, ?, ?, ?)",
-            [(file_id, name, name.lower(), kind, line, text) for name, kind, line, text in symbols],
+            [
+                (file_id, name, name.lower(), kind, line,
+                 vault.seal(text.encode("utf-8")) if vault else text)
+                for name, kind, line, text in symbols
+            ],
         )
         return len(symbols)
 
@@ -2248,7 +2503,7 @@ class Store:
             return []
         like = f"%{needle}%"
         try:
-            return self.conn.execute(
+            rows = self.conn.execute(
                 "SELECT s.id, s.name, s.kind, s.line, s.text, "
                 "       f.id AS file_id, f.path, f.name AS file_name, f.kind AS file_kind "
                 "FROM symbols s JOIN files f ON f.id = s.file_id "
@@ -2263,6 +2518,12 @@ class Store:
         except sqlite3.OperationalError as exc:
             _reraises_unless_missing(exc)
             return []
+        out = []
+        for row in rows:
+            entry = dict(row)
+            entry["text"] = self._unseal_text(row["text"])
+            out.append(entry)
+        return out
 
     def symbol_count(self) -> int:
         try:

@@ -44,7 +44,7 @@ class InRamBM25:
     """CSR-style postings over every chunk. Immutable once built; the store
     keeps one instance and rebuilds it when the chunk table changes."""
 
-    __slots__ = ("ids", "doc_len", "avgdl", "vocab_blob", "vocab_offsets", "indptr", "flat_pos", "flat_tfs", "built_in")
+    __slots__ = ("ids", "doc_len", "avgdl", "vocab_blob", "vocab_offsets", "indptr", "flat_pos", "flat_tfs", "built_in", "fingerprint")
 
     def __init__(self, ids: np.ndarray, doc_len: np.ndarray, avgdl: float,
                  vocab_blob: bytes, vocab_offsets: np.ndarray, indptr: np.ndarray,
@@ -59,6 +59,7 @@ class InRamBM25:
         self.flat_pos = flat_pos  # int32 row positions, grouped by term
         self.flat_tfs = flat_tfs  # float32 term frequencies, same order
         self.built_in = built_in
+        self.fingerprint = None  # (chunks count, max id) when a sealed sidecar carries it
 
     @classmethod
     def build(cls, rows: Iterable[tuple[int, str]]) -> "InRamBM25":
@@ -121,6 +122,33 @@ class InRamBM25:
         flat_tfs = np.concatenate(tfs_parts) if tfs_parts else np.empty(0, dtype=np.uint16)
         return cls(id_array, doc_len, avgdl, vocab_blob, vocab_offsets, indptr, flat_pos, flat_tfs,
                    time.perf_counter() - started)
+
+    def to_arrays(self) -> dict:
+        """npz-ready dict of the CSR - the sealed sidecar stores exactly this."""
+        return {
+            "ids": self.ids, "doc_len": self.doc_len,
+            "avgdl": np.asarray([self.avgdl], dtype=np.float64),
+            "vocab_blob": np.frombuffer(self.vocab_blob, dtype=np.uint8),
+            "vocab_offsets": self.vocab_offsets, "indptr": self.indptr,
+            "flat_pos": self.flat_pos, "flat_tfs": self.flat_tfs,
+        }
+
+    @classmethod
+    def from_arrays(cls, arrays: dict) -> "InRamBM25":
+        index = cls.__new__(cls)
+        index.ids = arrays["ids"]
+        index.doc_len = arrays["doc_len"]
+        avg = arrays.get("avgdl")
+        index.avgdl = float(avg[0]) if avg is not None and avg.size else 1.0
+        index.vocab_blob = bytes(arrays["vocab_blob"])
+        index.vocab_offsets = arrays["vocab_offsets"]
+        index.indptr = arrays["indptr"]
+        index.flat_pos = arrays["flat_pos"]
+        index.flat_tfs = arrays["flat_tfs"]
+        index.built_in = 0.0
+        fp = arrays.get("fingerprint")
+        index.fingerprint = tuple(int(v) for v in fp) if fp is not None else None
+        return index
 
     def _term(self, index: int) -> str:
         lo, hi = self.vocab_offsets[index], self.vocab_offsets[index + 1]

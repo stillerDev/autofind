@@ -30,6 +30,7 @@ from .config import IndexConfig
 from .embed import get_embedder, get_visual_embedder
 from .indexer import run_index
 from .scanner import iter_entries
+from . import vault as _vault_mod
 from .store import Store
 
 Snapshot = dict[str, tuple[int, float]]
@@ -110,6 +111,10 @@ class Watcher:
         try:
             embedder = get_embedder("auto", self.config.model_dir)
             visual = get_visual_embedder(self.config.model_dir)
+            try:
+                _vault_mod.load(self.config.home)
+            except _vault_mod.VaultError:
+                pass  # not sealed, or the key is gone - search surfaces it on demand
             store = Store(self.db_path, embedder.name, embedder.dim)
             # Arm the stream first: changes landing while the snapshot walks
             # the tree land in the fan and get applied (idempotently) after.

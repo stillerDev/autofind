@@ -837,6 +837,13 @@ def _build(store) -> NameIndex:
     except Exception:
         rows = []
     index = NameIndex.from_rows(rows, time.perf_counter() - started)
+    from . import vault as _vault_mod
+
+    if _vault_mod.current() is not None:
+        # Paranoid mode: the sidecar's blobs are file names and paths in
+        # plaintext, which is exactly what seal promises not to store. The
+        # index is rebuilt in RAM on each server start (~0.5 s at 100k).
+        return index
     try:
         index.save_sidecar(Path(str(store.path) + NameIndex.SIDE_SUFFIX), fingerprint)
     except Exception:

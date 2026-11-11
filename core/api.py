@@ -288,6 +288,19 @@ _RAM_BM25_LIMIT = 200_000
 _RAM_BM25_OK: dict[str, bool] = {}
 
 
+def store_sealed(db_path) -> bool:
+    """Paranoid mode on this index: meta flag `sealed`."""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'sealed'").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+    return bool(row) and row[0] == "1"
+
+
 def _ram_bm25_for(db_path) -> bool:
     cached = _RAM_BM25_OK.get(str(db_path))
     if cached is not None:
@@ -464,9 +477,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _store(self, readonly: bool = True) -> Store:
         embedder = get_embedder("auto", self.config.model_dir)
+        ram = _ram_bm25_for(self.db_path) or store_sealed(self.db_path)
         return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly, cache=CACHE,
-                     vector_backend=self.config.vector_backend,
-                     ram_bm25=readonly and _ram_bm25_for(self.db_path))
+                     vector_backend=self.config.vector_backend, ram_bm25=ram)
 
     # ------------------------------------------------------------------ GET
 
@@ -797,7 +810,7 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json({
             "db": str(db),
-            "encrypted": False,
+            "encrypted": store_sealed(str(self.db_path)),
             "sizes": related,
             "total_bytes": sum(related.values()),
             "files": stats.get("files", 0),

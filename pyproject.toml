@@ -9,7 +9,7 @@ description = "Local search over files and screenshots. Nothing leaves the machi
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = ["numpy>=1.26", "pillow>=10.0"]
+dependencies = ["numpy>=1.26", "pillow>=10.0", "cryptography>=42"]
 
 [project.optional-dependencies]
 ocr-windows = [

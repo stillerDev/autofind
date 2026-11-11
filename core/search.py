@@ -975,7 +975,7 @@ def similar_images(store: Store, visual, file_id: int, limit: int = 12) -> list[
                 score=round(float(scores[index]), 4),
                 width=int(row["width"] or 0),
                 height=int(row["height"] or 0),
-                ocr_text=(row["ocr_text"] or "")[:200],
+                ocr_text=store._unseal_text(row["ocr_text"] or "")[:200],
             )
         )
     return hits
@@ -1010,7 +1010,7 @@ def visual_text_search(store: Store, visual, query: str, limit: int = 12) -> lis
                 score=round(score, 4),
                 width=int(row["width"] or 0),
                 height=int(row["height"] or 0),
-                ocr_text=(row["ocr_text"] or "")[:200],
+                ocr_text=store._unseal_text(row["ocr_text"] or "")[:200],
             )
         )
     return hits

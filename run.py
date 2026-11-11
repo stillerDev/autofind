@@ -29,7 +29,7 @@ from core.config import IndexConfig  # noqa: E402
 # A token from this set anywhere in argv means "the caller wants the CLI".
 COMMANDS = {
     "index", "search", "watch", "eval", "doctor", "privacy", "mcp",
-    "cheat", "stats", "connect", "serve", "app", "autostart",
+    "cheat", "stats", "connect", "serve", "app", "autostart", "seal",
     "shortcut", "install", "ocr",
     # The personal layer and the migration: `run.py pin`, `run.py import kensaku`.
     "pin", "pins", "saved", "alias", "sym", "import",

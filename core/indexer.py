@@ -202,6 +202,10 @@ def run_index(
     store.commit()
     # Nothing to prebuild for vectors: one packed row per file unpacks in a few
     # milliseconds on the first query, and the resident reader keeps it warm.
+    if store.sealed:
+        # Paranoid mode: FTS was dropped from disk, so the in-RAM BM25 sidecar
+        # is the only content index - re-encrypt it with the fresh corpus.
+        store.reseal_bm25()
     stats.seconds = time.perf_counter() - started
     return stats
 

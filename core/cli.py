@@ -114,6 +114,12 @@ def main(argv: list[str] | None = None) -> int:
     app_cmd.add_argument("--browser", action="store_true", help="use the browser even if a window is possible")
     app_cmd.add_argument("--debug", action="store_true")
 
+    seal_cmd = sub.add_parser(
+        "seal",
+        help="paranoid mode: encrypt all content in the index (on | off | status)",
+    )
+    seal_cmd.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
+
     autostart_cmd = sub.add_parser("autostart", help="start the app with Windows (tray, no console)")
     autostart_cmd.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
     autostart_cmd.add_argument("--json", action="store_true")
@@ -182,6 +188,12 @@ def main(argv: list[str] | None = None) -> int:
     config = IndexConfig()
     config.vector_backend = args.vector_backend
     db_path = args.db or config.db_path
+    try:
+        from . import vault as _vault_mod
+
+        _vault_mod.load(config.home)
+    except Exception:
+        pass  # not sealed, or the key is gone - seal/search surface it
 
     if args.command == "index":
         return _cmd_index(args, config, db_path)
@@ -212,6 +224,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "app":
         return _cmd_app(args, config, db_path)
+    if args.command == "seal":
+        return _cmd_seal(args, config, db_path)
+
     if args.command == "autostart":
         return _cmd_autostart(args)
     if args.command == "shortcut":
@@ -1004,3 +1019,67 @@ def _force_utf8() -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _cmd_seal(args, config: IndexConfig, db_path: Path) -> int:
+    """Paranoid mode: encrypt (or decrypt) every content blob in the index."""
+    from . import vault as vault_mod
+    from .store import Store
+
+    action = args.action
+    if action == "status":
+        sealed = False
+        try:
+            store = Store(db_path, "hashing-384", 384, readonly=True)
+            sealed = store.sealed
+            store.close()
+        except Exception as exc:
+            print(f"status: cannot open the index ({exc})")
+            return 1
+        key = vault_mod.key_path(config.home)
+        print(f"sealed        {sealed}")
+        print(f"vault key     {key} ({'present' if key.exists() else 'missing'})")
+        if sealed and not key.exists():
+            print("WARNING: the index is sealed but the key is gone - "
+                  "content is unreadable until vault.key is restored or the index is rebuilt")
+        return 0
+
+    if not db_path.exists():
+        print(f"no index at {db_path}; run: autofind index <folder>", file=sys.stderr)
+        return 2
+
+    if action == "on":
+        try:
+            vault = vault_mod.enable(config.home)
+        except vault_mod.VaultError as exc:
+            print(f"cannot enable paranoid mode: {exc}", file=sys.stderr)
+            return 1
+        store = Store(db_path, "hashing-384", 384, readonly=False, vector_backend="pack")
+        try:
+            t0 = time.perf_counter()
+            store.seal_index()
+            print(f"sealed in {time.perf_counter() - t0:.1f}s")
+            print(f"vault key     {vault_mod.key_path(config.home)}")
+            print("WARNING: vault.key is bound to this Windows account - "
+                  "if it is deleted, sealed content is unreadable and the index must be rebuilt")
+        finally:
+            store.close()
+        return 0
+
+    if action == "off":
+        try:
+            vault_mod.load(config.home)
+        except vault_mod.VaultError as exc:
+            print(f"cannot decrypt: {exc}", file=sys.stderr)
+            return 1
+        store = Store(db_path, "hashing-384", 384, readonly=False, vector_backend="pack")
+        try:
+            t0 = time.perf_counter()
+            store.unseal_index()
+            print(f"unsealed in {time.perf_counter() - t0:.1f}s (FTS rebuilt)")
+        finally:
+            store.close()
+        return 0
+
+    print(f"unknown action {action!r}", file=sys.stderr)
+    return 2

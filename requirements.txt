@@ -1,6 +1,10 @@
 numpy>=1.26
 pillow>=10.0
 
+# Paranoid mode (index-at-rest encryption): AES-256-GCM for the sealed
+# blobs; the wrapping key itself is DPAPI-protected (crypt32, no package).
+cryptography>=42
+
 # OCR fallback engine (Windows OCR is tier 1 and needs no extra weight).
 # rapidocr declares opencv-python; the headless build below is installed
 # after it on purpose — same API, but without the GUI/ffmpeg payload,

@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from .config import mark_onboarding_done, onboarding_done
+from . import vault as _vault_mod
 
 APP_TITLE = "AutoFind"
 # The UI has three columns; below ~1280 the right one starts clipping its own
@@ -878,6 +879,10 @@ def open_app(**kwargs) -> int:
     from .config import IndexConfig
 
     config = kwargs.pop("config", None) or IndexConfig()
+    try:
+        _vault_mod.load(config.home)
+    except _vault_mod.VaultError:
+        pass  # not sealed, or the key is gone - search surfaces it on demand
     config.ensure_home()
     db_path = kwargs.pop("db_path", None) or config.db_path
 
