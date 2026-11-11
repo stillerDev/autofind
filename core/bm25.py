@@ -44,16 +44,17 @@ class InRamBM25:
     """CSR-style postings over every chunk. Immutable once built; the store
     keeps one instance and rebuilds it when the chunk table changes."""
 
-    __slots__ = ("ids", "doc_len", "avgdl", "vocab", "indptr", "flat_pos", "flat_tfs", "built_in")
+    __slots__ = ("ids", "doc_len", "avgdl", "vocab_blob", "vocab_offsets", "indptr", "flat_pos", "flat_tfs", "built_in")
 
     def __init__(self, ids: np.ndarray, doc_len: np.ndarray, avgdl: float,
-                 vocab: np.ndarray, indptr: np.ndarray,
+                 vocab_blob: bytes, vocab_offsets: np.ndarray, indptr: np.ndarray,
                  flat_pos: np.ndarray, flat_tfs: np.ndarray,
                  built_in: float) -> None:
         self.ids = ids          # chunk id per row
         self.doc_len = doc_len  # tokens per chunk, same row order
         self.avgdl = avgdl
-        self.vocab = vocab      # sorted term array; row i of the postings
+        self.vocab_blob = vocab_blob  # sorted terms, UTF-8, back to back
+        self.vocab_offsets = vocab_offsets  # term i -> blob[vocab_offsets[i]:+1]
         self.indptr = indptr    # offsets: term i -> flat_pos[indptr[i]:indptr[i+1]]
         self.flat_pos = flat_pos  # int32 row positions, grouped by term
         self.flat_tfs = flat_tfs  # float32 term frequencies, same order
@@ -87,32 +88,43 @@ class InRamBM25:
                 positions = pos_by_term.get(term)
                 if positions is None:
                     positions = pos_by_term[term] = array("i")
-                    tf_by_term[term] = array("f")
+                    tf_by_term[term] = array("H")
                 positions.append(position)
                 tf_by_term[term].append(tf)
         id_array = np.asarray(ids, dtype=np.int64)
         doc_len = np.asarray(lengths, dtype=np.float32)
         avgdl = float(doc_len.mean()) if len(doc_len) else 1.0
-        # dtype=object, not np.str_: a fixed-width unicode array sizes every
-        # term to the *longest* one (a 903-character token in this corpus), so
-        # 918 679 terms became 3.3 GB. Object arrays keep pointers to the same
-        # strings — ~60 MB — and `searchsorted` compares them the same way.
-        vocab = np.array(sorted(pos_by_term), dtype=object)
-        indptr = np.zeros(len(vocab) + 1, dtype=np.int64)
+        # The vocabulary is one UTF-8 blob plus an offset table, not an array
+        # of Python strings: an object array costs ~60 MB of string objects at
+        # 900k terms, the blob ~18 MB, and UTF-8 byte order IS codepoint order,
+        # so bisect over the blob ranks terms exactly like sorted() did.
+        sorted_terms = sorted(pos_by_term)
+        vocab_parts = []
+        vocab_offsets = np.zeros(len(sorted_terms) + 1, dtype=np.int64)
+        for index, term in enumerate(sorted_terms):
+            encoded = term.encode("utf-8")
+            vocab_parts.append(encoded)
+            vocab_offsets[index + 1] = vocab_offsets[index] + len(encoded)
+        vocab_blob = b"".join(vocab_parts)
+        indptr = np.zeros(len(sorted_terms) + 1, dtype=np.int64)
         pos_parts: list[np.ndarray] = []
         tfs_parts: list[np.ndarray] = []
-        for index, term in enumerate(vocab.tolist()):
+        for index, term in enumerate(sorted_terms):
             positions = pos_by_term.pop(term)
             tfs = tf_by_term.pop(term)
             indptr[index + 1] = indptr[index] + len(positions)
             # `frombuffer` views the array buffer; `concatenate` copies it into
             # the single flat array, so the per-term buffers can be dropped.
             pos_parts.append(np.frombuffer(positions, dtype=np.int32))
-            tfs_parts.append(np.frombuffer(tfs, dtype=np.float32))
+            tfs_parts.append(np.frombuffer(tfs, dtype=np.uint16))
         flat_pos = np.concatenate(pos_parts) if pos_parts else np.empty(0, dtype=np.int32)
-        flat_tfs = np.concatenate(tfs_parts) if tfs_parts else np.empty(0, dtype=np.float32)
-        return cls(id_array, doc_len, avgdl, vocab, indptr, flat_pos, flat_tfs,
+        flat_tfs = np.concatenate(tfs_parts) if tfs_parts else np.empty(0, dtype=np.uint16)
+        return cls(id_array, doc_len, avgdl, vocab_blob, vocab_offsets, indptr, flat_pos, flat_tfs,
                    time.perf_counter() - started)
+
+    def _term(self, index: int) -> str:
+        lo, hi = self.vocab_offsets[index], self.vocab_offsets[index + 1]
+        return self.vocab_blob[lo:hi].decode("utf-8")
 
     def _postings(self, index: int) -> tuple[np.ndarray, np.ndarray]:
         lo, hi = self.indptr[index], self.indptr[index + 1]
@@ -125,17 +137,28 @@ class InRamBM25:
         that starts with it — the same prefix policy the FTS5 query builder
         applies (`"term"*`), implemented as a sorted-vocab range scan."""
         tokens = tokenize(cjk_bigrams(text))
-        if not tokens or not len(self.vocab):
+        if not tokens or not len(self.vocab_offsets) > 1:
             return []
         count = len(self.ids)
         scores = np.zeros(count, dtype=np.float32)
         matched_any = False
+        n_terms = len(self.vocab_offsets) - 1
         for token in tokens:
-            lo = int(np.searchsorted(self.vocab, token, side="left"))
+            # Binary search over the UTF-8 blob: byte order is codepoint order,
+            # so this ranks terms exactly like sorted() did.
+            needle = token.encode("utf-8")
+            lo, hi = 0, n_terms
+            while lo < hi:
+                mid = (lo + hi) // 2
+                term = self._term(mid)
+                if term < token:
+                    lo = mid + 1
+                else:
+                    hi = mid
             matched = 0
             index = lo
-            while index < len(self.vocab):
-                term = str(self.vocab[index])
+            while index < n_terms:
+                term = self._term(index)
                 if not term.startswith(token):
                     break
                 matched += 1
@@ -143,9 +166,9 @@ class InRamBM25:
                     self._score_index(index, scores)
                     matched_any = True
                 index += 1
-            if matched == 0 and lo > 0 and str(self.vocab[lo - 1]) == token:
-                # str comparison can place the token after its own exact term
-                # when locale collation disagrees with numpy's byte order.
+            if matched == 0 and lo > 0 and self._term(lo - 1) == token:
+                # an exact term can sit just before the insertion point when
+                # the prefix scan started past it
                 self._score_index(lo - 1, scores)
                 matched_any = True
         if not matched_any:
