@@ -1717,13 +1717,28 @@ class Store:
             _BM25["key"] = (str(self.path), *self._stamps())
             _BM25["fp"] = fp
 
-    def seal_index(self) -> None:
-        """Encrypt every content blob at rest and drop FTS from disk."""
+    def seal_index(self, progress=None) -> None:
+        """Encrypt every content blob at rest and drop FTS from disk.
+
+        `progress(done, total, stage)` is called per row for the UI bar."""
         vault = vault_mod.current()
         if vault is None:
             raise vault_mod.VaultError("no vault installed; call vault.enable() first")
+
+        def _tick(done, total, stage):
+            if progress:
+                progress(done, total, stage)
+
+        total = (
+            self.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0]
+            + self.conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+            + self.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+        )
+        done = 0
         rows = self.conn.execute("SELECT hash, data FROM file_texts").fetchall()
         for row in rows:
+            done += 1
+            _tick(done, total, "seal")
             if vault.is_sealed(row["data"]):
                 continue
             self.conn.execute(
@@ -1732,6 +1747,8 @@ class Store:
             )
         rows = self.conn.execute("SELECT id, ocr_text, thumb FROM images").fetchall()
         for row in rows:
+            done += 1
+            _tick(done, total, "seal")
             sets, vals = [], []
             ocr = row["ocr_text"]
             if ocr and not vault.is_sealed(ocr if isinstance(ocr, bytes) else ocr.encode("utf-8")):
@@ -1748,6 +1765,8 @@ class Store:
                 )
         rows = self.conn.execute("SELECT rowid, text FROM symbols").fetchall()
         for row in rows:
+            done += 1
+            _tick(done, total, "seal")
             text = row["text"]
             if isinstance(text, bytes) and vault.is_sealed(text):
                 continue
@@ -1763,18 +1782,32 @@ class Store:
         self.conn.execute("DROP TABLE IF EXISTS chunks_vocab")
         self.conn.execute("DROP VIEW IF EXISTS chunks_vocab")
         self.conn.commit()
+        _tick(total, total, "reseal")
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.conn.execute("VACUUM")
         self.conn.commit()
         self.reseal_bm25()
 
-    def unseal_index(self) -> None:
+    def unseal_index(self, progress=None) -> None:
         """Decrypt everything back and rebuild FTS (paranoid mode off)."""
         vault = vault_mod.current()
         if vault is None:
             raise vault_mod.VaultError("no vault installed; the sealed index cannot be read")
+
+        def _tick(done, total, stage):
+            if progress:
+                progress(done, total, stage)
+
+        total = (
+            self.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0]
+            + self.conn.execute("SELECT COUNT(*) FROM images").fetchone()[0]
+            + self.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+        )
+        done = 0
         rows = self.conn.execute("SELECT hash, data FROM file_texts").fetchall()
         for row in rows:
+            done += 1
+            _tick(done, total, "unseal")
             data = row["data"]
             if vault.is_sealed(data):
                 self.conn.execute(
@@ -1783,6 +1816,8 @@ class Store:
                 )
         rows = self.conn.execute("SELECT id, ocr_text, thumb FROM images").fetchall()
         for row in rows:
+            done += 1
+            _tick(done, total, "unseal")
             sets, vals = [], []
             ocr = row["ocr_text"]
             if isinstance(ocr, (bytes, bytearray)) and vault.is_sealed(ocr):
@@ -1799,6 +1834,8 @@ class Store:
                 )
         rows = self.conn.execute("SELECT rowid, text FROM symbols").fetchall()
         for row in rows:
+            done += 1
+            _tick(done, total, "unseal")
             text = row["text"]
             if isinstance(text, (bytes, bytearray)) and vault.is_sealed(text):
                 self.conn.execute(
@@ -1807,6 +1844,7 @@ class Store:
                 )
         _set_meta(self.conn, "sealed", "0")
         self.conn.commit()
+        _tick(total, total, "fts")
         _rebuild_fts(self.conn)
         self.conn.commit()
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

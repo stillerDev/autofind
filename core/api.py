@@ -54,6 +54,12 @@ from .mcp import McpServer
 from .ocr import engine_report
 from .personal import expand_aliases
 from .privacy import describe as describe_privacy
+from . import vault as vault_mod
+
+# Paranoid-mode job state: one (un)seal at a time, polled by /api/seal.
+_SEAL: dict = {"working": False, "action": None, "done": 0, "total": 0,
+              "stage": "", "error": None}
+_SEAL_LOCK = threading.Lock()
 from .privacy import indexed_sensitive, purge_indexed
 from .query import Range, understand
 from .search import search_page, similar_images, visual_text_search
@@ -541,6 +547,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(WATCHER.state.as_dict() if WATCHER else {"running": False})
         elif route == "/api/privacy":
             self._privacy()
+        elif route == "/api/seal":
+            self._seal_status()
         elif route == "/api/personal":
             self._personal()
         elif route == "/api/background":
@@ -1498,6 +1506,71 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
+    def _seal_status(self) -> None:
+        """Paranoid-mode state plus live progress of a running (un)seal."""
+        vault_ok = vault_mod.is_enabled(self.config.home)
+        payload = {
+            "sealed": store_sealed(str(self.db_path)),
+            "key_present": vault_ok,
+            "working": _SEAL["working"],
+            "action": _SEAL["action"],
+            "done": _SEAL["done"],
+            "total": _SEAL["total"],
+            "stage": _SEAL["stage"],
+            "error": _SEAL["error"],
+        }
+        self._json(payload)
+
+    def _set_seal(self, payload: dict) -> None:
+        """Start (or reject) an index (un)seal in a background thread.
+
+        Sealing rewrites every content blob and VACUUMs - seconds on a small
+        index, minutes on a real one - so the route returns 202 immediately
+        and the UI polls `/api/seal` for the progress bar."""
+        action = payload.get("action")
+        if action not in ("on", "off"):
+            self._error("action must be on or off")
+            return
+        with _SEAL_LOCK:
+            if _SEAL["working"]:
+                self._json({"working": True, "action": _SEAL["action"]}, 409)
+                return
+            _SEAL.update({
+                "working": True, "action": action, "done": 0, "total": 0,
+                "stage": "", "error": None,
+            })
+
+        def _worker(db_path=self.db_path, config=self.config, action=action) -> None:
+            store = None
+            try:
+                vault_mod.load(config.home)
+                embedder = get_embedder("auto", config.model_dir)
+                store = Store(db_path, embedder.name, embedder.dim, readonly=False,
+                              vector_backend=config.vector_backend)
+
+                def _progress(done, total, stage) -> None:
+                    with _SEAL_LOCK:
+                        _SEAL["done"], _SEAL["total"], _SEAL["stage"] = done, total, stage
+
+                if action == "on":
+                    store.seal_index(progress=_progress)
+                else:
+                    store.unseal_index(progress=_progress)
+            except Exception as exc:
+                with _SEAL_LOCK:
+                    _SEAL["error"] = str(exc)
+            finally:
+                if store is not None:
+                    try:
+                        store.close()
+                    except Exception:
+                        pass
+                with _SEAL_LOCK:
+                    _SEAL["working"] = False
+
+        threading.Thread(target=_worker, daemon=True, name="af-seal").start()
+        self._json({"working": True, "action": action}, 202)
+
     def _privacy(self) -> None:
         store = self._store()
         try:
@@ -1680,6 +1753,8 @@ class Handler(BaseHTTPRequestHandler):
             self._delete_files(payload)
         elif parsed.path == "/api/privacy":
             self._set_privacy(payload)
+        elif parsed.path == "/api/seal":
+            self._set_seal(payload)
         elif parsed.path == "/api/privacy/purge":
             self._purge()
         elif parsed.path == "/api/pin":
@@ -1941,6 +2016,10 @@ def serve(
     port: int = 8765,
     open_browser: bool = False,
 ) -> None:
+    try:
+        vault_mod.load(config.home)
+    except vault_mod.VaultError:
+        pass  # not sealed, or the key is gone - search surfaces it on demand
     server, url = start_server(db_path, config, host=host, port=port)
     # flush: when stdout is a log file or a pipe, block buffering would hide
     # the address until the process exits — which is exactly when nobody needs

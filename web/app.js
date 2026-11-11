@@ -1803,8 +1803,9 @@ function shot(image) {
 
 async function loadStats() {
   try {
-    const [stats, status, privacy, watch] = await Promise.all([
+    const [stats, status, privacy, watch, seal] = await Promise.all([
       api("/api/stats"), api("/api/status"), api("/api/privacy"), api("/api/watch"),
+      api("/api/seal").catch(() => null),
     ]);
     state.stats = stats;
     state.status = status;
@@ -1826,6 +1827,7 @@ async function loadStats() {
 
     renderPrivacy(privacy);
     renderWatch(watch);
+    if (seal) renderSeal(seal);
 
     const engines = status.ocr?.available || [];
     const clip = status.visual_supports_text
@@ -1883,6 +1885,69 @@ function renderPrivacy(privacy) {
       ? t("panel.privacyAll")
       : t("panel.privacySome", { n: chosen, total: catalog.length });
 }
+
+/* Paranoid mode: one (un)seal at a time on the server, polled for the bar.
+   The button flips meaning with the state; while the worker runs it is
+   disabled and the bar takes over. */
+function renderSeal(seal) {
+  state.seal = seal;
+  const button = $("seal-btn");
+  $("seal-state").textContent = seal.sealed ? t("panel.sealed") : t("panel.notSealed");
+  button.textContent = seal.sealed ? t("panel.unsealBtn") : t("panel.sealBtn");
+  button.disabled = Boolean(seal.working);
+  const bar = $("seal-progress");
+  const total = seal.total || 1;
+  const percent = Math.min(100, Math.round(((seal.done || 0) / total) * 100));
+  if (seal.working) {
+    bar.hidden = false;
+    $("seal-progress-fill").style.width = `${percent}%`;
+    const stageKey = "panel.sealStage" + String(seal.stage || "").replace(
+      /^(.)/, (c) => c.toUpperCase()
+    );
+    const stage = t(stageKey) !== stageKey ? t(stageKey) : seal.stage || "";
+    $("seal-progress-label").textContent = t("panel.sealWorking", { percent, stage });
+    $("seal-warn").hidden = true;
+    return;
+  }
+  bar.hidden = true;
+  if (seal.error) {
+    $("seal-warn").hidden = false;
+    $("seal-warn").textContent = seal.error;
+    return;
+  }
+  $("seal-warn").hidden = !seal.sealed;
+  if (seal.sealed) $("seal-warn").textContent = t("panel.sealWarn");
+}
+
+async function pollSeal() {
+  for (;;) {
+    let seal = null;
+    try {
+      seal = await api("/api/seal");
+      renderSeal(seal);
+      if (!seal.working) {
+        loadStats();
+        return;
+      }
+    } catch (error) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+}
+
+$("seal-btn").addEventListener("click", async () => {
+  const action = state.seal && state.seal.sealed ? "off" : "on";
+  const confirmText = action === "on" ? t("panel.sealBtn") : t("panel.unsealBtn");
+  if (!window.confirm(confirmText + "?")) return;
+  try {
+    await api("/api/seal", { method: "POST", body: JSON.stringify({ action }) });
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+    return;
+  }
+  pollSeal();
+});
 
 async function savePrivacy(patch) {
   try {

@@ -546,6 +546,20 @@
   </div>
 
   <div class="panel">
+    <h3 data-i18n="panel.encryption">Encryption</h3>
+    <p class="panel-note" data-i18n="panel.encryptionNote"></p>
+    <div class="stat-row">
+      <span><span data-i18n="panel.sealState">Index sealed</span> <b id="seal-state">—</b></span>
+      <button class="btn" id="seal-btn" type="button">—</button>
+    </div>
+    <div class="dups-progress" id="seal-progress" hidden>
+      <div class="dups-progress-bar"><span id="seal-progress-fill"></span></div>
+      <span class="dups-progress-label" id="seal-progress-label"></span>
+    </div>
+    <p class="panel-note" id="seal-warn" hidden data-i18n="panel.sealWarn"></p>
+  </div>
+
+  <div class="panel">
     <h3 data-i18n="panel.engines">Engines</h3>
     <div class="engines" id="engines">—</div>
   </div>
