@@ -488,7 +488,9 @@ def _files_from_chunks(store: Store, results: Sequence[tuple[int, float]]):
 # names on the numpy index) run in parallel: each one releases the GIL for its
 # real work (sqlite3_step, BLAS matvec, searchsorted), so a warm query costs
 # the slowest channel instead of the sum of all three.
-_CHANNEL_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="af-channel")
+# The pool is created per search_page call (not module-level): a shared pool's
+# threads outlive the caller, which segfaults on tests that close the store
+# while a stale fuzzy-channel task still holds the connection.
 
 
 def _rank(
@@ -607,10 +609,11 @@ def _rank(
     # see the lexical result before paying for the matvec. The vector pass runs
     # on this thread, which still overlaps the fuzzy scan — the pool only had
     # three slots, and one of them was wasted submitting a gated no-op.
-    fuzzy_future = _CHANNEL_POOL.submit(_fuzzy_channel)
-    lexical = _lexical_channel()
-    semantic = _vector_channel(lexical)
-    fuzzy = fuzzy_future.result()
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="af-chan") as chan:
+        fuzzy_future = chan.submit(_fuzzy_channel)
+        lexical = _lexical_channel()
+        semantic = _vector_channel(lexical)
+        fuzzy = fuzzy_future.result()
     # The typo channel only pays its way when the exact channel came back
     # nearly empty: it re-queries the vocabulary for a corrected spelling, and
     # an ordinary query must not spend that. Its pool is small for the same

@@ -879,9 +879,14 @@ def _repack_texts(conn: sqlite3.Connection) -> None:
         return
     updates = []
     for row in rows:
-        text = _unpack_text(row["data"])
-        _, raw_len, block_size, offsets, data = _pack_text(text)
-        updates.append((raw_len, block_size, offsets, data, row["hash"]))
+        data = row["data"]
+        if vault_mod.Vault.is_sealed(data):
+            continue  # sealed rows are already block-compressed; repacking plaintext would corrupt them
+        text = _unpack_text(data)
+        if not text:
+            continue
+        _, raw_len, block_size, offsets, packed = _pack_text(text)
+        updates.append((raw_len, block_size, offsets, packed, row["hash"]))
     conn.executemany(
         "UPDATE file_texts SET raw_len=?, block_size=?, offsets=?, data=? WHERE hash=?",
         updates,
@@ -1613,7 +1618,24 @@ class Store:
         short-lived Store per request, and the index must outlive any single
         one of them."""
         sealed = self.sealed
+        # The sidecar works in BOTH modes: sealed (encrypted) and normal
+        # (plaintext). The CLI used to pass ram_bm25=False and silently lose
+        # the content channel on indexes without FTS; now the sidecar is
+        # always consulted first, and cold CLI pays ~100 ms instead of 4 s.
         if not (self._ram_bm25 or sealed):
+            # One-shot CLI: only load an existing sidecar, never kick a build.
+            try:
+                key = (str(self.path), *self._stamps())
+                fp = self._chunks_fingerprint()
+            except sqlite3.Error:
+                return None
+            if _BM25["key"] == key and _BM25["index"] is not None:
+                return _BM25["index"]
+            side = self._load_sealed_bm25(fp)
+            if side is not None:
+                _BM25["index"] = side
+                _BM25["key"] = key
+                return side
             return None
         try:
             # The stamps move on any commit — this process's or the indexer's —
@@ -1681,24 +1703,30 @@ class Store:
         return _Path(str(self.path) + ".bm25seal")
 
     def _write_sealed_bm25(self, index) -> None:
-        """Serialize the CSR, seal it, write `<db>.bm25seal`."""
-        vault = vault_mod.current()
-        if vault is None:
-            raise vault_mod.VaultError(
-                "the index is sealed but the vault key is not loaded"
-            )
+        """Serialize the CSR, seal it (paranoid) or save plaintext (normal),
+        write `<db>.bm25seal` so the next cold CLI load is ~100 ms."""
         bio = io.BytesIO()
         np.savez(bio, **index.to_arrays())
-        self._sealed_bm25_path().write_bytes(vault.seal(bio.getvalue()))
+        raw = bio.getvalue()
+        if self.sealed:
+            vault = vault_mod.current()
+            if vault is None:
+                raise vault_mod.VaultError(
+                    "the index is sealed but the vault key is not loaded"
+                )
+            raw = vault.seal(raw)
+        self._sealed_bm25_path().write_bytes(raw)
 
     def _load_sealed_bm25(self, fp):
-        vault = vault_mod.current()
-        if vault is None:
-            return None
         path = self._sealed_bm25_path()
         if not path.exists():
             return None
-        raw = vault.open_bytes(path.read_bytes())
+        raw = path.read_bytes()
+        if vault_mod.Vault.is_sealed(raw):
+            vault = vault_mod.current()
+            if vault is None:
+                return None
+            raw = vault.open_bytes(raw)
         data = np.load(io.BytesIO(raw), allow_pickle=False)
         index = bm25mod.InRamBM25.from_arrays({name: data[name] for name in data.files})
         if index.fingerprint is not None and tuple(index.fingerprint) != tuple(fp):
@@ -1706,8 +1734,9 @@ class Store:
         return index
 
     def reseal_bm25(self) -> None:
-        """Rebuild the in-RAM BM25 from the sealed corpus and re-encrypt the
-        sidecar. Called after an index run in paranoid mode."""
+        """Rebuild the in-RAM BM25 and save the sidecar. Under seal the
+        sidecar is encrypted; in normal mode it is plaintext. Called after
+        every index run so the next cold CLI load is ~100 ms."""
         index = bm25mod.InRamBM25.build(_iter_chunk_texts(self.conn))
         fp = self._chunks_fingerprint()
         index.fingerprint = fp
