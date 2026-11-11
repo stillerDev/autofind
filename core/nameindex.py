@@ -256,32 +256,51 @@ class NameIndex:
         loads it (it uses the SQL scan), so only a server's first fuzzy query
         pays the load.
         """
+        # The four text blobs go into an uncompressed companion file that the
+        # loader mmaps: ~25 MB of path text stops being private RAM and
+        # becomes file-backed pages the OS can evict. The npz keeps the
+        # numeric arrays compressed and records the blob lengths.
+        blob_sizes = np.array(
+            [len(self.blob_array), len(self.name_blob_array),
+             len(self.path_blob_array), len(self.path_lower_array)],
+            dtype=np.int64,
+        )
         payload = {
             "ids": self.ids, "masks": self.masks,
             "sizes": self.sizes, "mtimes": self.mtimes,
-            "blob": self.blob_array, "name_len": self.name_len,
+            "name_len": self.name_len,
             "name_chars": self.name_chars, "offsets": self.offsets,
-            "name_blob": self.name_blob_array, "name_offsets": self.name_offsets,
-            "path_blob": self.path_blob_array, "path_offsets": self.path_offsets,
-            "path_lower_blob": self.path_lower_array, "path_lower_offsets": self.path_lower_offsets,
+            "name_offsets": self.name_offsets,
+            "path_offsets": self.path_offsets,
+            "path_lower_offsets": self.path_lower_offsets,
             "kind_codes": self.kind_codes,
             "kind_vocab": np.array(self.kind_vocab, dtype=np.str_),
             "alpha_starts": self.alpha_starts, "alpha_positions": self.alpha_positions,
+            "bin_sizes": blob_sizes,
             "stamps": np.array(stamps, dtype=np.float64),
             "build_seconds": np.array([self.build_seconds], dtype=np.float64),
         }
         # Written straight to the final path: on Windows a just-closed file can
         # stay locked for a while by antivirus scans, which made the classic
         # tmp-then-replace dance fail repeatedly. A torn write here is safe —
-        # the loader validates the npz and falls back to a rebuild.
+        # the loader validates the files and falls back to a rebuild.
+        bin_path = Path(str(path) + ".bin")
+        with open(bin_path, "wb") as fh:
+            fh.write(self.blob_array.tobytes())
+            fh.write(self.name_blob_array.tobytes())
+            fh.write(self.path_blob_array.tobytes())
+            fh.write(self.path_lower_array.tobytes())
         with open(path, "wb") as fh:
             np.savez_compressed(fh, **payload)
 
     @classmethod
-    def from_arrays(cls, arrays: dict, build_seconds: float = 0.0) -> "NameIndex":
-        """Rebuild from a sidecar's payloads. The blobs arrive as uint8
-        arrays; the byte-string views the accessors slice are materialised
-        once here (three `bytes()` copies of a few MB each, not 100k rows)."""
+    def from_arrays(cls, arrays: dict, build_seconds: float = 0.0,
+                    blobs: tuple | None = None) -> "NameIndex":
+        """Rebuild from a sidecar's payloads. `blobs`, when given, are the four
+        uint8 views of the mmapped `.nameidx.bin` companion file: the text
+        stays file-backed instead of becoming ~25 MB of private RAM. Without
+        them the blobs are materialised from the payload arrays (the legacy
+        npz layout, which shipped them compressed)."""
         index = cls.__new__(cls)
         index.ids = arrays["ids"]
         index.masks = arrays["masks"]
@@ -292,19 +311,26 @@ class NameIndex:
         index._lowered_view = None
         index._paths_view = None
         index._kinds_view = None
-        index.blob = bytes(arrays["blob"])
-        index.blob_array = np.frombuffer(index.blob, dtype=np.uint8)
+        if blobs is not None:
+            index.blob, index.name_blob, index.path_blob, index.path_lower_blob = blobs
+            index.blob_array = index.blob
+            index.name_blob_array = index.name_blob
+            index.path_blob_array = index.path_blob
+            index.path_lower_array = index.path_lower_blob
+        else:
+            index.blob = np.asarray(arrays["blob"], dtype=np.uint8)
+            index.blob_array = index.blob
+            index.name_blob = np.asarray(arrays["name_blob"], dtype=np.uint8)
+            index.name_blob_array = index.name_blob
+            index.path_blob = np.asarray(arrays["path_blob"], dtype=np.uint8)
+            index.path_blob_array = index.path_blob
+            index.path_lower_blob = np.asarray(arrays["path_lower_blob"], dtype=np.uint8)
+            index.path_lower_array = index.path_lower_blob
         index.name_len = arrays["name_len"]
         index.name_chars = arrays["name_chars"]
         index.offsets = arrays["offsets"]
-        index.name_blob = bytes(arrays["name_blob"])
-        index.name_blob_array = np.frombuffer(index.name_blob, dtype=np.uint8)
         index.name_offsets = arrays["name_offsets"]
-        index.path_blob = bytes(arrays["path_blob"])
-        index.path_blob_array = np.frombuffer(index.path_blob, dtype=np.uint8)
         index.path_offsets = arrays["path_offsets"]
-        index.path_lower_blob = bytes(arrays["path_lower_blob"])
-        index.path_lower_array = np.frombuffer(index.path_lower_blob, dtype=np.uint8)
         index.path_lower_offsets = arrays["path_lower_offsets"]
         index.kind_vocab = [str(k) for k in arrays["kind_vocab"].tolist()]
         index.kind_codes = arrays["kind_codes"]
@@ -314,20 +340,26 @@ class NameIndex:
 
     # -------------------------------------------------------------- accessors
 
+    def _slice(self, buf, start: int, end: int) -> bytes:
+        """One record out of a blob. The blobs are uint8 arrays (mmapped when
+        they came from the sidecar companion), so the slice is copied into
+        bytes first — a record is tens of bytes, never the blob."""
+        return bytes(buf[start:end]).rstrip(b"\x00")
+
     def name(self, position: int) -> str:
-        return self.name_blob[
-            self.name_offsets[position]:self.name_offsets[position + 1]
-        ].rstrip(b"\x00").decode("utf-8", "surrogatepass")
+        return self._slice(
+            self.name_blob, self.name_offsets[position], self.name_offsets[position + 1]
+        ).decode("utf-8", "surrogatepass")
 
     def lower(self, position: int) -> str:
-        return self.blob[
-            self.offsets[position]:self.offsets[position + 1]
-        ].rstrip(b"\x00").decode("utf-8", "surrogatepass")
+        return self._slice(
+            self.blob, self.offsets[position], self.offsets[position + 1]
+        ).decode("utf-8", "surrogatepass")
 
     def path(self, position: int) -> str:
-        return self.path_blob[
-            self.path_offsets[position]:self.path_offsets[position + 1]
-        ].rstrip(b"\x00").decode("utf-8", "surrogatepass")
+        return self._slice(
+            self.path_blob, self.path_offsets[position], self.path_offsets[position + 1]
+        ).decode("utf-8", "surrogatepass")
 
     def kind(self, position: int) -> str:
         return self.kind_vocab[self.kind_codes[position]]
@@ -423,7 +455,7 @@ class NameIndex:
         except UnicodeEncodeError:
             return []
         starts = np.fromiter(
-            (match.start() for match in re.finditer(re.escape(encoded), self.blob)),
+            (match.start() for match in re.finditer(re.escape(encoded), memoryview(self.blob))),
             dtype=np.int64,
         )
         if not len(starts):
@@ -804,8 +836,11 @@ def _build(store) -> NameIndex:
 
 def _load_sidecar(store, fingerprint: tuple[int, int, float, float]) -> NameIndex | None:
     """Restore the persisted index when the files table has not moved. ~456 ms
-    of row decoding becomes one ~40 MB sequential read."""
+    of row decoding becomes one ~40 MB sequential read, and the four text
+    blobs are mmapped from the companion file instead of becoming ~25 MB of
+    private RAM."""
     path = Path(str(store.path) + NameIndex.SIDE_SUFFIX)
+    bin_path = Path(str(path) + ".bin")
     try:
         if not path.exists():
             return None
@@ -817,9 +852,16 @@ def _load_sidecar(store, fingerprint: tuple[int, int, float, float]) -> NameInde
                 return None
             if saved != fingerprint:
                 return None
+            blobs = None
+            if "bin_sizes" in data.files:
+                sizes = data["bin_sizes"].tolist()
+                if bin_path.exists() and bin_path.stat().st_size == sum(sizes):
+                    view = np.memmap(bin_path, dtype=np.uint8, mode="r")
+                    edges = np.concatenate(([0], np.cumsum(sizes)))
+                    blobs = tuple(view[edges[i]:edges[i + 1]] for i in range(4))
+            arrays = {name: data[name] for name in data.files}
             index = NameIndex.from_arrays(
-                {name: data[name] for name in data.files},
-                build_seconds=float(data["build_seconds"][0]),
+                arrays, build_seconds=float(data["build_seconds"][0]), blobs=blobs
             )
         if len(index.ids) == 0 and _row_count(store) > 0:
             return None
@@ -827,6 +869,7 @@ def _load_sidecar(store, fingerprint: tuple[int, int, float, float]) -> NameInde
     except Exception:
         try:
             path.unlink()  # a torn or stale sidecar must not linger
+            bin_path.unlink()
         except OSError:
             pass
         return None
