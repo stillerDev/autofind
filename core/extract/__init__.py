@@ -17,7 +17,13 @@ from .office import (
 )
 from .pdf import extract_pdf
 from .plain import extract_plain
-from .msg import extract_msg_file as _extract_msg_file
+
+def _extract_email_dispatch(path, max_bytes=20*1024*1024):
+    """Route email extraction: .eml via email.py, .msg via msgoutlook.py."""
+    if str(path).lower().endswith(".msg"):
+        return extract_msgoutlook(path, max_bytes)
+    return extract_email(path, max_bytes)
+
 
 EXTRACTORS = {
     "text": extract_plain,
@@ -30,8 +36,7 @@ EXTRACTORS = {
     "odt": extract_opendocument,
     "rtf": extract_rtf,
     "archive": extract_archive,
-    "email": extract_email,
-    "msg": _extract_msg_file,
+    "email": _extract_email_dispatch,
 }
 
 PLAIN_KINDS = ("text", "code")
