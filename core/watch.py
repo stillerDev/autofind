@@ -28,6 +28,7 @@ from typing import Callable, Sequence
 
 from .config import IndexConfig
 from .embed import get_embedder, get_visual_embedder
+from .idle import IdleGate
 from .indexer import run_index
 from .scanner import iter_entries
 from . import vault as _vault_mod
@@ -49,6 +50,7 @@ class WatchState:
     last_batch: int = 0
     last_error: str | None = None
     roots: list[str] = field(default_factory=list)
+    idle_only: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -63,6 +65,7 @@ class WatchState:
             "last_batch": self.last_batch,
             "last_error": self.last_error,
             "roots": list(self.roots),
+            "idle_only": self.idle_only,
         }
 
 
@@ -76,6 +79,9 @@ class Watcher:
         settle: float | None = None,
         on_batch: Callable[[list[str], list[str], dict], None] | None = None,
         pause_when: Callable[[], bool] | None = None,
+        idle_only: bool = False,
+        idle_min: float = 30.0,
+        allow_remote: bool = False,
     ) -> None:
         self.roots = [str(Path(root).expanduser()) for root in roots]
         self.config = config
@@ -84,11 +90,32 @@ class Watcher:
         self.settle = settle if settle is not None else config.watch_settle
         self.on_batch = on_batch
         self.pause_when = pause_when
-        self.state = WatchState(roots=self.roots)
+        # Idle-only mode: a whole watcher cycle waits until the user has been
+        # away from keyboard for `idle_min` seconds. Detection failing keeps
+        # indexing running — see core.idle.IdleGate.
+        self.idle_only = bool(idle_only)
+        self._idle_gate = IdleGate(min_idle=idle_min)
+        self.allow_remote = bool(allow_remote)
+        from . import drives as _drives
+
+        self._drive_type = _drives.drive_type
+        self.state = WatchState(roots=self.roots, idle_only=self.idle_only)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._skip_prefix = str(config.home.resolve()).lower()
         self._skip_path = str(self.db_path.resolve()).lower()
+        # Optional logging hook (message, level) — the server wires its
+        # rotating log in, so watcher problems outlive the console window.
+        self.log = None
+
+    def _note_error(self, message: str) -> None:
+        """Set the visible error and, when wired, put it in the event log."""
+        self.state.last_error = message
+        if self.log is not None:
+            try:
+                self.log(message, "error")
+            except Exception:
+                pass
 
     # ------------------------------------------------------------- lifecycle
 
@@ -107,6 +134,19 @@ class Watcher:
         self.state.running = False
 
     def run(self) -> None:
+        # The same guard as `autofind index`: a network root is a conscious
+        # decision, because watching a share reports deletions when the
+        # connection blips and the resync then trusts a partial snapshot.
+        # `self._drive_type` is injectable so tests need no real share.
+        from .drives import remote_roots
+
+        remote = remote_roots(self.roots, type_fn=self._drive_type)
+        if remote and not self.allow_remote:
+            self._note_error(
+                "roots on network drives refused: " + ", ".join(remote)
+                + " (pass allow_remote to index them anyway)"
+            )
+            return
         store = None
         try:
             embedder = get_embedder("auto", self.config.model_dir)
@@ -128,15 +168,21 @@ class Watcher:
             else:
                 self._run_polling(store, embedder, visual, previous)
         except Exception as exc:
-            self.state.last_error = f"{type(exc).__name__}: {exc}"
+            self._note_error(f"{type(exc).__name__}: {exc}")
         finally:
             if store is not None:
                 store.close()
             self.state.running = False
 
+    def _deferred(self) -> bool:
+        """A cycle should be skipped: a job runs, or the user is active."""
+        if self.pause_when and self.pause_when():
+            return True
+        return self.idle_only and not self._idle_gate.ready()
+
     def _run_polling(self, store, embedder, visual, previous: Snapshot) -> None:
         while not self._stop.wait(self.interval):
-            if self.pause_when and self.pause_when():
+            if self._deferred():
                 continue
             try:
                 current = self._snapshot()
@@ -146,7 +192,7 @@ class Watcher:
                 previous = current
                 self.state.cycles += 1
             except Exception as exc:  # a broken batch must not kill the watcher
-                self.state.last_error = f"{type(exc).__name__}: {exc}"
+                self._note_error(f"{type(exc).__name__}: {exc}")
 
     def _run_events(self, store, embedder, visual, fan: "EventFan") -> None:
         pending: dict[str, float] = {}  # path -> when the last event for it landed
@@ -154,7 +200,7 @@ class Watcher:
         resync = max(self.interval * 15, 60.0)
         last_resync = time.time()
         while not self._stop.wait(0.2):
-            if self.pause_when and self.pause_when():
+            if self._deferred():
                 continue
             try:
                 now = time.time()
@@ -178,7 +224,7 @@ class Watcher:
                     previous = current
                 self.state.cycles += 1
             except Exception as exc:  # a broken batch must not kill the watcher
-                self.state.last_error = f"{type(exc).__name__}: {exc}"
+                self._note_error(f"{type(exc).__name__}: {exc}")
             if fan.broken:
                 self.state.mode = "poll"
                 self._run_polling(store, embedder, visual, self._snapshot())

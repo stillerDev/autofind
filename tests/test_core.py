@@ -36,7 +36,7 @@ from core.privacy import match_reason, purge_indexed
 from core.query import ParsedQuery, understand
 from core.scanner import iter_entries, kind_for
 from core.search import build_match_query, hybrid_search, similar_images
-from core.store import Store, _best_copy, _simhash
+from core.store import Store, _best_copy, _simhash, SCHEMA_VERSION
 from core.watch import Watcher
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -169,10 +169,12 @@ class OcrTests(unittest.TestCase):
             self.assertTrue(result.engine)
 
     def test_recognises_japanese_text(self):
-        """The Windows packs cannot read kana; the bundled model can.
+        """The Windows packs cannot read kana; the fallback tier can.
 
         This is the whole point of the fallback tier: without it the screenshot
         is indexed as a handful of stray Latin letters and is unsearchable.
+        Whichever accurate engine wins (Indra when its pack is downloaded, or
+        the bundled rapidocr model) the words must come back.
         """
         from core.ocr import reset_fallbacks
         from core.ocr.engine import downloaded_models
@@ -195,8 +197,70 @@ class OcrTests(unittest.TestCase):
             image.save(path)
 
             result = ocr_image(path)
-            self.assertTrue(result.engine.startswith("rapidocr"), result.engine)
+            self.assertTrue(result.engine, "an engine must sign the result")
             self.assertIn("世界", result.text)
+
+
+class ContentAddressedTextTests(unittest.TestCase):
+    """One text per content hash: shared by copies, dropped when the last goes."""
+
+    def _two_identical(self, tmp: str) -> tuple[Store, Path]:
+        root = Path(tmp) / "corpus"
+        root.mkdir()
+        (root / "a.txt").write_text("одинаковый текст документа", encoding="utf-8")
+        (root / "b.txt").write_text("одинаковый текст документа", encoding="utf-8")
+        config = IndexConfig(home=Path(tmp) / "home")
+        embedder = HashingEmbedder()
+        store = Store(Path(tmp) / "index.db", embedder.name, embedder.dim)
+        run_index([root], config, store, embedder)
+        return store, root
+
+    def test_identical_files_share_one_text_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self._two_identical(tmp)
+            count = store.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0]
+            self.assertEqual(count, 1)
+            store.close()
+
+    def test_drop_keeps_text_while_a_copy_remains(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self._two_identical(tmp)
+            ids = [int(row["id"]) for row in store.conn.execute("SELECT id FROM files ORDER BY id")]
+            store.drop_file(ids[0])
+            count = store.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0]
+            self.assertEqual(count, 1)  # the copy still holds the text
+            store.drop_file(ids[1])
+            count = store.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0]
+            self.assertEqual(count, 0)  # last reference went, the text goes too
+            store.close()
+
+    def test_v10_sweeps_orphan_texts_and_indexes_refcount(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = self._two_identical(tmp)
+            # A text no file references: the leak the v10 sweep exists to clean.
+            store.conn.execute(
+                "INSERT INTO file_texts(hash, raw_len, block_size, offsets, data) "
+                "VALUES('orphan', 0, 0, x'', x'')"
+            )
+            store.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION - 1}")
+            store.conn.commit()
+            store.close()
+
+            reopened = Store(Path(tmp) / "index.db", "hashing-384", 384)
+            try:
+                count = reopened.conn.execute("SELECT COUNT(*) FROM file_texts").fetchone()[0]
+                self.assertEqual(count, 1)  # the orphan is gone, the shared text stays
+                indexes = {
+                    row["name"]
+                    for row in reopened.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+                }
+                self.assertIn("idx_files_text_hash", indexes)
+                self.assertEqual(
+                    int(reopened.conn.execute("PRAGMA user_version").fetchone()[0]),
+                    SCHEMA_VERSION,
+                )
+            finally:
+                reopened.close()
 
 
 class SearchTests(unittest.TestCase):

@@ -86,11 +86,18 @@
 10. **Network drive detection** — GetDriveTypeW; block writes on NETWORK drive.
 11. **Index self-test** — integrity check at startup: count chunks, verify hashes.
 12. **RAM soft limit** — configurable; evict caches when RSS exceeds the limit.
-13. **Log rotation** — write server events to a rotating log file.
-14. **Clean uninstaller** — `autofind uninstall`: remove index, key, autostart, shortcuts.
-15. **.msg support** — extract-msg library; add to scanner.py EXTRACTORS.
-16. **Indra OCR** — port from kensaku's ocr_indra module.
-17. **zh-CN UI** — add a third locale to i18n.js.
+13. **Log rotation** — write server events to a rotating log file. **DONE** — `core/logger.py` (size-rotated `~/.autofind/autofind.log`), wired into index jobs, watcher errors, boot; readable via `GET /api/log`.
+14. **Clean uninstaller** — `autofind uninstall`: remove index, key, autostart, shortcuts. **DONE** — dry run by default, `--yes` to actually delete.
+15. **.msg support** — extract-msg library; add to scanner.py EXTRACTORS. **DONE** — `.msg` joins kind "email"; `core/extract/msgoutlook.py` uses the optional `extract-msg` package (requirements.txt), without it the file is indexed without text.
+16. **Indra OCR** — port from kensaku's ocr_indra module. **DONE** — `core/ocr/indra.py` is the native Rust port (imageops, CTC text with Hangul/RTL handling, XY-cut reading order, deskew, the det→route→rec pipeline) translated to numpy + onnxruntime, no new dependencies. The 27 MB model pack downloads on demand (`autofind ocr download indra`) with pinned SHA-256s; the weights are under a modified OpenRAIL-M license, so they are never bundled. Indra leads the fallback tier and the CJK list, reads RTL and vertical CJK, and answers `--engine indra`; 33 ported unit tests in `tests/test_ocr_indra.py` assert the same pixel values as the Rust tests.
+17. **zh-CN UI** — add a third locale to i18n.js. **DONE** — all 455 keys translated, `checkTranslations()` clean, `locale()` in app.js maps zh→zh-CN for date formatting.
+18. **Kensaku parity sweep** — four gaps closed, all uncommitted:
+    - **Scanned-PDF OCR** — `core/extract/pdf.py`: a document whose whole text layer is under 50 chars is pages of pixels; pages render via PyMuPDF (50 MP cap, 0.01 zoom floor) and run through the screenshot OCR chain. Kensaku `pdf.rs` policy ported: per-engine page caps (windows 20 / indra 10 / default 6 — a timed-out extraction retried by the watcher must terminate), the `\n... [content truncated at limit]` budget note, and the `[Scanned PDF: image only]` marker that keeps the file indexed when OCR is off or unavailable. 8 tests with real scanned-PDF fixtures and real OCR (`tests/test_pdf_scanned.py`).
+    - **CSV/TSV rows** — `core/extract/delimited.py`: `pandas.head` shape, `column = "value"` per line so a cell-value search lands on its row; delimiter sniffed over the first 20 records (hint first), 200-row head, byte cap drops the half record, UTF-16 by BOM, NUL-without-BOM rejected as binary. The kind stays `text` (no new store/query-facet surface). 13 tests (`tests/test_delimited.py`).
+    - **Maintenance** — `core/maintenance.py` (Kensaku `maintenance.rs` port): `autofind maintenance` prints an inventory (index, packs, import backups, `.part` files, updater temp dirs, logs); `--clean` removes what no live process can still be using (newest `import-backup/` survives; `.part` older than 1 h; `autofind-update-*` temp dirs of dead PIDs, current PID's stage and anything < 24 h old kept). `autofind reset [--yes] [--with-models]` wipes user state but keeps the model packs by default — a reset must not cost a 55 MB re-download. The same cleanup pass runs quietly at the start of every `run_index`. 10 tests (`tests/test_maintenance.py`).
+    - **Model downloader** — `core/models.py`: `autofind model download e5` installs the int8 multilingual-e5-small export into `~/.autofind/models/e5-small/` (118 MB model.onnx + 17 MB tokenizer.json), pinned by byte length and SHA-256 at a fixed HF commit, huggingface with hf-mirror fallback, `.part` staging renamed only after verification — the same guarantees as the Indra pack; interrupted runs resume. `autofind model status` names the exact problem (missing / size / checksum). Pins verified against the live repo by HEAD. `get_embedder` now passes `models/e5-small/` to `OnnxE5`, matching the documented drop-in path. 6 tests with a fake network (`tests/test_models.py`).
+
+    Full suite: 527 passed. Still open from the sweep: parquet extractor (optional dep), crashlog channel, opt-in external extractor plugins.
 
 ## Performance journey (100k-file corpus, same machine)
 

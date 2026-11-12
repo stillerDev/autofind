@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — Command Palette</title>
+<style>
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'Inter',system-ui,sans-serif; }
+  mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:rgba(0,0,0,.8); min-height:100vh; display:flex; align-items:flex-start; justify-content:center; padding-top:8vh;
+           font-family:'JetBrains Mono',monospace; }
+    .palette { width:720px; background:#1e1e1e; border-radius:8px; box-shadow:0 0 0 1px #333, 0 20px 60px rgba(0,0,0,.8); overflow:hidden; }
+    .input-row { display:flex; align-items:center; padding:0 16px; height:48px; border-bottom:1px solid #333; gap:12px; }
+    .input-row .prompt { color:#569cd6; font-size:14px; }
+    .input-row input { flex:1; background:transparent; border:none; outline:none; color:#d4d4d4; font-size:14px; font-family:inherit; }
+    .input-row .kbd { font-size:10px; color:#666; border:1px solid #444; padding:2px 6px; border-radius:3px; }
+    .items { max-height:420px; overflow-y:auto; }
+    .item { display:flex; align-items:center; padding:8px 16px; gap:12px; font-size:13px; cursor:pointer; border-left:2px solid transparent; }
+    .item:hover, .item.sel { background:rgba(255,255,255,.04); border-left-color:#569cd6; }
+    .item .num { color:#555; width:24px; font-size:11px; }
+    .item .type { color:#ce9178; width:50px; font-size:11px; }
+    .item .name { color:#e0e0e0; flex:1; }
+    .item .path { color:#555; font-size:11px; }
+    .item mark { color:#ce9178; background:none; }
+    .item .score { color:#444; font-size:10px; }
+    .footer { display:flex; justify-content:space-between; padding:8px 16px; border-top:1px solid #333; font-size:11px; color:#555; }
+    .footer .keys span { color:#888; border:1px solid #444; padding:1px 5px; border-radius:3px; margin:0 2px; font-size:10px; }
+
+</style>
+</head>
+<body>
+
+    <div class="palette">
+      <div class="input-row">
+        <span class="prompt">&gt;</span>
+        <input type="text" value="budget review" autofocus>
+        <span class="kbd">ESC</span>
+      </div>
+      <div class="items">
+        <div class="item sel"><div class="num">1</div><div class="type">md</div><div class="name">Q4-budget-report.md — квартальный <mark>бюджетный</mark> отчёт за Q4</div><div class="path">Documents/reports</div><div class="score">0.94</div></div>
+        <div class="item"><div class="num">2</div><div class="type">py</div><div class="name">parse_query.py — <mark>budget</mark> review module</div><div class="path">core/search.py</div><div class="score">0.87</div></div>
+        <div class="item"><div class="num">3</div><div class="type">txt</div><div class="name">budget-notes.txt — meeting notes mention <mark>budget</mark></div><div class="path">Desktop</div><div class="score">0.82</div></div>
+        <div class="item"><div class="num">4</div><div class="type">png</div><div class="name">screenshot_001.png — OCR: <mark>бюджет</mark> на Q4</div><div class="path">Pictures/Screenshots</div><div class="score">0.79</div></div>
+        <div class="item"><div class="num">5</div><div class="type">sql</div><div class="name">schema_v2.sql — CREATE INDEX idx_<mark>budget</mark></div><div class="path">db/migrations</div><div class="score">0.75</div></div>
+      </div>
+      <div class="footer">
+        <div class="keys"><span>↑↓</span> navigate <span>↵</span> open <span>Ctrl/↵</span> folder <span>Tab</span> preview</div>
+        <div>5 results · 12ms · BM25/vector</div>
+      </div>
+    </div>
+
+</body>
+</html>

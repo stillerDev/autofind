@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — Spotlight</title>
+<style>
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'Inter',system-ui,sans-serif; }
+  mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:rgba(0,0,0,.85); min-height:100vh; display:flex; align-items:flex-start; justify-content:center; padding-top:10vh;
+           font-family:'SF Pro Display',system-ui,sans-serif; backdrop-filter:blur(20px); }
+    .spotlight { width:720px; background:rgba(28,28,30,.95); border-radius:14px; box-shadow:0 0 0 1px rgba(255,255,255,.1), 0 32px 96px rgba(0,0,0,.8); overflow:hidden; backdrop-filter:blur(40px); }
+    .search { display:flex; align-items:center; padding:0 18px; height:60px; border-bottom:1px solid rgba(255,255,255,.08); }
+    .search input { flex:1; background:transparent; border:none; outline:none; color:#e0e0e0; font-size:20px; font-weight:300; font-family:inherit; }
+    .results { padding:8px 0; }
+    .result { display:flex; align-items:center; padding:10px 18px; gap:14px; cursor:pointer; }
+    .result:hover, .result.selected { background:rgba(255,255,255,.06); }
+    .result .icon { font-size:20px; width:28px; text-align:center; }
+    .result .name { font-size:15px; color:#e0e0e0; flex:1; }
+    .result .path { font-size:11px; color:#666; }
+    .result .badge { font-size:10px; color:#888; background:rgba(255,255,255,.06); padding:2px 8px; border-radius:10px; }
+    .preview { border-top:1px solid rgba(255,255,255,.08); padding:20px 24px; background:rgba(0,0,0,.2); }
+    .preview .p-name { font-size:16px; color:#e0e0e0; font-weight:600; margin-bottom:12px; }
+    .preview .p-text { font-size:13px; color:#999; line-height:1.8; font-family:'SF Mono',monospace; }
+    .preview mark { color:#ffd60a; background:none; }
+    .footer { display:flex; justify-content:space-between; padding:10px 18px; font-size:11px; color:#555; border-top:1px solid rgba(255,255,255,.06); }
+
+</style>
+</head>
+<body>
+
+    <div class="spotlight">
+      <div class="search">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#666" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+        <input type="text" placeholder="Search" value="budget review" autofocus>
+      </div>
+      <div class="results">
+        <div class="result selected"><div class="icon">📄</div><div class="name">Q4-budget-report.md</div><div class="path">Documents/reports</div><div class="badge">md</div></div>
+        <div class="result"><div class="icon">🐍</div><div class="name">parse_query.py</div><div class="path">core/search.py</div><div class="badge">py</div></div>
+        <div class="result"><div class="icon">📝</div><div class="name">budget-notes.txt</div><div class="path">Desktop</div><div class="badge">txt</div></div>
+      </div>
+      <div class="preview">
+        <div class="p-name">Q4-budget-report.md</div>
+        <div class="p-text">Квартальный <mark>бюджетный</mark> отчёт за Q4.
+Расходы на инфраструктуру составили 2.4 млн рублей,
+что на 18% выше плановых показателей.
+
+Основные статьи:
+  серверы и хостинг     1.2 млн
+  лицензии ПО            0.6 млн
+
+<mark>бюджет</mark> на следующий квартал предполагает
+оптимизацию расходов на 15%.</div>
+      </div>
+      <div class="footer"><span>↵ Open · ⌘↵ Reveal in folder</span><span>3 of 5 results</span></div>
+    </div>
+
+</body>
+</html>

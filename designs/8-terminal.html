@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — Terminal</title>
+<style>
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'Inter',system-ui,sans-serif; }
+  mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#0a0a0a; min-height:100vh; font-family:'JetBrains Mono',monospace; font-size:13px; color:#d0d0d0; padding:16px 20px; line-height:1.7; }
+    .prompt-line { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+    .prompt-line .sym { color:#5b8ee6; }
+    .prompt-line input { flex:1; background:transparent; border:none; outline:none; color:#d0d0d0; font-size:13px; font-family:inherit; }
+    .sep { color:#333; margin:8px 0; user-select:none; }
+    .result { display:flex; gap:16px; padding:2px 0; }
+    .result .idx { color:#333; width:28px; text-align:right; flex-shrink:0; }
+    .result .type { color:#ce9178; width:40px; flex-shrink:0; }
+    .result .name { color:#e0e0e0; width:280px; flex-shrink:0; }
+    .result .snippet { color:#888; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .result.selected .name { color:#fff; background:rgba(91,142,230,.1); padding:0 4px; }
+    .result mark { color:#ce9178; background:none; }
+    .selected-ind { color:#5b8ee6; }
+    .stats { color:#444; margin-top:16px; font-size:11px; }
+    .hint { color:#333; margin-top:8px; font-size:11px; }
+    .hint .key { color:#555; border:1px solid #333; padding:0 4px; border-radius:2px; margin:0 2px; }
+
+</style>
+</head>
+<body>
+
+    <div class="prompt-line">
+      <span class="sym">&gt;</span>
+      <input type="text" value="budget review" autofocus style="color:#d0d0d0">
+      <span style="color:#333;font-size:11px;margin-left:12px">AF v9.0 · 100k files</span>
+    </div>
+    <div class="sep">────────────────────────────────────────────────────────────────────────</div>
+    <div class="result selected"><div class="idx"><span class="selected-ind">▶</span> 1</div><div class="type">md</div><div class="name">Q4-budget-report.md</div><div class="snippet">Квартальный <mark>бюджетный</mark> отчёт за Q4…</div></div>
+    <div class="result"><div class="idx">2</div><div class="type">py</div><div class="name">parse_query.py</div><div class="snippet">def parse_query(text): … the <mark>budget review</mark> module…</div></div>
+    <div class="result"><div class="idx">3</div><div class="type">txt</div><div class="name">budget-notes.txt</div><div class="snippet">meeting notes mention <mark>budget</mark> review and the…</div></div>
+    <div class="result"><div class="idx">4</div><div class="type">png</div><div class="name">screenshot_001.png</div><div class="snippet">OCR: <mark>бюджет</mark> на Q4 2026…</div></div>
+    <div class="result"><div class="idx">5</div><div class="type">sql</div><div class="name">schema_v2.sql</div><div class="snippet">CREATE INDEX idx_<mark>budget</mark> ON transactions…</div></div>
+    <div class="stats">
+      5 results · 3 files · 2 types · 12ms · BM25/vector/LUT
+    </div>
+    <div class="hint">
+      <span class="key">↑↓</span> select
+      <span class="key">↵</span> open
+      <span class="key">Ctrl/↵</span> folder
+      <span class="key">Tab</span> preview
+      <span class="key">type:</span> filter
+      <span class="key">path:</span> scope
+    </div>
+
+</body>
+</html>

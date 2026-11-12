@@ -65,6 +65,78 @@ class VaultKeyFileTests(unittest.TestCase):
             self.assertTrue(vault_mod.key_path(home).exists())
 
 
+class PassphraseVaultTests(unittest.TestCase):
+    """Passphrase mode: the portable key file, sealed and opened without DPAPI."""
+
+    PASS = "correct horse battery"
+
+    def test_roundtrip_and_kdf_recorded(self):
+        with tempfile.TemporaryDirectory() as home:
+            v1 = vault_mod.enable_passphrase(home, self.PASS)
+            self.assertEqual(vault_mod.key_mode(home), "passphrase")
+            body = vault_mod.key_path(home).read_bytes()
+            self.assertTrue(body.startswith(vault_mod.KEY_MAGIC_V2))
+            # The header names the KDF and its parameters, so the file opens
+            # on a machine that has never seen these exact settings.
+            import json
+            header = json.loads(body[len(vault_mod.KEY_MAGIC_V2):].split(b" ", 1)[0])
+            self.assertIn(header["kdf"], ("argon2id", "scrypt"))
+            self.assertTrue(header["params"])
+            v2 = vault_mod.load(home, self.PASS)
+            blob = v1.seal(b"portable payload")
+            self.assertEqual(v2.open_bytes(blob), b"portable payload")
+
+    def test_env_var_unlocks(self):
+        with tempfile.TemporaryDirectory() as home:
+            vault_mod.enable_passphrase(home, self.PASS)
+            old = vault_mod.PASSPHRASE_ENV
+            __import__("os").environ[old] = self.PASS
+            try:
+                v = vault_mod.load(home)  # no explicit passphrase
+                self.assertEqual(v.open_bytes(v.seal(b"x")), b"x")
+            finally:
+                del __import__("os").environ[old]
+
+    def test_wrong_passphrase_raises(self):
+        with tempfile.TemporaryDirectory() as home:
+            vault_mod.enable_passphrase(home, self.PASS)
+            with self.assertRaises(vault_mod.VaultError):
+                vault_mod.load(home, "wrong passphrase entirely")
+
+    def test_missing_passphrase_tells_where_to_put_it(self):
+        with tempfile.TemporaryDirectory() as home:
+            vault_mod.enable_passphrase(home, self.PASS)
+            with self.assertRaises(vault_mod.VaultError) as caught:
+                vault_mod.load(home)
+            self.assertIn(vault_mod.PASSPHRASE_ENV, str(caught.exception))
+
+    def test_short_passphrase_refused(self):
+        with tempfile.TemporaryDirectory() as home:
+            with self.assertRaises(vault_mod.VaultError):
+                vault_mod.enable_passphrase(home, "short")
+
+    def test_existing_key_file_not_silently_overwritten(self):
+        if __import__("os").name != "nt":
+            self.skipTest("DPAPI is Windows-only")
+        with tempfile.TemporaryDirectory() as home:
+            vault_mod.enable(home)
+            with self.assertRaises(vault_mod.VaultError):
+                vault_mod.enable_passphrase(home, self.PASS)
+            self.assertEqual(vault_mod.key_mode(home), "dpapi")
+
+    def test_try_autoload_stays_silent_without_env(self):
+        with tempfile.TemporaryDirectory() as home:
+            vault_mod.enable_passphrase(home, self.PASS)
+            vault_mod.install(None)  # a fresh process would have no vault
+            old = vault_mod.PASSPHRASE_ENV
+            __import__("os").environ.pop(old, None)
+            try:
+                self.assertIsNone(vault_mod.try_autoload(home))
+                self.assertIsNone(vault_mod.current())
+            finally:
+                __import__("os").environ.pop(old, None)
+
+
 class SealMigrationTests(unittest.TestCase):
     """Full cycle on a real (small) index: seal, search parity, unseal."""
 

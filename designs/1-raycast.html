@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — Raycast</title>
+<style>
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'Inter',system-ui,sans-serif; }
+  mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background: rgba(0,0,0,0.75); min-height:100vh; display:flex; align-items:flex-start; justify-content:center; padding-top:12vh; font-family:'SF Pro Text',system-ui,sans-serif; }
+    .overlay { width:680px; background:#161616; border-radius:12px; box-shadow:0 24px 80px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.08); overflow:hidden; }
+    .search { display:flex; align-items:center; padding:0 16px; height:52px; border-bottom:1px solid rgba(255,255,255,.06); }
+    .search input { flex:1; background:transparent; border:none; outline:none; color:#e0e0e0; font-size:16px; font-family:inherit; }
+    .search input::placeholder { color:#555; }
+    .search .esc { font-size:10px; color:#555; border:1px solid #333; border-radius:4px; padding:2px 6px; }
+    .tabs { display:flex; gap:0; border-bottom:1px solid rgba(255,255,255,.06); }
+    .tab { flex:1; text-align:center; padding:8px; font-size:12px; color:#666; cursor:pointer; }
+    .tab.active { color:#fff; border-bottom:2px solid #ff6363; }
+    .results { max-height:400px; overflow-y:auto; }
+    .result { display:flex; align-items:center; padding:10px 16px; gap:12px; cursor:pointer; border-left:2px solid transparent; }
+    .result:hover, .result.selected { background:rgba(255,255,255,.05); border-left-color:#ff6363; }
+    .result .icon { width:32px; height:32px; border-radius:6px; background:rgba(255,255,255,.06); display:grid; place-items:center; font-size:14px; }
+    .result .info { flex:1; min-width:0; }
+    .result .name { font-size:14px; color:#e0e0e0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .result .path { font-size:11px; color:#666; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .result .snippet { font-size:11px; color:#555; margin-top:2px; }
+    .result mark { color:#ff6363; background:none; }
+    .footer { display:flex; justify-content:space-between; padding:8px 16px; border-top:1px solid rgba(255,255,255,.06); font-size:11px; color:#555; }
+    .rail { position:fixed; left:16px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; gap:10px; }
+    .rail-btn { width:44px; height:44px; border-radius:50%; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.08); display:grid; place-items:center; color:#888; cursor:pointer; font-size:16px; transition:all .15s; }
+    .rail-btn:hover { color:#fff; background:rgba(255,255,255,.1); }
+
+</style>
+</head>
+<body>
+
+    <nav class="rail">
+      <div class="rail-btn" title="Search">🔍</div>
+      <div class="rail-btn" title="Index">🗄️</div>
+      <div class="rail-btn" title="Privacy">🛡️</div>
+      <div class="rail-btn" title="Encryption">🔒</div>
+      <div class="rail-btn" title="Search settings">⚙️</div>
+      <div class="rail-btn" title="Hotkeys">⌨️</div>
+    </nav>
+    <div class="overlay">
+      <div class="search">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+        <input type="text" placeholder="Search files, text, screenshots…" value="budget review" autofocus>
+        <span class="esc">ESC</span>
+      </div>
+      <div class="tabs">
+        <div class="tab active">All</div>
+        <div class="tab">Files</div>
+        <div class="tab">Text</div>
+        <div class="tab">Code</div>
+        <div class="tab">Screenshots</div>
+      </div>
+      <div class="results">
+        <div class="result selected"><div class="icon">📄</div><div class="info"><div class="name">parse_query.py</div><div class="path">core/search.py</div></div></div>
+        <div class="result"><div class="icon">📝</div><div class="info"><div class="name">Q4-budget-report.md</div><div class="snippet"><mark>budget</mark> review and the database index rebuilds</div></div></div>
+        <div class="result"><div class="icon">📄</div><div class="info"><div class="name">budget-notes.txt</div><div class="snippet">meeting notes mention <mark>budget</mark> review</div></div></div>
+        <div class="result"><div class="icon">🖼️</div><div class="info"><div class="name">screenshot_001.png</div><div class="path">Pictures/Screenshots</div></div></div>
+        <div class="result"><div class="icon">🗄️</div><div class="info"><div class="name">schema_v2.sql</div><div class="snippet">CREATE INDEX idx_<mark>budget</mark></div></div></div>
+      </div>
+      <div class="footer"><span>↑↓ navigate · ↵ open · ⌘↵ folder</span><span>100k files indexed</span></div>
+    </div>
+
+</body>
+</html>

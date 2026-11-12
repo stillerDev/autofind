@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — Preview</title>
+<style>
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'Inter',system-ui,sans-serif; }
+  mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#0a0a0a; min-height:100vh; font-family:'Inter',system-ui,sans-serif; color:#d0d0d0; display:flex; }
+    .left { width:420px; border-right:1px solid #1e1e1e; padding:60px 0; flex-shrink:0; }
+    .left .search { display:flex; align-items:center; background:#1a1a1a; border-radius:8px; padding:0 14px; height:42px; border:1px solid #2a2a2a; margin:0 16px 20px; }
+    .left .search input { flex:1; background:transparent; border:none; outline:none; color:#e0e0e0; font-size:14px; }
+    .left .result { padding:10px 16px; cursor:pointer; border-left:2px solid transparent; }
+    .left .result:hover, .left .result.sel { background:rgba(255,255,255,.03); border-left-color:#8b7cf6; }
+    .left .result .name { font-size:14px; color:#e0e0e0; font-weight:500; }
+    .left .result .path { font-size:11px; color:#555; margin-top:2px; }
+    .left .result .snippet { font-size:12px; color:#888; margin-top:4px; }
+    .left .result .snippet mark { color:#8b7cf6; background:none; }
+    .right { flex:1; padding:40px 48px; background:#0c0c0c; }
+    .right .file-head { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+    .right .file-head .icon { font-size:24px; }
+    .right .file-head .name { font-size:20px; font-weight:600; color:#e0e0e0; }
+    .right .file-head .path { font-size:12px; color:#555; }
+    .right .file-meta { display:flex; gap:16px; margin:16px 0 24px; font-size:12px; color:#666; }
+    .right .file-meta span { display:flex; align-items:center; gap:4px; }
+    .right .content { font-size:14px; line-height:1.8; color:#b0b0b0; white-space:pre-wrap; font-family:'JetBrains Mono',monospace; }
+    .right .content mark { background:rgba(139,124,246,.15); color:#b8a9f8; padding:1px 3px; border-radius:3px; }
+    .right .actions { display:flex; gap:8px; margin-top:32px; }
+    .right .actions button { background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.1); border-radius:8px; padding:8px 16px; font-size:13px; color:#aaa; cursor:pointer; font-family:inherit; transition:all .15s; }
+    .right .actions button:hover { background:rgba(255,255,255,.08); color:#e0e0e0; }
+    .rail { position:fixed; left:16px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; gap:10px; }
+    .rail-btn { width:44px; height:44px; border-radius:50%; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.1); display:grid; place-items:center; font-size:16px; cursor:pointer; color:#777; transition:all .15s; }
+    .rail-btn:hover, .rail-btn.active { color:#8b7cf6; border-color:rgba(139,124,246,.4); background:rgba(139,124,246,.08); }
+
+</style>
+</head>
+<body>
+
+    <nav class="rail">
+      <div class="rail-btn">🔍</div>
+      <div class="rail-btn">🗄️</div>
+      <div class="rail-btn">🛡️</div>
+      <div class="rail-btn">🔒</div>
+      <div class="rail-btn">⚙️</div>
+      <div class="rail-btn">⌨️</div>
+    </nav>
+    <div class="left">
+      <div class="search">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+        <input type="text" value="budget review">
+      </div>
+      <div class="result sel"><div class="name">Q4-budget-report.md</div><div class="path">Documents/reports/</div><div class="snippet">Квартальный <mark>бюджетный</mark> отчёт…</div></div>
+      <div class="result"><div class="name">parse_query.py</div><div class="path">core/search.py</div><div class="snippet"><mark>budget</mark> review module handles…</div></div>
+      <div class="result"><div class="name">budget-notes.txt</div><div class="path">Desktop/</div><div class="snippet">meeting notes mention <mark>budget</mark>…</div></div>
+      <div class="result"><div class="name">schema_v2.sql</div><div class="path">db/migrations/</div><div class="snippet">CREATE INDEX idx_<mark>budget</mark>…</div></div>
+    </div>
+    <div class="right">
+      <div class="file-head">
+        <div class="icon">📝</div>
+        <div>
+          <div class="name">Q4-budget-report.md</div>
+          <div class="path">C:/Users/user/Documents/reports/Q4-budget-report.md</div>
+        </div>
+      </div>
+      <div class="file-meta">
+        <span>📝 Markdown</span>
+        <span>18 KB</span>
+        <span>Modified 2 days ago</span>
+        <span>Indexed ✓</span>
+      </div>
+      <div class="content">Квартальный <mark>бюджетный</mark> отчёт за Q4.
+
+Расходы на инфраструктуру составили
+2.4 млн рублей, что на 18% выше
+плановых показателей прошлого
+квартала.
+
+Основные статьи расходов:
+  - серверы и хостинг     1.2 млн
+  - лицензии ПО            0.6 млн
+  - разработка             0.6 млн
+
+<mark>бюджет</mark> на следующий квартал
+предполагает оптимизацию расходов
+на 15% за счёт миграции в облако.</div>
+      <div class="actions">
+        <button>Open</button>
+        <button>Open folder</button>
+        <button>Copy path</button>
+        <button>Pin</button>
+      </div>
+    </div>
+
+</body>
+</html>

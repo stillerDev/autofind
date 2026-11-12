@@ -10,26 +10,46 @@ Two primitives, deliberately boring:
   wraps the 32-byte master key into ``<home>/vault.key``. No passphrase to
   forget: the key belongs to the Windows account, so a stolen disk without
   the account is just ciphertext, and another local user cannot unwrap it.
+- **Passphrase mode** is the portable alternative: the same master key is
+  wrapped with AES-256-GCM under a key derived from a passphrase (Argon2id
+  when `argon2-cffi` is installed, stdlib scrypt otherwise). The vault file
+  records which KDF and parameters produced the wrapping key, so the file
+  travels between machines and operating systems with its owner.
 
 The master key itself never touches disk in the clear. Losing or deleting
 ``vault.key`` makes every sealed blob unreadable - the index has to be
-rebuilt, which the UI states before sealing is enabled.
+rebuilt, which the UI states before sealing is enabled. In passphrase mode
+the same is true of forgetting the passphrase: there is no backdoor, that
+is the point.
 """
 
 from __future__ import annotations
 
 import base64
 import ctypes
+import hashlib
+import json
 import os
 from ctypes import wintypes
 from pathlib import Path
 
 MAGIC = b"AFS1"          # sealed blob prefix
-KEY_MAGIC = b"AFVK1"     # vault.key prefix
+KEY_MAGIC = b"AFVK1"     # vault.key prefix (DPAPI)
+KEY_MAGIC_V2 = b"AFVK2"  # vault.key prefix (passphrase, portable)
 NONCE = 12
 KEY_LEN = 32
 _ENTROPY = "autofind.vault.v1"
 _UI_FORBIDDEN = 0x1
+
+# Passphrase-mode KDF parameters. scrypt's 128 MiB / ~1 s is the same ballpark
+# OWASP recommends for Argon2id with m=19 MiB t=2... no: deliberately heavier,
+# because a passphrase unlock happens once per process, not per row.
+SCRYPT_PARAMS = {"n": 2 ** 17, "r": 8, "p": 1}   # 256 MiB, a few seconds
+ARGON2_PARAMS = {"time_cost": 4, "memory_cost": 262144, "parallelism": 2}  # 256 MiB
+
+# The passphrase can arrive through the environment for headless runs (the
+# desktop window cannot ask at boot; the CLI can also prompt).
+PASSPHRASE_ENV = "AUTOFIND_PASSPHRASE"
 
 
 class VaultError(RuntimeError):
@@ -88,6 +108,48 @@ def _aesgcm(key: bytes):
     return AESGCM(key)
 
 
+# ----------------------------------------------------------------- KDFs
+
+def argon2_available() -> bool:
+    """Argon2id runs only when `argon2-cffi` is installed; scrypt needs nothing."""
+    try:
+        import argon2.low_level  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _derive(passphrase: str, salt: bytes, kdf: str, params: dict) -> bytes:
+    """Stretch a passphrase into the 32-byte key that wraps the master key."""
+    data = passphrase.encode("utf-8")
+    if kdf == "argon2id":
+        try:
+            from argon2.low_level import Type, hash_secret_raw
+        except ImportError as exc:
+            raise VaultError(
+                "this vault file was created with Argon2id but the package is "
+                "not installed here. Run: pip install argon2-cffi"
+            ) from exc
+        return hash_secret_raw(
+            data, salt,
+            time_cost=int(params["time_cost"]),
+            memory_cost=int(params["memory_cost"]),
+            parallelism=int(params["parallelism"]),
+            hash_len=KEY_LEN, type=Type.ID,
+        )
+    if kdf == "scrypt":
+        return hashlib.scrypt(
+            data, salt=salt,
+            n=int(params["n"]), r=int(params["r"]), p=int(params["p"]),
+            maxmem=2 ** 31 - 1, dklen=KEY_LEN,
+        )
+    raise VaultError(f"unknown KDF {kdf!r} in the vault file")
+
+
+def _pick_kdf() -> str:
+    return "argon2id" if argon2_available() else "scrypt"
+
+
 # --------------------------------------------------------------------- Vault
 
 class Vault:
@@ -133,7 +195,7 @@ def key_path(home) -> Path:
 def enable(home) -> Vault:
     """Create (or reuse) the DPAPI-wrapped master key and return the Vault."""
     if os.name != "nt":
-        raise VaultError("paranoid mode needs Windows DPAPI for key storage")
+        raise VaultError("DPAPI mode needs Windows; on this platform use passphrase mode")
     path = key_path(home)
     Path(home).mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -143,23 +205,117 @@ def enable(home) -> Vault:
     body = KEY_MAGIC + base64.b64encode(wrapped) + b"\n"
     path.write_bytes(body)
     vault = Vault(key)
-    _current = vault
     globals()["_CURRENT"] = vault
     return vault
 
 
-def load(home) -> Vault:
-    """Unwrap the stored key and install the process-wide Vault."""
+def key_mode(home) -> str:
+    """How the stored key is wrapped: "dpapi", "passphrase" or "" (absent)."""
+    path = key_path(home)
+    if not path.exists():
+        return ""
+    head = path.read_bytes()[:6]
+    if head.startswith(KEY_MAGIC):
+        return "dpapi"
+    if head.startswith(KEY_MAGIC_V2):
+        return "passphrase"
+    return "unknown"
+
+
+def enable_passphrase(home, passphrase: str) -> Vault:
+    """Create the passphrase-wrapped master key and return the Vault.
+
+    The portable counterpart to `enable`: the same key file opens on any
+    machine, because the wrapping key is derived from the passphrase alone
+    (Argon2id when available, stdlib scrypt otherwise) — nothing on disk
+    depends on the Windows account. An empty or short passphrase is refused
+    here rather than stored badly.
+    """
+    passphrase = str(passphrase or "")
+    if len(passphrase) < 8:
+        raise VaultError("the passphrase must be at least 8 characters")
+    path = key_path(home)
+    Path(home).mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise VaultError(
+            f"{KEY_FILE} already exists; delete it first to switch mode "
+            "(a deleted key makes previously sealed content unreadable)"
+        )
+    key = os.urandom(KEY_LEN)
+    salt = os.urandom(16)
+    kdf = _pick_kdf()
+    params = ARGON2_PARAMS if kdf == "argon2id" else SCRYPT_PARAMS
+    header = {
+        "kdf": kdf,
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "params": params,
+    }
+    wrapping = _derive(passphrase, salt, kdf, params)
+    wrapped = Vault(wrapping).seal(key)
+    body = (
+        KEY_MAGIC_V2
+        # Compact JSON: the header and the base64 payload are split on a
+        # space, so the header itself must not contain one.
+        + json.dumps(header, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        + b" " + base64.b64encode(wrapped) + b"\n"
+    )
+    path.write_bytes(body)
+    vault = Vault(key)
+    globals()["_CURRENT"] = vault
+    return vault
+
+
+def load(home, passphrase: str | None = None) -> Vault:
+    """Unwrap the stored key and install the process-wide Vault.
+
+    A DPAPI file needs no passphrase (the Windows account is the secret); a
+    passphrase file refuses to open without the right passphrase — either
+    given here or read from the `AUTOFIND_PASSPHRASE` environment variable
+    for headless runs.
+    """
     path = key_path(home)
     if not path.exists():
         raise VaultError(f"no {KEY_FILE} in {home}: the key was deleted or paranoid mode was never enabled")
     body = path.read_bytes()
-    if not body.startswith(KEY_MAGIC):
+    if body.startswith(KEY_MAGIC):
+        key = dpapi_unprotect(base64.b64decode(body[len(KEY_MAGIC):].strip()))
+    elif body.startswith(KEY_MAGIC_V2):
+        head, _, payload = body[len(KEY_MAGIC_V2):].strip().partition(b" ")
+        try:
+            header = json.loads(head.decode("utf-8"))
+            salt = base64.b64decode(header["salt"])
+            kdf, params = str(header["kdf"]), dict(header["params"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise VaultError(f"{path} has a damaged passphrase header") from exc
+        if passphrase is None:
+            passphrase = os.environ.get(PASSPHRASE_ENV) or ""
+        if not passphrase:
+            raise VaultError(
+                "this vault opens with a passphrase; pass it on the command "
+                f"or set {PASSPHRASE_ENV}"
+            )
+        wrapping = _derive(passphrase, salt, kdf, params)
+        key = Vault(wrapping).open_bytes(base64.b64decode(payload))
+    else:
         raise VaultError(f"{path} is not an AutoFind vault key file")
-    key = dpapi_unprotect(base64.b64decode(body[len(KEY_MAGIC):].strip()))
     vault = Vault(key)
     globals()["_CURRENT"] = vault
     return vault
+
+
+def try_autoload(home) -> "Vault | None":
+    """Load the vault at startup when it can be done without a human.
+
+    DPAPI unwraps silently on its own account. A passphrase file is tried
+    against the environment variable only — a desktop window has nowhere to
+    ask, and search will surface the passphrase error with instructions.
+    """
+    if key_mode(home) == "passphrase" and PASSPHRASE_ENV not in os.environ:
+        return None  # expected: nobody typed a passphrase yet
+    try:
+        return load(home)
+    except VaultError:
+        return None  # not sealed, or the key is gone - search surfaces it
 
 
 def current() -> "Vault | None":

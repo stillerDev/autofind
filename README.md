@@ -32,8 +32,11 @@ with no model downloads:
 
 | Layer | State | Engine |
 |---|---|---|
-| Text (PDF, DOCX, PPTX, XLSX, EPUB, ODT, RTF, TXT/MD, code) | works | built-in extractors, no deps |
-| Screenshots: OCR | works | 3 tiers, 66 languages here: Windows packs → PP-OCRv6 multi → PP-OCRv5 per script |
+| Text (PDF, DOCX, PPTX, XLSX, EPUB, ODT, RTF, TXT/MD, code) | works | built-in extractors, zip-bomb budgets (capped windows + XML event/string caps), no deps |
+| Scanned PDFs: OCR | works | pages render → the screenshot OCR chain; same policy as Kensaku (`[Scanned PDF: image only]` keeps the file indexed) |
+| CSV/TSV | works | `pandas.head` rows: `column = "value"` per line + column summary, 200-row head |
+| Data maintenance | works | `maintenance` inventory, `reset` keeps model packs, stale backups/.part/update-temp cleanup |
+| Screenshots: OCR | works | 4 tiers, 66 languages here: Windows packs → PP-OCRv6 multi → PP-OCRv5 per script → Indra (`ocr download indra`, accurate tier: RTL, vertical CJK) |
 | Screenshots: visual similarity | works | 228-dim layout/colour descriptor + perceptual-hash gate |
 | Search | works | fuzzy names + BM25 + vectors, fused with RRF |
 | Name search | works | in-memory name index, 1.7 ms at 100k names |
@@ -53,8 +56,10 @@ with no model downloads:
 | Code definitions | works | `sym:` over nine language families, no tree-sitter |
 
 Two upgrades are drop-in and change nothing else: `multilingual-e5-small` for
-semantic text vectors, and `CLIP ViT-B/32` for text-to-image search. Until they
-are present the text embedder is lexical (words + character 4-grams) and image
+semantic text vectors (`autofind model download e5` fetches pinned, SHA-256
+verified weights with a mirror fallback), and `CLIP ViT-B/32` for text-to-image
+search. Until they are present the text embedder is lexical (words + character
+4-grams) and image
 search is similarity-only, and the UI says so instead of pretending.
 
 ## Quick start
@@ -678,7 +683,12 @@ greeting.
 | Text | `hashing-384` (words + char 4-grams) | `e5-small` int8 ONNX |
 | Visual | `layout-228` (colour, layout, edges) | `CLIP ViT-B/32` int8 ONNX |
 
-Drop weights in and restart:
+Drop weights in and restart — or let the downloader do it:
+
+```bat
+autofind model download e5        rem ~/.autofind/models/e5-small/ (pinned SHA-256, hf-mirror fallback)
+autofind model status
+```
 
 ```
 ~/.autofind/models/e5-small/model.onnx + tokenizer.json
@@ -769,8 +779,9 @@ turns Recall@10 from a claim into a number.
 
 ## Not done yet
 
-- `CLIP` and `e5` weights are not bundled; the installer budget is 378 MB
-  against the plan's 150 MB, and that decision is still open.
+- `CLIP` weights are not bundled and not downloadable yet (e5 is: `autofind
+  model download e5`); the installer budget is 378 MB against the plan's
+  150 MB, and that decision is still open.
 - Index encryption, an app blocklist and a global OCR pause switch.
 - Two interface languages. The dictionaries are the mechanism, not the
   coverage: a third language is a table and a line in `LANGUAGES`, but nobody

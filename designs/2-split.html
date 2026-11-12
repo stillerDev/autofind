@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — Split View</title>
+<style>
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'Inter',system-ui,sans-serif; }
+  mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#0f0f0f; min-height:100vh; font-family:'Inter',system-ui,sans-serif; color:#d0d0d0; display:flex; }
+    .left { width:45%; padding:60px 32px; border-right:1px solid #1a1a1a; }
+    .right { flex:1; padding:60px 32px; background:#0a0a0a; }
+    .search { display:flex; align-items:center; background:#1a1a1a; border-radius:10px; padding:0 16px; height:48px; border:1px solid #2a2a2a; }
+    .search input { flex:1; background:transparent; border:none; outline:none; color:#e0e0e0; font-size:16px; }
+    .search input::placeholder { color:#444; }
+    .filters { margin:20px 0; }
+    .filter { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:13px; color:#888; }
+    .filter input { accent-color:#5b8ee6; }
+    .results { margin-top:24px; }
+    .result { padding:12px 14px; border-radius:8px; margin-bottom:6px; cursor:pointer; border:1px solid transparent; }
+    .result:hover { background:#1a1a1a; }
+    .result.sel { background:#1a1a1a; border-color:#333; }
+    .result .name { font-size:14px; color:#e0e0e0; font-weight:500; }
+    .result .path { font-size:11px; color:#555; margin-top:2px; }
+    .preview { font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.8; color:#aaa; white-space:pre-wrap; }
+    .preview mark { background:rgba(91,142,230,.15); color:#7aa2f7; }
+    .preview-head { font-size:14px; color:#e0e0e0; font-weight:600; margin-bottom:16px; font-family:'Inter',sans-serif; }
+    .rail { position:fixed; left:16px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; gap:10px; }
+    .rail-btn { width:40px; height:40px; border-radius:50%; background:#1a1a1a; border:1px solid #2a2a2a; display:grid; place-items:center; font-size:14px; cursor:pointer; color:#666; transition:all .15s; }
+    .rail-btn:hover, .rail-btn.active { color:#7aa2f7; border-color:#7aa2f7; }
+
+</style>
+</head>
+<body>
+
+    <nav class="rail">
+      <div class="rail-btn" title="Search">🔍</div>
+      <div class="rail-btn active" title="Index">🗄️</div>
+      <div class="rail-btn" title="Privacy">🛡️</div>
+      <div class="rail-btn" title="Encryption">🔒</div>
+    </nav>
+    <div class="left">
+      <div class="search">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#444" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+        <input type="text" placeholder="Search…" value="budget review">
+      </div>
+      <div class="filters">
+        <div class="filter"><input type="checkbox" checked> Documents</div>
+        <div class="filter"><input type="checkbox" checked> Code</div>
+        <div class="filter"><input type="checkbox"> Screenshots</div>
+        <div class="filter"><input type="checkbox"> PDF</div>
+      </div>
+      <div class="results">
+        <div class="result sel"><div class="name">Q4-budget-report.md</div><div class="path">Documents/reports/</div></div>
+        <div class="result"><div class="name">parse_query.py</div><div class="path">projects/autofind/core/</div></div>
+        <div class="result"><div class="name">budget-notes.txt</div><div class="path">Desktop/</div></div>
+        <div class="result"><div class="name">schema_v2.sql</div><div class="path">projects/db/migrations/</div></div>
+      </div>
+    </div>
+    <div class="right">
+      <div class="preview-head">Q4-budget-report.md</div>
+      <div class="preview">Квартальный <mark>бюджетный</mark> отчёт за Q4.
+
+Расходы на инфраструктуру составили
+2.4 млн рублей, что на 18% выше
+плановых показателей прошлого
+квартала.
+
+Основные статьи расходов:
+  - серверы и хостинг     1.2 млн
+  - лицензии ПО            0.6 млн
+  - разработка             0.6 млн
+
+<mark>бюджет</mark> на следующий квартал
+предполагает оптимизацию расходов
+на 15% за счёт миграции в облако.</div>
+    </div>
+
+</body>
+</html>

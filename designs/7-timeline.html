@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — Timeline</title>
+<style>
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'Inter',system-ui,sans-serif; }
+  mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#0f0f0f; min-height:100vh; font-family:'Inter',system-ui,sans-serif; color:#d0d0d0; display:flex; justify-content:center; padding:60px 40px; }
+    .content { width:640px; }
+    .search { display:flex; align-items:center; background:#1a1a1a; border-radius:10px; padding:0 16px; height:48px; border:1px solid #2a2a2a; margin-bottom:40px; }
+    .search input { flex:1; background:transparent; border:none; outline:none; color:#e0e0e0; font-size:15px; }
+    .timeline { position:relative; padding-left:28px; }
+    .timeline::before { content:''; position:absolute; left:8px; top:0; bottom:0; width:1px; background:#2a2a2a; }
+    .date-group { margin-bottom:32px; }
+    .date-label { font-size:12px; color:#666; text-transform:uppercase; letter-spacing:1px; margin-bottom:12px; font-weight:600; }
+    .entry { position:relative; padding:10px 14px; background:#161616; border-radius:8px; margin-bottom:10px; border:1px solid #1e1e1e; }
+    .entry::before { content:''; position:absolute; left:-24px; top:16px; width:8px; height:8px; border-radius:50%; background:#5b8ee6; border:2px solid #0f0f0f; }
+    .entry .name { font-size:14px; color:#e0e0e0; font-weight:500; margin-bottom:4px; }
+    .entry .snippet { font-size:12px; color:#888; line-height:1.6; }
+    .entry .path { font-size:11px; color:#555; margin-top:6px; }
+    .entry mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+    .rail { position:fixed; left:16px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; gap:10px; }
+    .rail-btn { width:42px; height:42px; border-radius:50%; background:#1a1a1a; border:1px solid #2a2a2a; display:grid; place-items:center; font-size:15px; cursor:pointer; color:#666; transition:all .15s; }
+    .rail-btn:hover, .rail-btn.active { color:#7aa2f7; border-color:#7aa2f7; }
+
+</style>
+</head>
+<body>
+
+    <nav class="rail">
+      <div class="rail-btn">🔍</div>
+      <div class="rail-btn active">🗄️</div>
+      <div class="rail-btn">🛡️</div>
+      <div class="rail-btn">🔒</div>
+    </nav>
+    <div class="content">
+      <div class="search">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+        <input type="text" value="budget review" style="color:#e0e0e0;background:transparent;border:none;outline:none;flex:1;font-size:15px;">
+      </div>
+      <div class="timeline">
+        <div class="date-group">
+          <div class="date-label">Today</div>
+          <div class="entry">
+            <div class="name">Q4-budget-report.md</div>
+            <div class="snippet">Квартальный <mark>бюджетный</mark> отчёт за Q4. Расходы на инфраструктуру…</div>
+            <div class="path">Documents/reports/Q4-budget-report.md</div>
+          </div>
+          <div class="entry">
+            <div class="name">parse_query.py</div>
+            <div class="snippet">def parse_query(text): … the <mark>budget review</mark> module handles…</div>
+            <div class="path">projects/autofind/core/search.py</div>
+          </div>
+        </div>
+        <div class="date-group">
+          <div class="date-label">Yesterday</div>
+          <div class="entry">
+            <div class="name">budget-notes.txt</div>
+            <div class="snippet">meeting notes mention <mark>budget</mark> review and the database…</div>
+            <div class="path">Desktop/budget-notes.txt</div>
+          </div>
+        </div>
+        <div class="date-group">
+          <div class="date-label">This week</div>
+          <div class="entry">
+            <div class="name">schema_v2.sql</div>
+            <div class="snippet">CREATE INDEX idx_<mark>budget</mark> ON transactions(category, date);</div>
+            <div class="path">projects/db/migrations/schema_v2.sql</div>
+          </div>
+          <div class="entry">
+            <div class="name">screenshot_001.png</div>
+            <div class="snippet">OCR: настройки прокси сервера — <mark>бюджет</mark> на Q4 2026…</div>
+            <div class="path">Pictures/Screenshots/screenshot_001.png</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+</body>
+</html>

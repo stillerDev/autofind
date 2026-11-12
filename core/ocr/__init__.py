@@ -109,12 +109,21 @@ def engine_report(languages_hint: str = "rus+eng") -> dict:
         return cached
     engines = available_engines(languages_hint)
     cover = coverage()
+    # Indra's status is its own card: it depends on a downloaded pack, not on
+    # the OCR packages the rest of the report is about.
+    try:
+        from . import indra
+
+        indra_card = indra.indra_status()
+    except Exception:
+        indra_card = {"available": False, "problem": "indra module failed to load"}
     report = {
         "available": [engine.name for engine in engines],
         "active": engines[0].name if engines else None,
         "languages": languages_hint,
         "cjk": cjk_coverage(),
         "coverage": cover,
+        "indra": indra_card,
         "supported_languages": cover["total"],
     }
     _REPORT[languages_hint] = report
@@ -136,10 +145,34 @@ def ocr_image(
     cjk_keys: str | None = None,
     fallbacks: int = DEFAULT_FALLBACKS,
 ) -> OcrResult:
-    """Read text from an image, falling back to a wider model when needed."""
+    """Read text from an image file, falling back to a wider model when needed."""
     image = load_image(path)
     if image is None:
         raise OcrUnavailable(f"cannot decode image: {path}")
+    return ocr_page(
+        image,
+        languages_hint,
+        preferred,
+        invert_dark,
+        cjk,
+        cjk_model,
+        cjk_keys,
+        fallbacks,
+    )
+
+
+def ocr_page(
+    image,
+    languages_hint: str = "rus+eng",
+    preferred: str | None = None,
+    invert_dark: bool = True,
+    cjk: bool = True,
+    cjk_model: str | None = None,
+    cjk_keys: str | None = None,
+    fallbacks: int = DEFAULT_FALLBACKS,
+) -> OcrResult:
+    """Read text from a decoded PIL image — the entry scanned-PDF pages take
+    (the page is rendered to a bitmap, so there is no file to load)."""
     width, height = image.size
 
     result = _first_pass(image, languages_hint, preferred, invert_dark)

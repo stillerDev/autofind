@@ -44,10 +44,19 @@ def _encode_cursor(offset: int) -> str:
 
 
 def _decode_cursor(cursor: str | None) -> int:
+    """An offset encoded as 'o<digits>'. Raises on a malformed cursor.
+
+    An invalid cursor used to fall back to 0 silently, which meant a client
+    that passed a stale or hand-mangled cursor restarted the listing from the
+    top and could loop forever. Failing loudly tells the agent to re-read the
+    first page instead.
+    """
     if not cursor:
         return 0
     match = re.fullmatch(r"o(\d{1,7})", str(cursor))
-    return int(match.group(1)) if match else 0
+    if not match:
+        raise ValueError(f"bad cursor {cursor!r}: call the tool again without it")
+    return int(match.group(1))
 
 
 TOOLS = [
@@ -138,7 +147,11 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Symbol name, or a prefix of it."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                "page_size": {
+                    "type": "integer", "minimum": 1, "maximum": 100, "default": 20,
+                    "description": "Definitions per page.",
+                },
+                "cursor": {"type": "string", "description": "next_cursor from the previous page."},
             },
             "required": ["name"],
             "additionalProperties": False,
@@ -154,7 +167,11 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Absolute path of an indexed image."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 30, "default": 10},
+                "page_size": {
+                    "type": "integer", "minimum": 1, "maximum": 30, "default": 10,
+                    "description": "Hits per page.",
+                },
+                "cursor": {"type": "string", "description": "next_cursor from the previous page."},
             },
             "required": ["path"],
             "additionalProperties": False,
@@ -245,7 +262,7 @@ class McpServer:
         query = str(arguments.get("query") or "").strip()
         if not query:
             return _error("query is required")
-        size = min(int(arguments.get("page_size") or DEFAULT_PAGE), MAX_PAGE)
+        size = max(1, min(int(arguments.get("page_size") or DEFAULT_PAGE), MAX_PAGE))
         offset = _decode_cursor(arguments.get("cursor"))
         sort = arguments.get("sort") or None
 
@@ -333,12 +350,16 @@ class McpServer:
         name = str(arguments.get("name") or "").strip()
         if not name:
             return _error("name is required")
-        limit = min(int(arguments.get("limit") or 20), 100)
+        size = max(1, min(int(arguments.get("page_size") or 20), 100))
+        offset = _decode_cursor(arguments.get("cursor"))
         store = self._open()
-        rows = store.find_symbols(name, limit)
+        # One extra row tells us whether a next page exists without a count.
+        rows = store.find_symbols(name, offset + size + 1, offset=offset)
+        window = rows[:size]
+        next_offset = offset + size if len(rows) > size else None
         return _text({
             "name": name,
-            "total": len(rows),
+            "next_cursor": _encode_cursor(next_offset) if next_offset is not None else None,
             "definitions": [
                 {
                     "symbol": row["name"],
@@ -347,7 +368,7 @@ class McpServer:
                     "path": row["path"],
                     "source": row["text"],
                 }
-                for row in rows
+                for row in window
             ],
         })
 
@@ -355,7 +376,7 @@ class McpServer:
         pattern = str(arguments.get("pattern") or "")
         if not pattern:
             return _error("pattern is required")
-        size = min(int(arguments.get("page_size") or DEFAULT_PAGE), MAX_PAGE)
+        size = max(1, min(int(arguments.get("page_size") or DEFAULT_PAGE), MAX_PAGE))
         offset = _decode_cursor(arguments.get("cursor"))
         try:
             re.compile(pattern)
@@ -382,19 +403,25 @@ class McpServer:
         from .search import similar_images
 
         path = str(arguments.get("path") or "")
-        limit = min(int(arguments.get("limit") or 10), 30)
+        size = max(1, min(int(arguments.get("page_size") or 10), 30))
+        offset = _decode_cursor(arguments.get("cursor"))
         if not path:
             return _error("path is required")
         store = self._open()
         row = store.get_file(path)
         if row is None:
             return _error(f"not in the index: {path}")
-        hits = similar_images(store, None, int(row["id"]), limit=limit)
+        # One extra hit detects the next page; the ranking is stable, so
+        # slicing a wider prefix is a correct page of it.
+        hits = similar_images(store, None, int(row["id"]), limit=offset + size + 1)
+        window = hits[offset:offset + size]
+        next_offset = offset + size if len(hits) > offset + size else None
         return _text({
             "path": path,
+            "next_cursor": _encode_cursor(next_offset) if next_offset is not None else None,
             "hits": [
                 {"path": hit.path, "score": hit.score, "width": hit.width, "height": hit.height}
-                for hit in hits
+                for hit in window
             ],
         })
 

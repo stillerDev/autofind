@@ -13,6 +13,7 @@ from core.query import understand
 from core.search import (
     _suggest_term,
     _verify_tri,
+    build_match_query,
     scoped_file_ids,
     search_page,
 )
@@ -85,6 +86,40 @@ class FacetTests(unittest.TestCase):
                 page = run(store, embedder, "database indexes")
                 self.assertEqual(page.facets.get("text"), 3)
                 self.assertEqual(page.facets.get("code"), 1)
+            finally:
+                store.close()
+
+
+class UnderscoreTokensTests(unittest.TestCase):
+    """Underscore-joined queries must match the index's tokenization.
+
+    FTS5's unicode61 stores `readme_00001234` as two tokens; a match query
+    that keeps the underscore (`"readme_00001234"*`) is a phrase the content
+    never contains, and because the strict and the OR forms then come out
+    identical the fallback never widened — the CLI answered 0 for a query the
+    window answered with 50 hits.
+    """
+
+    def test_match_query_splits_on_underscore(self):
+        # Two separate groups: "readme" AND "00001234" — the OR fallback can
+        # then widen to `"readme"*` when the second word is absent.
+        query = build_match_query("readme_00001234")
+        self.assertIn('"readme"', query)
+        self.assertIn('"00001234"', query)
+        self.assertNotIn("readme_00001234", query.replace('"readme"', "").replace('"00001234"', ""))
+
+    def test_underscore_name_query_finds_content_matches(self):
+        embedder = HashingEmbedder()
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _ = make_store(tmp)
+            try:
+                # The file carries the number only in its name, the content
+                # only the word — exactly how the bench corpus is built.
+                add_file(store, r"C:\\repo\\readme_00001234.log",
+                         "word=readme the quick brown fox")
+                page = run(store, embedder, "readme_00001234")
+                self.assertGreaterEqual(page.total, 1)
+                self.assertIn("readme_00001234.log", page.hits[0].name)
             finally:
                 store.close()
 

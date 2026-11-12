@@ -116,13 +116,108 @@ def _app_report() -> dict:
     return out
 
 
+def self_test(db_path, sample: int = 20) -> dict:
+    """A bounded integrity check, meant to run at startup.
+
+    Full verification of every stored text would cost seconds on a 100k-file
+    index, which is too much before the first query. Instead:
+
+    * `PRAGMA quick_check` — SQLite's own page-level corruption scan;
+    * structural counts: chunks pointing at vanished files, chunks on files
+      whose text was never stored, and the refcount invariant that every
+      live `text_hash` resolves to a `file_texts` row;
+    * a sampled hash check: re-hash up to `sample` plaintext blobs and
+      compare against the content-address key. Sealed rows are skipped —
+      their "hash" covers the ciphertext and the blob is encrypted anyway.
+    """
+    result: dict = {"path": str(db_path), "ok": True, "problems": [], "checks": {}}
+    db_path = Path(db_path)
+    if not db_path.is_file():
+        result["ok"] = False
+        result["problems"].append("no index file")
+        return result
+    from . import vault as vault_mod
+
+    try:
+        store = Store(db_path, "hashing-384", 384, readonly=True, ram_bm25=False)
+    except Exception as exc:
+        return {"path": str(db_path), "ok": False,
+                "problems": [f"cannot open: {type(exc).__name__}: {exc}"], "checks": {}}
+    try:
+        conn = store.conn
+        quick = conn.execute("PRAGMA quick_check").fetchone()[0]
+        result["checks"]["quick_check"] = quick
+        if quick != "ok":
+            result["problems"].append(f"quick_check: {quick}")
+
+        orphan_chunks = conn.execute(
+            "SELECT COUNT(*) FROM chunks c "
+            "LEFT JOIN files f ON f.id = c.file_id WHERE f.id IS NULL"
+        ).fetchone()[0]
+        result["checks"]["orphan_chunks"] = orphan_chunks
+        if orphan_chunks:
+            result["problems"].append(f"{orphan_chunks} chunks point at deleted files")
+
+        textless = conn.execute(
+            "SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id "
+            "WHERE f.text_hash IS NULL"
+        ).fetchone()[0]
+        result["checks"]["chunks_without_text"] = textless
+        if textless:
+            result["problems"].append(
+                f"{textless} chunks on files with no stored text (re-index these)"
+            )
+
+        dangling = conn.execute(
+            "SELECT COUNT(*) FROM files f LEFT JOIN file_texts t ON t.hash = f.text_hash "
+            "WHERE f.text_hash IS NOT NULL AND t.hash IS NULL"
+        ).fetchone()[0]
+        result["checks"]["dangling_text_refs"] = dangling
+        if dangling:
+            result["problems"].append(f"{dangling} files reference missing texts")
+
+        # Sampled hash verification: the content address must still match the
+        # bytes. One bad row here means the db or the disk corrupted data.
+        rows = conn.execute(
+            "SELECT hash, raw_len, block_size, offsets, data FROM file_texts "
+            "ORDER BY RANDOM() LIMIT ?", (sample,)
+        ).fetchall()
+        verified = 0
+        import hashlib
+
+        from .store import _row_slice
+
+        for row in rows:
+            if vault_mod.Vault.is_sealed(row["data"]):
+                continue  # sealed: the hash covers the ciphertext, skip
+            text = _row_slice(row, 0, int(row["raw_len"]))
+            if not text:
+                result["problems"].append(
+                    f"stored text for {row['hash'][:12]}… cannot be inflated"
+                )
+                break
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if digest != row["hash"]:
+                result["problems"].append(
+                    f"stored text no longer matches its hash {row['hash'][:12]}…"
+                )
+                break
+            verified += 1
+        result["checks"]["hashes_verified"] = verified
+    finally:
+        store.close()
+    result["ok"] = not result["problems"]
+    return result
+
+
 def collect(config: IndexConfig, db_path: Path | None = None) -> dict:
     db_path = db_path or config.db_path
     text_embedder = get_embedder("auto", config.model_dir)
     visual = get_visual_embedder(config.model_dir)
 
     index = {"path": str(db_path), "exists": db_path.exists(), "bytes": 0, "files": 0,
-             "chunks": 0, "images": 0, "vectors": 0, "backend": None, "pack_bytes": 0}
+             "chunks": 0, "images": 0, "vectors": 0, "backend": None, "pack_bytes": 0,
+             "sealed": False, "vault_key": False}
     if db_path.exists():
         index["bytes"] = db_path.stat().st_size
         try:
@@ -139,6 +234,9 @@ def collect(config: IndexConfig, db_path: Path | None = None) -> dict:
                 index["pack_bytes"] = pack.stat().st_size
         except Exception as exc:  # a broken db must not crash doctor
             index["error"] = f"{type(exc).__name__}: {exc}"
+        from . import vault as vault_mod
+        index["sealed"] = vault_mod.store_sealed(db_path)
+        index["vault_key"] = (config.home / "vault.key").exists()
 
     return {
         "version": "0.1.0",
@@ -177,7 +275,7 @@ def format_report(data: dict) -> str:
         "",
         f"text         {data['text_embedder']}",
         f"visual       {data['visual_embedder']}"
-        + ("" if data["visual_supports_text"] else "   (no text-to-image: needs CLIP)"),
+        + ("" if data["visual_supports_text"] else "   (no text-to-image: run `autofind clip`)"),
         f"ocr          {ocr['active'] or 'none'}"
         + (f"   available: {', '.join(ocr['available'])}" if ocr["available"] else ""),
         f"ocr cjk      {', '.join(ocr.get('cjk', {}).get('scripts') or []) or 'none'}"
@@ -195,6 +293,9 @@ def format_report(data: dict) -> str:
         "",
         f"privacy      {'on' if privacy['enabled'] else 'OFF'}"
         f"   {len(privacy['sensitive_dirs'])} dirs, {len(privacy['sensitive_files'])} file patterns",
+        f"encryption   {'AES-256-GCM (paranoid)' if index.get('sealed') else 'off'}"
+        + ("" if index.get("sealed") or not index.get("vault_key")
+           else "   vault.key present but index is open — run `autofind seal on`"),
         "",
         f"bundle       {bundle['total_mb']:.1f} MB of {bundle['budget_mb']} MB budget"
         + ("  fits" if bundle["fits"] else f"  over by {bundle['over_by_mb']:.1f} MB"),

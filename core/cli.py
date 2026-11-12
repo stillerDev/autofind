@@ -124,10 +124,13 @@ def main(argv: list[str] | None = None) -> int:
     export_cmd.add_argument("query", help="search query")
     export_cmd.add_argument("--format", default="csv", choices=["csv", "json"])
     export_cmd.add_argument("--limit", type=int, default=100)
-    export_cmd.add_argument("--output", type=Path, default=None)
+    export_cmd.add_argument("--out", dest="out", type=Path, default=None,
+                            help="write to a file instead of stdout")
 
     uninstall_cmd = sub.add_parser("uninstall", help="remove index, vault key, autostart")
     uninstall_cmd.add_argument("--confirm", action="store_true")
+
+    sub.add_parser("clip", help="download the CLIP model for text-to-image visual search")
 
     update_cmd = sub.add_parser("update", help="check GitHub for a newer release and install it")
     update_cmd.add_argument("--check", action="store_true",
@@ -239,6 +242,19 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_app(args, config, db_path)
     if args.command == "seal":
         return _cmd_seal(args, config, db_path)
+    if args.command == "export":
+        return _cmd_export(args, config, db_path)
+    if args.command == "uninstall":
+        return _cmd_uninstall(args, config)
+    if args.command == "clip":
+        # tools/ ships as loose scripts, not a package: load by path so an
+        # installed copy finds the fetcher next to its own module tree.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "autofind_fetch_clip", Path(__file__).resolve().parents[1] / "tools" / "fetch_clip.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.main()
 
     if args.command == "update":
         from .updater import check_update, download_update, apply_update, UpdateError, current_version, parse_version
@@ -1123,12 +1139,14 @@ def _cmd_seal(args, config: IndexConfig, db_path: Path) -> int:
 
 
 def _cmd_export(args, config: IndexConfig, db_path: Path) -> int:
-    from .search import search_page
-    from .query import understand
-    from .embed import get_embedder
-    from .store import Store
+    """Export search results as CSV or JSON, mirroring the web export."""
     import csv as _csv
     import io as _io
+
+    from .embed import get_embedder
+    from .query import understand
+    from .search import search_page
+    from .store import Store
 
     if not db_path.exists():
         print(f"no index at {db_path}", file=sys.stderr)
@@ -1138,72 +1156,86 @@ def _cmd_export(args, config: IndexConfig, db_path: Path) -> int:
     try:
         page = search_page(store, emb, args.query, limit=args.limit,
                           parsed=understand(args.query), usage=store.usage_map())
+        tags = store.tags_for(hit.file_id for hit in page.hits)
     finally:
         store.close()
 
+    rows = page.hits
     fmt = args.format
     if fmt == "csv":
-        buf = _io.StringIO()
-        writer = _csv.writer(buf)
-        writer.writerow(["path", "kind", "score", "snippet"])
-        for hit in page.hits:
-            writer.writerow([hit.path, hit.kind, hit.score, hit.snippet or ""])
-        body = buf.getvalue()
+        buffer = _io.StringIO()
+        writer = _csv.writer(buffer)
+        writer.writerow(["name", "path", "kind", "size", "modified", "score", "opens", "tags"])
+        for hit in rows:
+            writer.writerow([
+                hit.name,
+                hit.path,
+                hit.kind,
+                hit.size,
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(hit.mtime)),
+                round(float(hit.score), 6),
+                hit.opens,
+                "; ".join(tags.get(hit.file_id, [])),
+            ])
+        # The BOM is what makes Excel open a UTF-8 CSV as UTF-8 instead of
+        # mangling every Cyrillic file name — same as the web export.
+        body = buffer.getvalue().encode("utf-8-sig")
     else:
-        body = json.dumps({
+        payload = {
             "query": args.query,
-            "results": [{"path": h.path, "kind": h.kind, "score": h.score} for h in page.hits]
-        }, ensure_ascii=False, indent=2)
+            "total": page.total,
+            "exported": len(rows),
+            "hits": [
+                {
+                    "file_id": hit.file_id,
+                    "name": hit.name,
+                    "path": hit.path,
+                    "kind": hit.kind,
+                    "size": hit.size,
+                    "mtime": hit.mtime,
+                    "score": round(float(hit.score), 6),
+                    "opens": hit.opens,
+                    "tags": tags.get(hit.file_id, []),
+                }
+                for hit in rows
+            ],
+        }
+        body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
-    if args.output:
-        Path(args.output).write_text(body, encoding="utf-8")
-        print(f"exported {len(page.hits)} results to {args.output}")
+    out = args.out
+    if out:
+        Path(out).write_bytes(body)
+        print(f"exported {len(rows)} results to {out}")
     else:
-        print(body)
+        sys.stdout.buffer.write(body)
+        sys.stdout.buffer.write(b"\n")
     return 0
 
 
-def _cmd_uninstall(args, config: IndexConfig, db_path: Path) -> int:
-    """Clean uninstaller: removes index, vault key, autostart, shortcuts."""
-    items = [
-        ("index database", db_path),
-        ("vault key", config.home / "vault.key"),
-        ("BM25 sidecar", Path(str(db_path) + ".bm25seal")),
-        ("nameidx sidecar", Path(str(db_path) + ".nameidx")),
-        ("nameidx binary", Path(str(db_path) + ".nameidx.bin")),
-    ]
-    if args.confirm:
-        removed = 0
-        for label, path in items:
-            if path.exists():
-                path.unlink()
-                print(f"  removed {label}: {path}")
-                removed += 1
+def _cmd_uninstall(args, config: IndexConfig) -> int:
+    """Clean uninstaller: removes the whole home, autostart, shortcuts."""
+    from .autostart import disable as _disable_autostart
+    from .shortcut import remove as _remove_shortcuts
+
+    home = config.home
+    if not home.exists():
+        print("nothing to remove")
+        return 0
+
+    if getattr(args, "yes", False):
+        import shutil
         try:
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                 r"Software\Microsoft\Windows\CurrentVersion\Run",
-                                 0, winreg.KEY_SET_VALUE)
-            winreg.DeleteValue(key, "AutoFind")
-            winreg.CloseKey(key)
-            print("  removed autostart entry")
-            removed += 1
-        except Exception:
-            pass
-        desktop = Path.home() / "Desktop"
-        for sc in desktop.glob("AutoFind*"):
-            sc.unlink(missing_ok=True)
-            removed += 1
-        start_menu = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-        for sc in start_menu.glob("AutoFind*"):
-            sc.unlink(missing_ok=True)
-            removed += 1
-        print(f"uninstall complete: {removed} items removed")
+            shutil.rmtree(home)
+        except OSError as exc:
+            print(f"failed to remove {home}: {exc}", file=sys.stderr)
+            return 1
+        _disable_autostart()
+        _remove_shortcuts()
+        print("uninstalled")
         return 0
     else:
-        print("Would remove:")
-        for label, path in items:
-            status = "exists" if path.exists() else "not found"
-            print(f"  {label}: {path} ({status})")
-        print("\nRun with --confirm to actually delete.")
+        key = home / "vault.key"
+        key_status = "present" if key.exists() else "missing"
+        print(f"dry run - vault key={key_status}")
+        print(f"index={home / 'index.db'}")
         return 0

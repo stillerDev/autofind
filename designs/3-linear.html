@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — Linear</title>
+<style>
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'Inter',system-ui,sans-serif; }
+  mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#0d0d0d; min-height:100vh; font-family:'Inter',system-ui,sans-serif; color:#d0d0d0; display:flex; }
+    .sidebar { width:220px; border-right:1px solid #1e1e1e; padding:16px 0; flex-shrink:0; }
+    .side-section { padding:8px 0; }
+    .side-title { font-size:11px; color:#555; text-transform:uppercase; letter-spacing:0.5px; padding:4px 16px; }
+    .side-item { display:flex; align-items:center; gap:8px; padding:6px 16px; font-size:13px; color:#aaa; cursor:pointer; }
+    .side-item:hover, .side-item.active { color:#e0e0e0; background:rgba(255,255,255,.04); }
+    .side-item .cnt { margin-left:auto; font-size:11px; color:#555; }
+    .main { flex:1; padding:24px 32px; }
+    .search { display:flex; align-items:center; background:#1a1a1a; border-radius:8px; padding:0 14px; height:40px; border:1px solid #2a2a2a; margin-bottom:20px; }
+    .search input { flex:1; background:transparent; border:none; outline:none; color:#e0e0e0; font-size:14px; }
+    .results { }
+    .result { display:flex; align-items:center; padding:8px 0; border-bottom:1px solid #1a1a1a; gap:12px; font-size:13px; }
+    .result .type { width:20px; text-align:center; color:#555; font-size:12px; flex-shrink:0; }
+    .result .name { color:#e0e0e0; font-weight:500; min-width:200px; }
+    .result .path { color:#555; flex:1; font-size:12px; }
+    .result .score { color:#444; font-size:11px; margin-left:auto; }
+    .result mark { background:rgba(91,142,230,.15); color:#7aa2f7; padding:0 2px; border-radius:2px; }
+    .stats { display:flex; gap:16px; margin-bottom:16px; }
+    .stat { font-size:12px; color:#666; }
+    .stat b { color:#aaa; }
+
+</style>
+</head>
+<body>
+
+    <div class="sidebar">
+      <div class="side-section">
+        <div class="side-title">Views</div>
+        <div class="side-item active">All results</div>
+        <div class="side-item">Pinned <span class="cnt">3</span></div>
+        <div class="side-item">Recent</div>
+      </div>
+      <div class="side-section">
+        <div class="side-title">Types</div>
+        <div class="side-item">Code <span class="cnt">2</span></div>
+        <div class="side-item">Documents <span class="cnt">2</span></div>
+        <div class="side-item">Screenshots <span class="cnt">1</span></div>
+      </div>
+      <div class="side-section">
+        <div class="side-title">Folders</div>
+        <div class="side-item">core/</div>
+        <div class="side-item">Documents/</div>
+        <div class="side-item">Desktop/</div>
+      </div>
+    </div>
+    <div class="main">
+      <div class="search">
+        <input type="text" value="budget review" autofocus>
+      </div>
+      <div class="stats">
+        <div class="stat"><b>5</b> results</div>
+        <div class="stat"><b>3</b> files</div>
+        <div class="stat"><b>2</b> types</div>
+        <div class="stat"><b>12ms</b></div>
+      </div>
+      <div class="results">
+        <div class="result"><div class="type">📄</div><div class="name">Q4-budget-report.md</div><div class="path">Documents/reports/Q4-budget-report.md</div><div class="score">0.94</div></div>
+        <div class="result"><div class="type">📄</div><div class="name">Q4-budget-report.md — квартальный <mark>бюджетный</mark> отчёт…</div><div class="path">snippet</div><div class="score">0.91</div></div>
+        <div class="result"><div class="type">🐍</div><div class="name">parse_query.py</div><div class="path">projects/autofind/core/search.py</div><div class="score">0.87</div></div>
+        <div class="result"><div class="type">📝</div><div class="name">budget-notes.txt</div><div class="path">Desktop/budget-notes.txt</div><div class="score">0.82</div></div>
+        <div class="result"><div class="type">🗄️</div><div class="name">schema_v2.sql</div><div class="path">projects/db/migrations/schema_v2.sql</div><div class="score">0.78</div></div>
+      </div>
+    </div>
+
+</body>
+</html>

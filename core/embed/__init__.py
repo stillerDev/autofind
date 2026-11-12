@@ -52,7 +52,10 @@ def get_embedder(prefer: str = "auto", model_dir: str | Path | None = None):
                 raise
     if prefer in ("auto", "e5") and model_dir is not None:
         try:
-            return OnnxE5(model_dir)
+            # One directory per model (e5-small/, and visual's CLIP beside it):
+            # matches onnx_e5's documented drop-in path and the pack downloader
+            # in core/models.py, and lets two models coexist under models/.
+            return OnnxE5(Path(model_dir) / "e5-small")
         except EmbedderUnavailable:
             if prefer == "e5":
                 raise

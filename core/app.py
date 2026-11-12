@@ -880,7 +880,7 @@ def open_app(**kwargs) -> int:
 
     config = kwargs.pop("config", None) or IndexConfig()
     try:
-        _vault_mod.load(config.home)
+        _vault_mod.try_autoload(config.home)
     except _vault_mod.VaultError:
         pass  # not sealed, or the key is gone - search surfaces it on demand
     config.ensure_home()

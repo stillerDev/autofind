@@ -50,7 +50,13 @@ RRF_K = 60
 # is the deliberately fuzzy typo tier — kensaku damps its folded tier to ~0.55
 # of the lexical weight for the same reason.
 RRF_WEIGHTS = {"bm25": 1.0, "vector": 0.3, "fuzzy": 0.7, "cjk": 1.0, "tri": 0.55}
-TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+# The tokenization must agree with the index: FTS5's unicode61 splits on
+# everything that is not alphanumeric, so an underscore (`readme_00001234`)
+# is two tokens inside the index. `\w` keeps the underscore and turned the
+# whole name into one quoted phrase that matched nothing — and because the
+# strict and the OR forms then came out identical, the fallback never
+# widened either. This is byte-for-byte the pattern from core/bm25.py.
+TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 CJK_RE = cjk.CJK_RE
 SNIPPET_WINDOW = 180
 
@@ -263,6 +269,15 @@ def _verify_tri(
     return kept
 
 
+# Suggestion results repeat: the same typo comes back while the user edits the
+# query, and every miss costs a difflib pass over the chunks the typo tier
+# reached. One advisory entry per query term — a reindex may change the
+# vocabulary underneath, so the cache stays small and the value is only a
+# "did you mean" hint, never a result row.
+_SUGGEST_CACHE: dict[str, str | None] = {}
+_SUGGEST_CACHE_MAX = 8192
+
+
 def _suggest_term(query_text: str, best_chunk_by_file: dict) -> str | None:
     """A corrected spelling from the chunks the typo tier reached.
 
@@ -276,11 +291,23 @@ def _suggest_term(query_text: str, best_chunk_by_file: dict) -> str | None:
     ]
     if not terms:
         return None
+    # Single-term queries are the typo case; cache them. A multi-term query
+    # mixes corrections from several terms, so its answer is not per-term.
+    cached = len(terms) == 1
+    if cached and terms[0] in _SUGGEST_CACHE:
+        return _SUGGEST_CACHE[terms[0]]
     best: tuple[float, str] | None = None
     examined = 0
+    # One difflib per distinct word, in rank order so ties break the way the
+    # comment below promises: the reached chunks repeat the same vocabulary
+    # (`budget review`, `readme`), and a per-chunk set re-ran SequenceMatcher
+    # on words already scored.
+    seen: set[str] = set()
     for row in best_chunk_by_file.values():
-        text = row["text"].lower()
-        for word in set(TOKEN_RE.findall(text)):
+        for word in TOKEN_RE.findall(row["text"].lower()):
+            if word in seen:
+                continue
+            seen.add(word)
             if len(word) < 4 or CJK_RE.search(word):
                 continue
             for term in terms:
@@ -292,7 +319,12 @@ def _suggest_term(query_text: str, best_chunk_by_file: dict) -> str | None:
         examined += 1
         if examined >= 30:
             break
-    return best[1] if best else None
+    answer = best[1] if best else None
+    if cached:
+        if len(_SUGGEST_CACHE) >= _SUGGEST_CACHE_MAX:
+            _SUGGEST_CACHE.clear()
+        _SUGGEST_CACHE[terms[0]] = answer
+    return answer
 
 
 # --------------------------------------------------------------------- fuzzy
@@ -582,7 +614,7 @@ def _rank(
                     hits = broader
         return hits
 
-    def _vector_channel(lexical_hits: list[tuple[int, float]]):
+    def _vector_channel(lexical_hits: list[tuple[int, float]], tri_hits: list = ()):
         if "vector" not in channels or not (bm25_text or parsed.text):
             return []
         # A hashed embedder has no notion of meaning — its "semantic" pass is a
@@ -594,8 +626,12 @@ def _rank(
         # exact channel can be empty *after* the predicate, and then the
         # vectors are the only recall left. Skipping it also keeps numpy out of
         # a cold one-shot CLI process, where importing it costs ~70 ms.
+        # `tri_hits` counts as lexical evidence too: the typo tier found a
+        # corrected vocabulary term and re-queried it, so a hashed matvec on
+        # top of that reorders noise — measured at +25 ms on the bench typo
+        # query with zero top-12 overlap gained.
         if (
-            lexical_hits
+            (lexical_hits or tri_hits)
             and not parsed.has_filters
             and not getattr(embedder, "semantic", False)
         ):
@@ -614,15 +650,15 @@ def _rank(
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="af-chan") as chan:
         fuzzy_future = chan.submit(_fuzzy_channel)
         lexical = _lexical_channel()
-        semantic = _vector_channel(lexical)
+        # The typo tier runs *before* the vector gate: it only fires when the
+        # exact channel came back nearly empty, and its corrected term is real
+        # lexical evidence the gate has to see — otherwise a typo query pays
+        # the hashed matvec and still ranks on the corrected lexical hit.
+        tri = []
+        if use_bm25 and len(lexical) < 3 and bm25_text:
+            tri = store.bm25_typo(bm25_text, min(pool, 25))
+        semantic = _vector_channel(lexical, tri)
         fuzzy = fuzzy_future.result()
-    # The typo channel only pays its way when the exact channel came back
-    # nearly empty: it re-queries the vocabulary for a corrected spelling, and
-    # an ordinary query must not spend that. Its pool is small for the same
-    # reason.
-    tri = []
-    if use_bm25 and len(lexical) < 3 and bm25_text:
-        tri = store.bm25_typo(bm25_text, min(pool, 25))
     regex_rows = []
     if parsed.regexes:
         regex_rows = store.regex_chunks("|".join(f"(?:{r})" for r in parsed.regexes), pool * 2)

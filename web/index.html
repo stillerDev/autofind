@@ -90,6 +90,7 @@
              data-i18n-aria="onboard.language">
           <button type="button" data-lang="en" role="radio">English</button>
           <button type="button" data-lang="ru" role="radio">Русский</button>
+          <button type="button" data-lang="zh" role="radio">中文</button>
         </div>
         <p class="ob-note" data-i18n="onboard.languageNote"></p>
       </section>
@@ -517,6 +518,14 @@
       <path d="M6.5 10.5h.01M10 10.5h.01M13.5 10.5h.01M17 10.5h.01M8 14h8"></path>
     </svg>
   </button>
+  <button class="rail-btn" id="rail-appearance" type="button" data-i18n-title="rail.appearance" data-i18n-aria="rail.appearance">
+    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+      <circle cx="9" cy="10" r="1.6"></circle>
+      <path d="M3.5 17l4.8-4.6a1.6 1.6 0 0 1 2.2 0l2 2 2.4-2.3a1.6 1.6 0 0 1 2.2 0L21 15.7"></path>
+    </svg>
+  </button>
 </nav>
 
 <aside class="drawer" id="panel" aria-hidden="true">
@@ -536,6 +545,8 @@
             role="tab" data-i18n="rail.searchShort">Search</button>
     <button type="button" class="drawer-tab" data-drawer-tab="keys"
             role="tab" data-i18n="rail.keysShort">Keys</button>
+    <button type="button" class="drawer-tab" data-drawer-tab="appearance"
+            role="tab" data-i18n="rail.appearanceShort">Appearance</button>
   </div>
 
   <div class="drawer-pane active" data-drawer-pane="index">
@@ -684,6 +695,111 @@
 
   </div>
 
+  <div class="drawer-pane" data-drawer-pane="appearance">
+  <div class="panel" id="panel-appearance">
+    <h3 data-i18n="settings.appearance">Appearance</h3>
+    <div class="moved-pane">
+      <section class="settings-section">
+        <div class="wall-row" id="wall-row" role="radiogroup" data-i18n-aria="settings.background">
+          <!-- The tiles are painted from the same table the theme comes from, so
+               a preview cannot drift away from what clicking it does. -->
+          <button class="wall-tile" type="button" data-wall="forest" role="radio"
+                  data-i18n-title="wall.forest" aria-checked="false"></button>
+          <button class="wall-tile" type="button" data-wall="dusk" role="radio"
+                  data-i18n-title="wall.dusk" aria-checked="false"></button>
+          <button class="wall-tile" type="button" data-wall="slate" role="radio"
+                  data-i18n-title="wall.slate" aria-checked="false"></button>
+          <button class="wall-tile" type="button" data-wall="sand" role="radio"
+                  data-i18n-title="wall.sand" aria-checked="false"></button>
+          <button class="wall-tile" type="button" data-wall="ocean" role="radio"
+                  data-i18n-title="wall.ocean" aria-checked="false"></button>
+          <button class="wall-tile wall-pick" type="button" id="wall-pick"
+                  data-i18n-title="settings.chooseImage" data-i18n-aria="settings.chooseImage">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+                 stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                 aria-hidden="true">
+              <path d="M12 5v14M5 12h14"></path>
+            </svg>
+          </button>
+          <input type="file" id="wall-file" accept="image/*" hidden>
+        </div>
+        <div class="look-row">
+          <span data-i18n="look.dim">wallpaper dim</span>
+          <input type="range" id="look-dim" min="0" max="70" step="5" value="0"
+                 data-i18n-aria="look.dim">
+          <b id="look-dim-val">0%</b>
+        </div>
+        <!-- Framing lives in its own editor, not under the tiles: dragging a
+             picture and a zoom slider need room no settings row can give. -->
+        <button class="wall-edit" id="wall-edit" type="button" hidden
+                data-i18n="settings.wallEdit" data-i18n-aria="settings.wallEdit">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+               aria-hidden="true">
+            <path d="M4 8h10M18 8h2M4 16h2M10 16h10"></path>
+            <circle cx="16" cy="8" r="2"></circle>
+            <circle cx="8" cy="16" r="2"></circle>
+          </svg>
+          <span data-i18n="settings.wallEdit">Framing…</span>
+        </button>
+        <p class="settings-note" data-i18n="settings.wallNote"></p>
+      </section>
+      <section class="settings-section">
+        <h4 data-i18n="look.tintTitle">Color tint</h4>
+        <label class="stat-row" style="cursor:pointer">
+          <span data-i18n="look.tintAuto">Follow the wallpaper</span>
+          <input type="checkbox" id="tint-auto" checked>
+        </label>
+        <div class="look-row">
+          <span data-i18n="look.hue">hue</span>
+          <input type="range" id="tint-hue" min="0" max="360" step="1" value="205"
+                 data-i18n-aria="look.hue">
+          <b id="tint-hue-val">205°</b>
+        </div>
+        <div class="look-row">
+          <span data-i18n="look.sat">tint strength</span>
+          <input type="range" id="tint-sat" min="0" max="20" step="1" value="9"
+                 data-i18n-aria="look.sat">
+          <b id="tint-sat-val">9%</b>
+        </div>
+        <p class="settings-note" data-i18n="look.tintNote"></p>
+      </section>
+      <section class="settings-section">
+        <h4 data-i18n="look.surfacesTitle">Surfaces</h4>
+        <div class="look-row">
+          <span data-i18n="look.blur">glass blur</span>
+          <input type="range" id="look-blur" min="0" max="24" step="1" value="11"
+                 data-i18n-aria="look.blur">
+          <b id="look-blur-val">11px</b>
+        </div>
+        <div class="look-row">
+          <span data-i18n="look.panelOpacity">panel opacity</span>
+          <input type="range" id="look-panel" min="30" max="98" step="2" value="72"
+                 data-i18n-aria="look.panelOpacity">
+          <b id="look-panel-val">72%</b>
+        </div>
+        <div class="look-row">
+          <span data-i18n="look.cardOpacity">card opacity</span>
+          <input type="range" id="look-card" min="40" max="100" step="2" value="82"
+                 data-i18n-aria="look.cardOpacity">
+          <b id="look-card-val">82%</b>
+        </div>
+        <div class="look-row">
+          <span data-i18n="look.radius">corner radius</span>
+          <input type="range" id="look-radius" min="0" max="24" step="1" value="12"
+                 data-i18n-aria="look.radius">
+          <b id="look-radius-val">12px</b>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn mini" id="look-reset" type="button"
+                  data-i18n="look.reset">Reset appearance</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  </div>
+
   <div class="side-foot">
     <span><kbd>/</kbd> <span data-i18n="hints.focus">focus</span></span>
     <span><kbd>↑</kbd><kbd>↓</kbd> <span data-i18n="hints.select">select</span></span>
@@ -818,51 +934,12 @@
     <div class="settings-body">
       <div class="settings-pane active" data-pane="general">
       <section class="settings-section">
-        <h4 data-i18n="settings.appearance">Appearance</h4>
-        <div class="wall-row" id="wall-row" role="radiogroup" data-i18n-aria="settings.background">
-          <!-- The tiles are painted from the same table the theme comes from, so
-               a preview cannot drift away from what clicking it does. -->
-          <button class="wall-tile" type="button" data-wall="forest" role="radio"
-                  data-i18n-title="wall.forest" aria-checked="false"></button>
-          <button class="wall-tile" type="button" data-wall="dusk" role="radio"
-                  data-i18n-title="wall.dusk" aria-checked="false"></button>
-          <button class="wall-tile" type="button" data-wall="slate" role="radio"
-                  data-i18n-title="wall.slate" aria-checked="false"></button>
-          <button class="wall-tile" type="button" data-wall="sand" role="radio"
-                  data-i18n-title="wall.sand" aria-checked="false"></button>
-          <button class="wall-tile" type="button" data-wall="ocean" role="radio"
-                  data-i18n-title="wall.ocean" aria-checked="false"></button>
-          <button class="wall-tile wall-pick" type="button" id="wall-pick"
-                  data-i18n-title="settings.chooseImage" data-i18n-aria="settings.chooseImage">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
-                 stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                 aria-hidden="true">
-              <path d="M12 5v14M5 12h14"></path>
-            </svg>
-          </button>
-          <input type="file" id="wall-file" accept="image/*" hidden>
-        </div>
-        <!-- Framing lives in its own editor, not under the tiles: dragging a
-             picture and a zoom slider need room no settings row can give. -->
-        <button class="wall-edit" id="wall-edit" type="button" hidden
-                data-i18n="settings.wallEdit" data-i18n-aria="settings.wallEdit">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none"
-               stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-               aria-hidden="true">
-            <path d="M4 8h10M18 8h2M4 16h2M10 16h10"></path>
-            <circle cx="16" cy="8" r="2"></circle>
-            <circle cx="8" cy="16" r="2"></circle>
-          </svg>
-          <span data-i18n="settings.wallEdit">Framing…</span>
-        </button>
-        <p class="settings-note" data-i18n="settings.wallNote"></p>
-      </section>
-      <section class="settings-section">
         <h4 data-i18n="settings.language">Language</h4>
         <div class="segmented" id="lang-switch" role="radiogroup"
              data-i18n-aria="settings.language">
           <button type="button" data-lang="en" role="radio">English</button>
           <button type="button" data-lang="ru" role="radio">Русский</button>
+          <button type="button" data-lang="zh" role="radio">中文</button>
         </div>
         <p class="settings-note" data-i18n="settings.languageNote"></p>
       </section>

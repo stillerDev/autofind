@@ -140,6 +140,11 @@ def extract_mbox(path: str | Path, max_bytes: int = MAX_BODY_BYTES) -> str:
 
 
 def extract_email(path: str | Path, max_bytes: int = MAX_BODY_BYTES) -> str:
-    if Path(path).suffix.lower() == ".mbox":
+    suffix = Path(path).suffix.lower()
+    if suffix == ".mbox":
         return extract_mbox(path, max_bytes)
+    if suffix == ".msg":
+        from .msgoutlook import extract_msg
+
+        return extract_msg(path, max_bytes)
     return extract_eml(path, max_bytes)
