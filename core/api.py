@@ -993,7 +993,14 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def _search(self, query: dict) -> None:
-        result = self._run_search(query)
+        text = (query.get("q") or [""])[0].strip()
+        if text and len(text) > 2:
+            try:
+                s = self._store()
+                s.save_search_query(text)
+                s.close()
+            except Exception:
+                pass        result = self._run_search(query)
         text = result["text"]
         if not text:
             self._json({"query": "", "ms": 0, "hits": [], "images": []})
@@ -2269,3 +2276,33 @@ def _open_browser(url: str) -> None:
             subprocess.Popen(["xdg-open", url])
     except OSError:
         pass
+
+
+def _get_idle_seconds() -> float:
+    """Seconds since last user input (keyboard/mouse). 0 on non-Windows."""
+    if os.name != "nt":
+        return 0
+    import ctypes
+
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+    info = LASTINPUTINFO()
+    info.cbSize = ctypes.sizeof(LASTINPUTINFO)
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        return 0
+    import time as _t
+    return max(0, _t.time() - info.dwTime / 1000.0)
+
+
+def _is_network_drive(path: str) -> bool:
+    """True if the path is on a network drive (UNCF or mapped letter)."""
+    if os.name != "nt":
+        return False
+    drive = os.path.splitdrive(os.path.abspath(path))[0]
+    if not drive:
+        return False
+    if drive.startswith("\\"):
+        return True
+    kind = ctypes.windll.kernel32.GetDriveTypeW(drive + "\\")
+    return kind == 4  # DRIVE_REMOTE

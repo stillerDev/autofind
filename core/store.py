@@ -121,7 +121,11 @@ CREATE TABLE IF NOT EXISTS vectors (
     vec        BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vectors_owner ON vectors(owner_type, owner_id);
-CREATE TABLE IF NOT EXISTS meta (
+CREATE TABLE IF NOT EXISTS recent_searches (
+    q TEXT NOT NULL,
+    at REAL NOT NULL
+);
+    CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
@@ -1080,6 +1084,19 @@ class Store:
             return self._meta_flag("sealed", False)
         except Exception:
             return False
+
+    def save_search_query(self, q: str) -> None:
+        """Store a search query in the recent searches table (max 10)."""
+        import time as _t
+        self.conn.execute(
+            "INSERT INTO recent_searches(q, at) VALUES(?, ?)",
+            (q.strip(), _t.time())
+        )
+        self.conn.execute(
+            "DELETE FROM recent_searches WHERE at NOT IN "
+            "(SELECT at FROM recent_searches ORDER BY at DESC LIMIT 10)"
+        )
+        self.conn.commit()
 
     def get_meta(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
@@ -2677,7 +2694,22 @@ class Store:
             ) if self.sealed else 0,
             "symbols": scalar("SELECT COUNT(*) FROM symbols"),
             "db_bytes": self.path.stat().st_size if self.path.exists() else 0,
+            "recent_searches": [
+                {"q": r["q"], "at": r["at"]}
+                for r in self.conn.execute(
+                    "SELECT q, at FROM recent_searches ORDER BY at DESC LIMIT 10"
+                ).fetchall()
+            ] if self._table_exists("recent_searches") else [],
         }
+
+    def _table_exists(self, name: str) -> bool:
+        try:
+            row = self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            return False
 
     def _invalidate_vectors(self) -> None:
         self._vec_gen += 1
