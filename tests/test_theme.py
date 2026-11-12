@@ -66,13 +66,11 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(len(hues), len(presets()))
 
     def test_the_first_preset_is_the_default_in_the_stylesheet(self):
+        first = presets()[0]
         css = STYLE.read_text(encoding="utf-8")
-        # Linear design: fixed palette, not wallpaper-derived hue.
-        # The wallpaper system stays for the Appearance tab, but the :root
-        # defaults are Linear's dark precise palette.
-        self.assertIn("--hue: 222;", css)
-        self.assertIn("--bg: #0d0d0d;", css)
-        self.assertIn("--accent: #7aa2f7;", css)
+        default = re.search(r"--wall:\s*([^;]+);", css).group(1).strip()
+        self.assertEqual(default, first["wall"])
+        self.assertIn(f"--hue: {first['hue']};", css)
 
     def test_a_preset_carries_a_wall_and_a_scheme_together(self):
         # The whole point of the feature: you pick a picture, not a hue.
@@ -112,18 +110,26 @@ class NoFlashTests(unittest.TestCase):
 
 
 class PaletteTests(unittest.TestCase):
-    def test_every_surface_is_declared_in_root(self):
+    def test_every_surface_is_derived_from_the_hue(self):
         css = STYLE.read_text(encoding="utf-8")
         root = re.search(r":root \{(.*?)\}", css, re.S).group(1)
         for name in ("--bg", "--panel", "--panel-2", "--border", "--text", "--muted"):
             line = re.search(rf"{name}:\s*([^;]+);", root)
             self.assertIsNotNone(line, f"{name} is not declared")
+            self.assertIn("hsl(var(--hue)", line.group(1), f"{name} ignores the hue")
 
     def test_the_wall_lives_on_its_own_layer_over_a_solid_fallback(self):
         css = STYLE.read_text(encoding="utf-8")
-        # Wallpaper is back: it should be url(/fon.jpg), not none.
-        self.assertIn("--wall: url(", css)
-        self.assertNotIn("--wall: none;", css)
+        # The photo is its own fixed layer so preset gradients and a chosen
+        # picture can share the position/zoom controls without the image being
+        # painted twice.
+        rule = re.search(r"\n#wall \{(.*?)\}", css, re.S).group(1)
+        self.assertIn("var(--wall)", rule)
+        self.assertIn("--wall-pos", rule)
+        self.assertIn("--wall-scale", rule)
+        # A colour first, so a failed image load is a dark window and not white.
+        body = re.search(r"\nbody \{(.*?)\}", css, re.S).group(1)
+        self.assertRegex(body, r"background:\s*#[0-9a-f]{3,6}\s*;")
 
     def test_the_client_cap_does_not_exceed_the_server_cap(self):
         client = int(re.search(r"const WALL_MAX_MB = (\d+)", APP.read_text(encoding="utf-8")).group(1))
