@@ -31,10 +31,10 @@
   --space-lg: 24px;
   --space-xl: 32px;
   /* No wallpaper: clean solid background. */
-  --wall: none;
+  --wall: url("/fon.jpg");
   --wall-dim: 0;
   /* The wallpaper: a url() for a photo or a gradient for a preset. */
-  --wall: none;
+  --wall: url("/fon.jpg");
 }
 
 * { box-sizing: border-box; }
