@@ -61,7 +61,10 @@ class MsgKindTests(unittest.TestCase):
 
     def test_msg_extract_function_bubbles_the_runtime_error(self):
         # no extract_msg anywhere: extract_msg raises, extract_text swallows it
-        saved = sys.modules.pop("extract_msg", None)
+        # Setting to None makes  raise ImportError,
+        # simulating the package not being installed.
+        saved = sys.modules.get("extract_msg")
+        sys.modules["extract_msg"] = None
         try:
             with self.assertRaises(RuntimeError):
                 extract_msg("whatever.msg")
