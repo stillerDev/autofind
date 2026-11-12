@@ -121,10 +121,9 @@ class PaletteTests(unittest.TestCase):
 
     def test_the_wall_lives_on_its_own_layer_over_a_solid_fallback(self):
         css = STYLE.read_text(encoding="utf-8")
-        # Minimalist mode: wallpaper layer hidden. The --wall variable stays
-        # for the Appearance tab but defaults to none.
-        self.assertIn("--wall: none;", css)
-        self.assertIn("display: none;", css)
+        # Wallpaper is back: it should be url(/fon.jpg), not none.
+        self.assertIn("--wall: url(", css)
+        self.assertNotIn("--wall: none;", css)
 
     def test_the_client_cap_does_not_exceed_the_server_cap(self):
         client = int(re.search(r"const WALL_MAX_MB = (\d+)", APP.read_text(encoding="utf-8")).group(1))
