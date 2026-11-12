@@ -37,6 +37,15 @@
   --wall: url("/fon.jpg");
 }
 
+#wall {
+  position: fixed;
+  inset: 0;
+  background-image: var(--wall);
+  background-position: var(--wall-pos, center);
+  background-size: var(--wall-scale, cover);
+  z-index: -1;
+}
+
 * { box-sizing: border-box; }
 
 /* ------------------------------------------------------------- boot screen */
