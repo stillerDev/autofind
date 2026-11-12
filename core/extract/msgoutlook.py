@@ -8,8 +8,8 @@ def extract_msg(path, max_bytes=20 * 1024 * 1024):
     """Read an Outlook .msg file and return Subject + From + body text."""
     try:
         import extract_msg
-    except ImportError:
-        return ""
+    except ImportError as exc:
+        raise RuntimeError("extract-msg package not installed") from exc
     try:
         msg = extract_msg.openMsg(path)
         parts = []
