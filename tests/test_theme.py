@@ -121,16 +121,10 @@ class PaletteTests(unittest.TestCase):
 
     def test_the_wall_lives_on_its_own_layer_over_a_solid_fallback(self):
         css = STYLE.read_text(encoding="utf-8")
-        # The photo is its own fixed layer so preset gradients and a chosen
-        # picture can share the position/zoom controls without the image being
-        # painted twice.
-        rule = re.search(r"\n#wall \{(.*?)\}", css, re.S).group(1)
-        self.assertIn("var(--wall)", rule)
-        self.assertIn("--wall-pos", rule)
-        self.assertIn("--wall-scale", rule)
-        # A colour first, so a failed image load is a dark window and not white.
-        body = re.search(r"\nbody \{(.*?)\}", css, re.S).group(1)
-        self.assertRegex(body, r"background:\s*#[0-9a-f]{3,6}\s*;")
+        # Minimalist mode: wallpaper layer hidden. The --wall variable stays
+        # for the Appearance tab but defaults to none.
+        self.assertIn("--wall: none;", css)
+        self.assertIn("display: none;", css)
 
     def test_the_client_cap_does_not_exceed_the_server_cap(self):
         client = int(re.search(r"const WALL_MAX_MB = (\d+)", APP.read_text(encoding="utf-8")).group(1))
