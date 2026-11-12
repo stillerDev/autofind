@@ -3,7 +3,9 @@ pillow>=10.0
 
 # Paranoid mode (index-at-rest encryption): AES-256-GCM for the sealed
 # blobs; the wrapping key itself is DPAPI-protected (crypt32, no package).
+# argon2-cffi upgrades the portable passphrase vault from scrypt to Argon2id.
 cryptography>=42
+argon2-cffi>=23
 
 # OCR fallback engine (Windows OCR is tier 1 and needs no extra weight).
 # rapidocr declares opencv-python; the headless build below is installed
@@ -15,6 +17,10 @@ opencv-python-headless>=4.9,<5
 # PDF text: PyMuPDF is an order of magnitude faster than pypdf and reads more
 # encodings; pypdf stays the fallback and is not installed by default.
 pymupdf>=1.24
+
+# Outlook .msg files (kind "email"): parses the OLE compound container.
+# Optional - without it .msg files are indexed without text.
+extract-msg>=0.48
 
 # onnxruntime: install onnxruntime-directml on Windows for GPU OCR/embedding,
 # or onnxruntime-gpu with a matching CUDA stack. The CPU wheel works everywhere.

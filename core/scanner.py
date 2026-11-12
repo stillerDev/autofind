@@ -39,9 +39,10 @@ DOC_EXT = {".pdf", ".docx", ".pptx", ".xlsx", ".epub", ".odt", ".ods", ".odp", "
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 # Archives and mail are containers: the text lives in their entries, and the
 # extractor labels each one so a result can say where inside the file it found
-# the match. `.7z` and Outlook `.msg` need third-party libraries and stay out.
+# the match. `.7z` needs py7zr and stays out; Outlook `.msg` is mail here and
+# is read through the optional `extract-msg` package (see core/extract/msgoutlook).
 ARCHIVE_EXT = {".zip", ".tar", ".tgz", ".tbz2", ".txz", ".gz", ".bz2", ".xz"}
-EMAIL_EXT = {".eml", ".mbox"}
+EMAIL_EXT = {".eml", ".mbox", ".msg"}
 
 KIND_BY_EXT = {
     **{ext: "text" for ext in TEXT_EXT},
@@ -59,11 +60,12 @@ KIND_BY_EXT = {
     **{ext: "image" for ext in IMAGE_EXT},
     **{ext: "archive" for ext in ARCHIVE_EXT},
     **{ext: "email" for ext in EMAIL_EXT},
+    **{ext: "msg" for ext in MSG_EXT},
 }
 
 SUPPORTED_KINDS = frozenset({
     "text", "code", "pdf", "docx", "pptx", "xlsx", "epub", "odt", "rtf",
-    "image", "archive", "email", "other",
+    "image", "archive", "email", "msg", "other",
 })
 
 
@@ -89,6 +91,39 @@ def sha256_file(path: str | Path, chunk: int = 1 << 20) -> str:
                 break
             digest.update(block)
     return digest.hexdigest()
+
+
+def dedupe_roots(roots: Iterable[str | Path]) -> list[str]:
+    """Normalise the root list: one string per real folder, no repeats.
+
+    The list comes from the panel's textarea, so it can hold the same folder
+    twice or a folder and its subfolder side by side; walking both walks the
+    same files twice. Exact repeats are dropped (Windows paths are
+    case-insensitive) and a root an earlier root already covers goes with
+    them, so the first root decides what the scan covers.
+    """
+    resolved: list[str] = []
+    for root in roots:
+        text = str(root).strip()
+        if not text:
+            continue
+        try:
+            path = Path(text).expanduser()
+            resolved.append(str(path.resolve()))
+        except OSError:
+            resolved.append(text)
+    out: list[str] = []
+    for root in resolved:
+        key = os.path.normcase(root)
+        if any(key == os.path.normcase(other) for other in out):
+            continue
+        if any(
+            key.startswith(os.path.normcase(other).rstrip(os.sep) + os.sep)
+            for other in out
+        ):
+            continue
+        out.append(root)
+    return out
 
 
 def iter_entries(
