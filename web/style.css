@@ -17,18 +17,24 @@
   --accent: #7aa2f7;
   --accent-soft: rgba(122, 162, 247, 0.12);
   --teal: #7aa2f7;
-  --radius: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
   --font: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
   --font-display: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
-  /* Appearance sliders (the drawer's Appearance tab): how translucent the
-     glass surfaces are, how hard the glass blurs, how dark the wallpaper is
-     dimmed. Defaults are exactly what the hard-coded values used to be. */
-  --panel-alpha: 0.72;
-  --card-alpha: 0.82;
-  --blur: 11px;
+  --panel-alpha: 0.92;
+  --card-alpha: 0.92;
+  --blur: 0px;
+  --wall-dim: 0;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  /* No wallpaper: clean solid background. */
+  --wall: none;
   --wall-dim: 0;
   /* The wallpaper: a url() for a photo or a gradient for a preset. */
-  --wall: url("/fon.jpg");
+  --wall: none;
 }
 
 * { box-sizing: border-box; }
@@ -574,12 +580,14 @@ body {
    and `--wall-scale` are meaningless for the gradients but harmless, and they
    let the custom picker move the same picture the way the user points without a
    round trip to the server. */
-#wall {
+/* Wallpaper disabled in minimalist mode: clean solid bg.
+#*/wall {
   position: fixed;
   inset: 0;
   z-index: -1;
   background-color: #0a0b0d;
-  background-image: var(--wall);
+  /* wallpaper disabled for minimalist mode */
+  /* background-image: var(--wall); */
   background-repeat: no-repeat;
   background-position: var(--wall-pos, center);
   background-size: cover;
@@ -1019,7 +1027,7 @@ body.in-app .win-controls { display: flex; align-items: center; }
   border: 1px solid rgba(255, 255, 255, 0.09);
   background: rgba(18, 20, 23, 0.72);
   border-radius: 999px;
-  padding: 5px 12px;
+  padding: 6px 14px;
   color: var(--faint);
   font-size: 12.5px;
 }
@@ -1339,6 +1347,7 @@ main {
   animation: card-in 0.28s cubic-bezier(0.2, 0.7, 0.2, 1) both;
   animation-delay: var(--enter-delay, 0ms);
 }
+  transition: border-color 0.1s ease;
 
 @media (prefers-reduced-motion: reduce) {
   .results .card { animation: none; }
@@ -1457,7 +1466,7 @@ main {
 
 .icon {
   width: 40px;
-  height: 40px;
+  height: 48px;
   border-radius: 10px;
   display: grid;
   place-items: center;
@@ -2811,7 +2820,7 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   align-items: center;
   gap: 6px;
   margin: 0 0 4px;
-  padding: 5px 12px;
+  padding: 6px 14px;
   border: 1px dashed var(--border);
   border-radius: 9px;
   background: transparent;
@@ -2843,7 +2852,8 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   position: absolute;
   inset: 0;
   background-color: #0a0b0d;
-  background-image: var(--wall);
+  /* wallpaper disabled for minimalist mode */
+  /* background-image: var(--wall); */
   background-repeat: no-repeat;
   background-position: var(--wall-pos, center);
   background-size: cover;
