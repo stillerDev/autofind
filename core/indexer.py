@@ -34,7 +34,7 @@ from .extract.dates import find_doc_date
 from .group import dhash
 from .images import load_image, thumbnail_bytes, visual_features
 from .ocr import OcrUnavailable, ocr_image, reset_fallbacks
-from .scanner import iter_entries, sha256_file
+from .scanner import dedupe_roots, iter_entries, sha256_file
 from .store import Store, _pack_text
 from .symbols import extract_for
 
@@ -102,10 +102,24 @@ def run_index(
     workers: int | None = None,
 ) -> IndexStats:
     started = time.perf_counter()
+    # The root list can carry repeats — the same folder twice, or a folder and
+    # its subfolder side by side — and every caller feeds it straight from user
+    # input. Cleaning it once here is the guarantee every entry point shares.
+    roots = dedupe_roots(roots)
     # A folder of photographs teaches the OCR fallback chain nothing; a folder of
     # screenshots teaches it everything. Start each run with a clean slate so the
     # verdict from the previous folder does not carry over.
     reset_fallbacks()
+    # Upgrades and killed downloads leave dead weight (old import backups,
+    # .part staging, updater temp dirs of dead processes) in the data
+    # directory. An index run already walks everything, so the same pass
+    # cleans up quietly first; failures are non-fatal by design.
+    try:
+        from .maintenance import cleanup_stale_artifacts
+
+        cleanup_stale_artifacts(config.home)
+    except Exception:
+        pass  # maintenance must never block indexing
     blocked: list[tuple[str, str]] = []
     scan_started = time.perf_counter()
     entries = list(
@@ -441,6 +455,7 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
             entry.path, file_id, digest, prepared["width"], prepared["height"],
             entry.size, entry.mtime, prepared.get("thumb"),
             prepared.get("ocr_text") or None, prepared.get("engine"),
+            prepared.get("ocr_boxes"),
             visual_vector, phash=prepared.get("phash"),
         )
         stats.images += 1
@@ -512,7 +527,9 @@ def _extract_text_job(entry, config: IndexConfig) -> dict:
         # Name-only entry: no read, no hash, no chunks. The filename is the
         # searchable surface, which is all a binary or unknown format offers.
         return {"status": "name-only", "digest": "", "timing": timing}
-    if entry.kind in PLAIN_KINDS:
+    if entry.kind in PLAIN_KINDS and not str(entry.path).lower().endswith((".csv", ".tsv")):
+        # csv/tsv are "text" to the store, but they read better row-shaped,
+        # so they go through extract_text (see core/extract/__init__.py).
         # Read 1 MB first: read(n) preallocates n bytes, and a 20 MB buffer per
         # 200-byte file costs more than the file does. Only oversized files
         # trigger the second read.
@@ -529,7 +546,7 @@ def _extract_text_job(entry, config: IndexConfig) -> dict:
         digest = sha256_file(entry.path)
         timing["sha"] = time.perf_counter() - mark
         mark = time.perf_counter()
-        text = extract_text(entry.path, entry.kind, config.max_file_bytes)
+        text = extract_text(entry.path, entry.kind, config.max_file_bytes, ocr=config.ocr_enabled)
     timing["extract"] = time.perf_counter() - mark
     if not text.strip():
         return {"digest": digest, "status": "no-text", "timing": timing}
@@ -608,6 +625,8 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
             )
             ocr_text = result.text
             engine_name = result.engine
+            import json as _json
+            ocr_boxes = _json.dumps(result.boxes, ensure_ascii=False) if result.boxes else None
         except OcrUnavailable:
             ocr_text = ""
         timing["ocr"] = time.perf_counter() - mark
@@ -629,6 +648,7 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
             filevec.mean_pool(vectors).astype(np.float32).tobytes() if vectors is not None else None
         ),
         "ocr_text": ocr_text,
+        "ocr_boxes": ocr_boxes if config.ocr_enabled else None,
         "engine": engine_name,
         "width": image.size[0],
         "height": image.size[1],
@@ -766,7 +786,7 @@ def _index_one(entry, config: IndexConfig, store: Store, embedder, visual, stats
         stats.skipped += 1
         return "same-content"
 
-    text = extract_text(entry.path, entry.kind, config.max_file_bytes)
+    text = extract_text(entry.path, entry.kind, config.max_file_bytes, ocr=config.ocr_enabled)
     if not text.strip():
         stats.skipped += 1
         return "no-text"

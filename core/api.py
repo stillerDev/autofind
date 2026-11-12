@@ -51,9 +51,11 @@ from .hotkeys import (
 )
 from .indexer import IndexStats, run_index
 from .mcp import McpServer
+from .memguard import SoftLimit
 from .ocr import engine_report
 from .personal import expand_aliases
 from .privacy import describe as describe_privacy
+from .scanner import dedupe_roots
 from . import vault as vault_mod
 
 # Paranoid-mode job state: one (un)seal at a time, polled by /api/seal.
@@ -62,6 +64,7 @@ _SEAL: dict = {"working": False, "action": None, "done": 0, "total": 0,
 _SEAL_LOCK = threading.Lock()
 from .privacy import indexed_sensitive, purge_indexed
 from .query import Range, understand
+from .nameindex import NAME_CACHE
 from .search import search_page, similar_images, visual_text_search
 from .store import Store, VectorCache
 from .watch import Watcher
@@ -160,8 +163,13 @@ class IndexJob:
                 roots, config, store, embedder, visual, prune=prune, progress=progress
             )
             self.result = stats.as_dict()
+            LOG.write(
+                f"index finished in {stats.elapsed:.1f}s: "
+                f"{stats.added} added, {stats.updated} updated, {stats.removed} removed"
+            )
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
+            LOG.write(f"index failed: {self.error}", level="error")
         finally:
             if store is not None:
                 store.close()
@@ -221,6 +229,37 @@ class _ReadStores:
 
 
 READ_STORES = _ReadStores()
+# RAM soft limit (configurable via AUTOFIND_RAM_LIMIT_MB): when private memory
+# crosses it, rebuildable caches are dropped between requests. See
+# core.memguard — soft, cooldown-guarded, never touching a running job.
+SOFT_LIMIT = SoftLimit()
+
+# Server event log: index runs, watcher errors, boot. Written into the config
+# home so it travels with the index; rotated by size (core.logger).
+from .config import default_home
+from .logger import Logger
+
+LOG = Logger(default_home() / "autofind.log")
+
+
+def evict_caches(reason: str) -> None:
+    """Drop every rebuildable cache. Costs seconds on the next query, frees MB now."""
+    CACHE.clear()
+    NAME_CACHE.clear()
+    with DUP_LOCK:
+        DUP_CACHE.clear()
+    READ_STORES.close_all()
+    SOFT_LIMIT.mark_evicted(reason)
+
+
+def _maybe_evict() -> None:
+    """Called between requests; eviction is skipped while a job is running."""
+    if not SOFT_LIMIT.exceeded() or JOB.running:
+        return
+    try:
+        evict_caches(f"rss over {SOFT_LIMIT.limit_mb:.0f} MB")
+    except Exception:
+        pass  # a failed eviction must not fail the request that follows
 # What the boot screen polls. The server answers requests from the first
 # millisecond, but "ready" means the vector pack has been faulted in — that is
 # the difference between a window that opens and a window that can search.
@@ -490,6 +529,7 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------ GET
 
     def do_GET(self) -> None:  # noqa: N802
+        _maybe_evict()
         if not self._host_ok():
             self._error("bad host", 403)
             return
@@ -531,12 +571,22 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif route == "/api/ocr":
             self._json(engine_report(self.config.ocr_languages))
+        elif route == "/api/log":
+            # The event log, for reading inside the UI: last N lines of
+            # ~/.autofind/autofind.log (index runs, watcher errors, boot).
+            try:
+                lines = max(1, min(int(query.get("lines", ["200"])[0]), 1000))
+            except ValueError:
+                lines = 200
+            self._json({"lines": LOG.tail(lines)})
         elif route == "/api/onboarding":
             self._onboarding()
         elif route == "/api/import/kensaku":
             self._kensaku_scan()
         elif route == "/api/thumb":
             self._thumb(query)
+        elif route == "/api/ocr-boxes":
+            self._ocr_boxes(query)
         elif route == "/api/preview":
             self._preview(query)
         elif route == "/api/similar":
@@ -569,6 +619,8 @@ class Handler(BaseHTTPRequestHandler):
             self._hotkeys()
         elif route == "/api/audit":
             self._audit()
+        elif route == "/api/openapi.json":
+            self._openapi()
         elif route == "/api/export":
             self._export(query)
         elif route == "/api/symbols":
@@ -779,6 +831,24 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     # ----------------------------------------------------------------- audit
+
+    def _openapi(self) -> None:
+        """Serve the OpenAPI description of this server's own REST surface.
+
+        Generated from `core.openapi`, port-aware, so a tool pointed at the
+        running app gets a live, accurate map instead of a stale file.
+        """
+        from .openapi import document
+
+        body = json.dumps(
+            document(self.server.server_address[1]),
+            ensure_ascii=False, indent=2,
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _audit(self) -> None:
         """What the index knows and where it lives.
@@ -1445,6 +1515,42 @@ class Handler(BaseHTTPRequestHandler):
         save_types(self.config.home, catalog)
         self._json({"types": [item.as_dict() for item in catalog]})
 
+    def _ocr_boxes(self, query: dict) -> None:
+        """Return OCR bounding boxes that match the search term for a given
+        screenshot. The frontend overlays these as highlight boxes on the
+        thumbnail image — the same visual kensaku gives."""
+        image_id = query.get("id")
+        q = (query.get("q") or [""])[0].lower()
+        if not image_id:
+            self._error("id required")
+            return
+        store = self._store()
+        try:
+            row = store.conn.execute(
+                "SELECT i.ocr_boxes, i.width, i.height FROM images i WHERE i.id = ?",
+                (int(image_id),)
+            ).fetchone()
+        finally:
+            pass
+        if not row or not row["ocr_boxes"]:
+            self._json({"boxes": [], "width": 0, "height": 0})
+            return
+        import json as _json
+        try:
+            boxes = _json.loads(row["ocr_boxes"])
+        except (ValueError, TypeError):
+            self._json({"boxes": [], "width": row["width"], "height": row["height"]})
+            return
+        matching = []
+        for box in boxes:
+            if q and q in box.get("text", "").lower():
+                matching.append(box)
+        self._json({
+            "boxes": matching if q else boxes,
+            "width": row["width"],
+            "height": row["height"],
+        })
+
     def _thumb(self, query: dict) -> None:
         file_id = int((query.get("id") or ["0"])[0])
         store = self._store()
@@ -1723,6 +1829,7 @@ class Handler(BaseHTTPRequestHandler):
     # ----------------------------------------------------------------- POST
 
     def do_POST(self) -> None:  # noqa: N802
+        _maybe_evict()
         if not self._host_ok():
             self._error("bad host", 403)
             return
@@ -1736,7 +1843,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/index":
-            roots = payload.get("roots") or []
+            roots = dedupe_roots(payload.get("roots") or [])
             if not roots:
                 self._error("roots required")
                 return
@@ -1869,15 +1976,26 @@ class Handler(BaseHTTPRequestHandler):
         if not roots:
             self._error("no folders to watch")
             return
-        wanted = [str(Path(root).expanduser()) for root in roots]
+        wanted = dedupe_roots(roots)
+        # Idle-only: defer watcher cycles while the user is actively typing;
+        # the UI sends {"enabled": true, "roots": [...], "idle_only": true}.
+        idle_only = bool(payload.get("idle_only"))
+        allow_remote = bool(payload.get("allow_remote"))
 
         with WATCH_LOCK:
-            if WATCHER is not None and WATCHER.state.running and WATCHER.roots == wanted:
+            if WATCHER is not None and WATCHER.state.running and WATCHER.roots == wanted \
+                    and WATCHER.idle_only == idle_only:
                 self._json(WATCHER.state.as_dict())
                 return
             if WATCHER is not None:
                 WATCHER.stop()
-            WATCHER = Watcher(wanted, self.config, self.db_path, pause_when=lambda: JOB.running)
+            WATCHER = Watcher(
+                wanted, self.config, self.db_path,
+                pause_when=lambda: JOB.running,
+                idle_only=idle_only,
+                allow_remote=allow_remote,
+            )
+            WATCHER.log = LOG.write
             WATCHER.start()
             snapshot = WATCHER.state.as_dict()
         self._json(snapshot)
@@ -1938,7 +2056,10 @@ class Handler(BaseHTTPRequestHandler):
             rows = store.conn.execute("SELECT DISTINCT path FROM files").fetchall()
         finally:
             store.close()
-        roots = sorted({str(Path(row["path"]).parent) for row in rows})
+        # Parent folders of every indexed file; dedupe_roots also folds a
+        # folder into its parent, so a rebuilt run walks each subtree once.
+        roots = dedupe_roots({str(Path(row["path"]).parent) for row in rows})
+        roots = sorted(roots, key=str.casefold)
         if not roots:
             self._error("index is empty", 409)
             return
@@ -1956,7 +2077,9 @@ def _default_roots() -> list[str]:
         home / "Pictures" / "Screenshots",
         home / "Pictures",
     ]
-    return [str(path) for path in candidates if path.is_dir()]
+    # Screenshots already sits inside Pictures: listing both made the panel's
+    # folder list show the same tree twice and walk every screenshot twice.
+    return dedupe_roots(str(path) for path in candidates if path.is_dir())
 
 
 def start_server(
@@ -2009,6 +2132,29 @@ def prewarm(db_path: Path, config: IndexConfig) -> None:
     ).start()
 
 
+def _startup_self_test(db_path: Path) -> None:
+    """A bounded integrity scan, off the boot path (thread) and quiet when fine.
+
+    Problems are printed once: a corrupted index should be noticed the day it
+    happens, not when a user searches for something and gets nothing.
+    """
+    try:
+        from .doctor import self_test
+
+        result = self_test(db_path)
+        if not result["ok"]:
+            for problem in result["problems"]:
+                print(f"index self-test: {problem}", flush=True)
+                LOG.write(f"index self-test: {problem}", level="error")
+            print(
+                "run `autofind doctor` for the full report; "
+                "re-index (`autofind index <folder> --prune`) to rebuild",
+                flush=True,
+            )
+    except Exception:
+        pass  # the self-test must never block the app from starting
+
+
 def serve(
     db_path: Path,
     config: IndexConfig,
@@ -2017,7 +2163,7 @@ def serve(
     open_browser: bool = False,
 ) -> None:
     try:
-        vault_mod.load(config.home)
+        vault_mod.try_autoload(config.home)
     except vault_mod.VaultError:
         pass  # not sealed, or the key is gone - search surfaces it on demand
     server, url = start_server(db_path, config, host=host, port=port)
@@ -2032,6 +2178,10 @@ def serve(
         flush=True,
     )
     prewarm(db_path, config)
+    LOG.write(f"server started at {url}, index {db_path}")
+    threading.Thread(
+        target=_startup_self_test, args=(db_path,), name="autofind-selftest", daemon=True
+    ).start()
     if open_browser:
         threading.Timer(0.6, lambda: _open_browser(url)).start()
     try:
@@ -2039,6 +2189,7 @@ def serve(
     except KeyboardInterrupt:
         print("\nstopping")
     finally:
+        LOG.write("server stopped")
         READ_STORES.close_all()
         server.server_close()
         if MCP is not None:

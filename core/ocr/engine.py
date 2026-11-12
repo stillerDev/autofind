@@ -41,6 +41,7 @@ class OcrResult:
     engine: str
     confidence: float = 0.0
     lines: list[str] = field(default_factory=list)
+    boxes: list[dict] = field(default_factory=list)  # [{text, x, y, w, h}]
 
     @property
     def word_count(self) -> int:
@@ -123,9 +124,9 @@ class WindowsOcr:
             raise RuntimeError(f"windows-ocr unavailable: {self._error}")
         buffer = io.BytesIO()
         image.convert("RGB").save(buffer, format="PNG")
-        text = _run_async(_recognize_bytes(engine, buffer.getvalue()))
+        text, boxes = _run_async(_recognize_bytes(engine, buffer.getvalue()))
         lines = [line for line in text.splitlines() if line.strip()]
-        return OcrResult(text=text.strip(), engine=self.name, confidence=0.0, lines=lines)
+        return OcrResult(text=text.strip(), engine=self.name, confidence=0.0, lines=lines, boxes=boxes)
 
 
 def windows_language_tags() -> list[str]:
@@ -169,7 +170,8 @@ def windows_engines(limit: int = 4) -> list[OcrEngine]:
     return found
 
 
-async def _recognize_bytes(engine, png: bytes) -> str:
+async def _recognize_bytes(engine, png: bytes) -> tuple[str, list[dict]]:
+    """Returns (text, boxes) where boxes = [{text, x, y, w, h}] per line."""
     from winrt.windows.graphics.imaging import BitmapDecoder
     from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
 
@@ -182,7 +184,21 @@ async def _recognize_bytes(engine, png: bytes) -> str:
     decoder = await BitmapDecoder.create_async(stream)
     bitmap = await decoder.get_software_bitmap_async()
     result = await engine.recognize_async(bitmap)
-    return result.text
+    text = result.text
+    boxes = []
+    for line in result.lines:
+        if not line.words:
+            continue
+        first = line.words[0].bounding_rect
+        last = line.words[-1].bounding_rect
+        # Line bounding rect: union of first and last word rects
+        x = min(first.x, last.x)
+        y = min(first.y, last.y)
+        w = max(first.x + first.width, last.x + last.width) - x
+        h = max(first.y + first.height, last.y + last.height) - y
+        boxes.append({"text": line.text, "x": int(x), "y": int(y),
+                       "w": int(w), "h": int(h)})
+    return text, boxes
 
 
 def _run_async(coroutine):
@@ -447,6 +463,16 @@ def available_engines(languages_hint: str = "rus+eng") -> list[OcrEngine]:
                 found.append(engine)
         except Exception:
             continue
+    # Indra joins the list when its pack is on disk. The import is lazy so
+    # this module stays out of a cold one-shot CLI process's numpy import.
+    try:
+        from .indra import IndraEngine
+
+        engine = IndraEngine()
+        if engine.available():
+            found.append(engine)
+    except Exception:
+        pass
     return found
 
 
@@ -482,6 +508,18 @@ def fallback_engines(skip: set[str] | None = None, limit: int = 4) -> list[OcrEn
     skip = skip or set()
     installed = set(downloaded_models())
     found: list[OcrEngine] = []
+    # Indra first: it is the accurate tier, and the only one here that reads
+    # RTL and vertical CJK well. Like the script models, its pack must be on
+    # disk — an index run never starts a download by surprise.
+    try:
+        from .indra import IndraEngine
+
+        engine = IndraEngine()
+        if engine.available() and engine.name not in skip and len(found) < limit:
+            found.append(engine)
+            skip.add(engine.name)
+    except Exception:
+        pass
 
     def add(model: str) -> None:
         if model in skip or len(found) >= limit or model not in installed:
@@ -522,6 +560,14 @@ def cjk_engines(rec_model: str | None = None, rec_keys: str | None = None) -> li
             if engine.available():
                 found.append(engine)
                 break
+    try:
+        from .indra import IndraEngine
+
+        engine = IndraEngine()
+        if engine.available():
+            found.append(engine)
+    except Exception:
+        pass
     multi = RapidOcrMulti("multi")
     if multi.available():
         found.append(multi)

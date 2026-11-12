@@ -3977,3 +3977,8 @@ body.in-app .side-foot .only-app { display: inline-flex; }
 .moved-pane .settings-section {
   padding: 0 0 14px;
 }
+
+/* OCR highlight boxes on screenshot thumbnails */
+.k-image { position: relative; overflow: hidden; }
+.k-image img { display: block; width: 100%; height: auto; }
+.ocr-boxes { position: absolute; inset: 0; pointer-events: none; }

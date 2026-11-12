@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   query: "", kind: "", folder: "", since: "", sort: "best", docdate: false,
-  timer: null, jobTimer: null,
+  timer: null, jobTimer: null, lastEnterHit: -1,
   hits: [], total: 0, nextOffset: null, approx: false, selected: -1, chips: [],
   stats: null, status: null, types: [], typesLoaded: false,
   // Multi-select is a set of file ids, not row indexes: it survives "more"
@@ -33,7 +33,8 @@ function esc(text) {
 }
 
 function locale() {
-  return currentLang() === "ru" ? "ru-RU" : "en-GB";
+  const table = { ru: "ru-RU", zh: "zh-CN" };
+  return table[currentLang()] || "en-GB";
 }
 
 function dateLabel(seconds) {
@@ -858,6 +859,78 @@ function clampScale(value) {
 
 let theme = WALLS[0];
 
+/* --------------------------------------------------------- look (appearance) */
+
+/* The second half of Appearance: everything the wallpaper does not decide.
+   Where the theme picks a palette from one photo, the look governs how the
+   glass over it behaves — tint override, blur, translucency, dimming, corner
+   radius — all as CSS variables, all persisted together in localStorage. */
+const LOOK_KEY = "autofind.look";
+
+const DEFAULT_LOOK = {
+  tintAuto: true,   // hue/sat follow the wallpaper's palette
+  hue: 205,         // custom tint hue, degrees
+  sat: 9,           // custom tint strength, %
+  dim: 0,           // wallpaper darkening, 0..0.7
+  blur: 11,         // glass blur, px (0 = sharp)
+  panelAlpha: 0.72, // drawer panels' opacity
+  cardAlpha: 0.82,  // result cards' opacity
+  radius: 12,       // corner radius, px
+};
+
+let look = { ...DEFAULT_LOOK };
+
+function clamp(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+function loadLook() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOOK_KEY) || "null");
+    if (!saved || typeof saved !== "object") return;
+    look = {
+      tintAuto: !!saved.tintAuto,
+      hue: clamp(saved.hue, 0, 360, DEFAULT_LOOK.hue),
+      sat: clamp(saved.sat, 0, 20, DEFAULT_LOOK.sat),
+      dim: clamp(saved.dim, 0, 0.7, DEFAULT_LOOK.dim),
+      blur: clamp(saved.blur, 0, 24, DEFAULT_LOOK.blur),
+      panelAlpha: clamp(saved.panelAlpha, 0.3, 0.98, DEFAULT_LOOK.panelAlpha),
+      cardAlpha: clamp(saved.cardAlpha, 0.4, 1, DEFAULT_LOOK.cardAlpha),
+      radius: clamp(saved.radius, 0, 24, DEFAULT_LOOK.radius),
+    };
+  } catch (error) {
+    // A broken save keeps the defaults; nothing here is worth a crash.
+  }
+}
+
+function saveLook() {
+  try {
+    localStorage.setItem(LOOK_KEY, JSON.stringify(look));
+  } catch (error) {
+    // Storage blocked: the look lives for this session only.
+  }
+}
+
+function applyLook() {
+  const root = document.documentElement;
+  // The tint override is the one setting that argues with the theme: by
+  // default the wallpaper decides the palette, and the sliders win only
+  // when "follow the wallpaper" is switched off.
+  root.style.setProperty("--hue", look.tintAuto
+    ? String(Math.round(theme.hue))
+    : String(Math.round(look.hue)));
+  root.style.setProperty("--sat", look.tintAuto
+    ? `${theme.sat}%`
+    : `${look.sat}%`);
+  root.style.setProperty("--wall-dim", String(look.dim));
+  root.style.setProperty("--blur", `${look.blur}px`);
+  root.style.setProperty("--panel-alpha", String(look.panelAlpha));
+  root.style.setProperty("--card-alpha", String(look.cardAlpha));
+  root.style.setProperty("--radius", `${look.radius}px`);
+}
+
 function applyTheme(next) {
   theme = next;
   const fx = clamp01(next.fx ?? 0.5);
@@ -868,6 +941,49 @@ function applyTheme(next) {
   root.style.setProperty("--sat", `${next.sat}%`);
   root.style.setProperty("--wall-pos", `${fx * 100}% ${fy * 100}%`);
   root.style.setProperty("--wall-scale", String(clampScale(next.scale)));
+  // The look sits on top of the wallpaper: without this call a wallpaper
+  // switch would repaint the palette over a custom tint.
+  applyLook();
+}
+
+function renderLook() {
+  const set = (id, value) => {
+    const node = $(id);
+    if (node) node.value = String(value);
+  };
+  set("look-dim", Math.round(look.dim * 100));
+  set("look-blur", look.blur);
+  set("look-panel", Math.round(look.panelAlpha * 100));
+  set("look-card", Math.round(look.cardAlpha * 100));
+  set("look-radius", look.radius);
+  set("tint-hue", look.hue);
+  set("tint-sat", look.sat);
+  const auto = $("tint-auto");
+  if (auto) auto.checked = look.tintAuto;
+  // Custom sliders only answer when they own the colour.
+  const locked = look.tintAuto;
+  ["tint-hue", "tint-sat"].forEach((id) => {
+    const node = $(id);
+    if (node) node.disabled = locked;
+  });
+  const put = (id, text) => {
+    const node = $(id);
+    if (node) node.textContent = text;
+  };
+  put("look-dim-val", `${Math.round(look.dim * 100)}%`);
+  put("look-blur-val", `${look.blur}px`);
+  put("look-panel-val", `${Math.round(look.panelAlpha * 100)}%`);
+  put("look-card-val", `${Math.round(look.cardAlpha * 100)}%`);
+  put("look-radius-val", `${look.radius}px`);
+  put("tint-hue-val", `${Math.round(look.hue)}°`);
+  put("tint-sat-val", `${Math.round(look.sat)}%`);
+}
+
+function setLook(patch) {
+  look = { ...look, ...patch };
+  saveLook();
+  applyLook();
+  renderLook();
 }
 
 function saveTheme(next) {
@@ -1293,10 +1409,17 @@ function renderAliases() {
     : `<p class="settings-note" id="alias-empty">${esc(t("alias.empty"))}</p>`;
 }
 
+let aliasBusy = false;
+
 async function addAlias() {
+  // One click, one entry: the flag closes the gap between the request and the
+  // fields being cleared, where a double click (or double Enter) used to add
+  // the same pair twice.
+  if (aliasBusy) return;
   const alias = $("alias-word").value.trim();
   const expand = $("alias-means").value.trim();
   if (!alias || !expand) { toast(t("alias.need")); return; }
+  aliasBusy = true;
   try {
     await api("/api/alias", {
       method: "POST",
@@ -1310,6 +1433,8 @@ async function addAlias() {
     toast(t("alias.added", { alias, expand }));
   } catch (error) {
     toast(t("toast.failed", { error: error.message }));
+  } finally {
+    aliasBusy = false;
   }
 }
 
@@ -1393,6 +1518,15 @@ function renderTypes() {
 
 function addType() {
   collectTypes();
+  // A double click must not stack two blank cards: while the last one is
+  // still empty it *is* the card to fill in, so just put the cursor there.
+  const last = state.types[state.types.length - 1];
+  if (last && !last.id && !last.name && (!last.masks || last.masks.every((mask) => !mask))) {
+    renderTypes();
+    const existing = $("types-list").querySelectorAll(".type-name");
+    existing[existing.length - 1]?.focus();
+    return;
+  }
   state.types.push({ id: "", name: "", masks: [""] });
   renderTypes();
   const names = $("types-list").querySelectorAll(".type-name");
@@ -1496,7 +1630,10 @@ function card(hit, query, index, order = 0) {
   const delay = Math.min(order, 12) * 38;
   const label = KIND_LABEL[hit.kind] || hit.kind;
   const icon = hit.is_image && hit.thumb
-    ? `<div class="icon k-image"><img src="${hit.thumb}" alt="" loading="lazy"></div>`
+    ? `<div class="icon k-image" data-image-id="${hit.file_id}">
+         <img src="${hit.thumb}" alt="" loading="lazy">
+         <div class="ocr-boxes" data-q="${esc(state.query)}"></div>
+       </div>`
     : `<div class="icon k-${hit.kind}">${esc(label)}</div>`;
   const badges = hit.channels
     .map((channel) => `<span class="badge b-${channel}">${channel}</span>`)
@@ -1713,7 +1850,10 @@ function renderResults(data, append) {
       $("content").innerHTML = parts.join("");
     }
   }
-  if (!append) state.selected = -1;
+  if (!append) {
+    state.selected = -1;
+    state.lastEnterHit = -1;
+  }
   paintSelection();
   paintBulk();
 }
@@ -1731,6 +1871,7 @@ function moveSelection(delta) {
   if (!state.hits.length) return;
   const next = state.selected + delta;
   state.selected = Math.max(0, Math.min(state.hits.length - 1, next));
+  state.lastEnterHit = -1;  // the Enter pairing follows one row only
   paintSelection();
 }
 
@@ -1801,6 +1942,36 @@ function shot(image) {
 
 /* -------------------------------------------------------------- side panel */
 
+/* Draw highlight boxes on screenshot thumbnails where the search term
+   appears (from OCR bounding box data). Each box is a semi-transparent
+   rectangle positioned over the thumbnail, scaled to match. */
+async function drawOcrHighlights() {
+  const boxes = document.querySelectorAll(".ocr-boxes[data-q]");
+  if (!boxes.length) return;
+  for (const holder of boxes) {
+    const query = holder.dataset.q?.trim().toLowerCase();
+    if (!query) continue;
+    const img = holder.parentElement?.querySelector("img");
+    if (!img || !img.complete) continue;
+    const imageId = holder.parentElement?.dataset.imageId;
+    if (!imageId) continue;
+    try {
+      const data = await api(`/api/ocr-boxes?id=${imageId}&q=${encodeURIComponent(query)}`);
+      if (!data.boxes?.length || !data.width || !data.height) continue;
+      const w = img.clientWidth || img.naturalWidth;
+      const h = img.clientHeight || img.naturalHeight;
+      if (!w || !h) continue;
+      const sx = w / data.width, sy = h / data.height;
+      holder.innerHTML = data.boxes.map((box) =>
+        `<div style="position:absolute;left:${box.x * sx}px;top:${box.y * sy}px;` +
+        `width:${box.w * sx}px;height:${box.h * sy}px;` +
+        `background:rgba(122,162,247,.25);border:1.5px solid #7aa2f7;` +
+        `border-radius:2px;pointer-events:none"></div>`
+      ).join("");
+    } catch (e) { /* silently skip */ }
+  }
+}
+
 async function loadStats() {
   try {
     const [stats, status, privacy, watch, seal] = await Promise.all([
@@ -1833,6 +2004,8 @@ async function loadStats() {
     set("s-texts", stats.texts ?? 0);
     set("s-sealed", stats.texts_sealed ?? 0);
 
+      // Draw OCR highlight boxes on screenshot thumbnails that match the query
+    requestAnimationFrame(() => drawOcrHighlights());
     if (!$("roots").value.trim() && status.default_roots?.length) {
       $("roots").value = status.default_roots.join("\n");
     }
@@ -1937,6 +2110,8 @@ async function pollSeal() {
         return;
       }
     } catch (error) {
+      // A dropped poll must not leave the switch dark forever.
+      $("seal-btn").disabled = false;
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -1944,10 +2119,16 @@ async function pollSeal() {
 }
 
 $("seal-btn").addEventListener("click", async () => {
+  const button = $("seal-btn");
+  // One click, one job: the button goes dark before the request leaves, and
+  // pollSeal keeps it in step with the worker from here on.
+  if (button.disabled) return;
+  button.disabled = true;
   const action = state.seal && state.seal.sealed ? "off" : "on";
   try {
     await api("/api/seal", { method: "POST", body: JSON.stringify({ action }) });
   } catch (error) {
+    button.disabled = false;
     toast(t("toast.failed", { error: error.message }));
     return;
   }
@@ -2001,8 +2182,13 @@ function renderWatch(watch) {
 }
 
 async function toggleWatch() {
-  const on = $("watch-btn").classList.contains("primary");
-  const roots = $("roots").value.split("\n").map((line) => line.trim()).filter(Boolean);
+  const button = $("watch-btn");
+  const on = button.classList.contains("primary");
+  const roots = readRoots();
+  $("roots").value = roots.join("\n");
+  // One toggle per click: the switch is off while the request travels, so a
+  // double click cannot turn watching off again straight after turning it on.
+  button.disabled = true;
   try {
     const watch = await api("/api/watch", {
       method: "POST",
@@ -2013,6 +2199,8 @@ async function toggleWatch() {
     toast(watch.running ? t("toast.watchOn") : t("toast.watchOff"));
   } catch (error) {
     toast(t("toast.failed", { error: error.message }));
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -2026,17 +2214,49 @@ async function purgePrivate() {
   }
 }
 
+/* The folder list is user input, so it can hold the same folder twice — a line
+   pasted twice, or a folder and its subfolder listed side by side, which walks
+   the same files twice. Every button reads through here: repeats are dropped
+   (Windows paths are case-insensitive) and a folder an earlier line already
+   covers goes with them, so what is on screen is what the scan will walk. */
+function readRoots() {
+  const norm = (path) => path.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  const seen = new Set();
+  const roots = [];
+  for (const raw of $("roots").value.split("\n")) {
+    let folder = raw.trim();
+    if (!folder) continue;
+    // A drive root ("C:\") must keep its trailing slash; longer paths lose it.
+    if (folder.length > 3) folder = folder.replace(/[\\/]+$/, "");
+    const key = norm(folder);
+    if (seen.has(key)) continue;
+    if (roots.some((root) => key.startsWith(norm(root) + "\\"))) continue;
+    seen.add(key);
+    roots.push(folder);
+  }
+  return roots;
+}
+
 function startJob() {
-  const roots = $("roots").value.split("\n").map((line) => line.trim()).filter(Boolean);
+  const roots = readRoots();
   if (!roots.length) { toast(t("toast.needRoots")); return; }
+  // The cleaned list goes back into the box: the user sees the folders the
+  // run will actually walk, without the repeated or nested lines.
+  $("roots").value = roots.join("\n");
+  // One click, one job: the button switches off before the request leaves, so
+  // a second quick click cannot start a second run; pollJob turns it back on.
+  $("index-btn").disabled = true;
   api("/api/index", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ roots, prune: $("prune").checked }),
   }).then(() => {
-    $("index-btn").disabled = true;
     pollJob();
-  }).catch((error) => toast(error.message));
+  }).catch((error) => {
+    toast(error.message);
+    // A 409 here means a run is already going: follow it instead of guessing.
+    pollJob();
+  });
 }
 
 function pollJob() {
@@ -2103,14 +2323,20 @@ async function openSimilar(fileId) {
    it slides over the results instead of reflowing them, and the scrim behind it
    is the close button for people who do not aim at small targets. */
 function updateRailActive() {
-  // The lit circle follows the open function, not the drawer itself.
+  // The lit circle follows the open function: the drawer's tab while the
+  // drawer is out, duplicates while their drawer is out, nothing when both
+  // are shut — and never two circles at once.
   const map = { index: "rail-index", privacy: "rail-privacy",
-                encryption: "rail-seal", search: "rail-search", keys: "rail-keys" };
-  const lit = map[state.drawerTab];
-  ["rail-index", "rail-privacy", "rail-seal", "rail-search", "rail-keys"].forEach((id) => {
+                encryption: "rail-seal", search: "rail-search", keys: "rail-keys",
+                appearance: "rail-appearance" };
+  const lit = $("panel").classList.contains("open") ? map[state.drawerTab] : null;
+  ["rail-index", "rail-privacy", "rail-seal", "rail-search", "rail-keys",
+   "rail-appearance"].forEach((id) => {
     const button = $(id);
     if (button) button.classList.toggle("active", button.id === lit);
   });
+  const dups = $("rail-dups");
+  if (dups) dups.classList.toggle("active", $("dups-drawer").classList.contains("open"));
 }
 
 function setPanel(open) {
@@ -2128,7 +2354,6 @@ function setSettings(open) {
     renderAbout();
     paintLang();
     loadMeta().then(paintFilters);
-    renderWalls();
     setSettingsTab(document.querySelector("#settings-tabs .settings-tab.active")?.dataset.tab || "general");
     // Focus the card, not the close button: a ring on "close" is the first
     // thing the eye lands on, and it is not what the dialog is about.
@@ -2346,6 +2571,7 @@ document.addEventListener("click", async (event) => {
     if (card) {
       if (event.ctrlKey || event.metaKey) { togglePick(card.dataset.file); return; }
       state.selected = Number(card.dataset.index);
+      state.lastEnterHit = -1;
       paintSelection();
     }
     return;
@@ -2874,6 +3100,53 @@ $("wall-editor").addEventListener("click", (event) => {
 $("wall-editor-reset").addEventListener("click", resetWallFrame);
 $("wall-zoom").addEventListener("input", () => setWallZoom(Number($("wall-zoom").value)));
 
+/* --------------------------------------------------- look (appearance) UI */
+
+$("look-dim").addEventListener("input", () => {
+  const percent = Number($("look-dim").value);
+  $("look-dim-val").textContent = `${percent}%`;
+  setLook({ dim: percent / 100 });
+});
+$("look-blur").addEventListener("input", () => {
+  const px = Number($("look-blur").value);
+  $("look-blur-val").textContent = `${px}px`;
+  setLook({ blur: px });
+});
+$("look-panel").addEventListener("input", () => {
+  const percent = Number($("look-panel").value);
+  $("look-panel-val").textContent = `${percent}%`;
+  setLook({ panelAlpha: percent / 100 });
+});
+$("look-card").addEventListener("input", () => {
+  const percent = Number($("look-card").value);
+  $("look-card-val").textContent = `${percent}%`;
+  setLook({ cardAlpha: percent / 100 });
+});
+$("look-radius").addEventListener("input", () => {
+  const px = Number($("look-radius").value);
+  $("look-radius-val").textContent = `${px}px`;
+  setLook({ radius: px });
+});
+/* Touching a tint slider takes the palette away from the wallpaper: the
+   checkbox unchecks itself, because "custom" is what the gesture means. */
+$("tint-hue").addEventListener("input", () => {
+  const hue = Number($("tint-hue").value);
+  $("tint-hue-val").textContent = `${hue}°`;
+  setLook({ tintAuto: false, hue });
+});
+$("tint-sat").addEventListener("input", () => {
+  const sat = Number($("tint-sat").value);
+  $("tint-sat-val").textContent = `${sat}%`;
+  setLook({ tintAuto: false, sat });
+});
+$("tint-auto").addEventListener("change", () => {
+  setLook({ tintAuto: $("tint-auto").checked });
+});
+$("look-reset").addEventListener("click", () => {
+  // The wallpaper stays as chosen: reset speaks for the glass, not the photo.
+  setLook({ ...DEFAULT_LOOK });
+});
+
 /* Drag-to-pan: the picture follows the pointer, clamped so it always covers the
    stage. Pointer capture keeps the drag alive when the pointer leaves the
    preview, which is where a mouse-based crop usually falls apart. */
@@ -2935,6 +3208,7 @@ function setDups(open) {
   $("dups-drawer").classList.toggle("open", open);
   $("dups-drawer").setAttribute("aria-hidden", String(!open));
   $("scrim").classList.toggle("show", open);
+  updateRailActive();
   if (!open && dupStream) {
     dupStream.abort();
     dupStream = null;
@@ -3316,8 +3590,8 @@ $("preview").addEventListener("click", (event) => {
 
 /* The rail: each circular button opens its own function. Index, privacy and
    encryption slide the drawer and scroll to their section; duplicates opens
-   its own drawer; search and hotkeys live in the drawer since the settings
-   modal gave them up. */
+   its own drawer; search, hotkeys and appearance live in the drawer since
+   the settings modal gave them up. */
 function setDrawerTab(name) {
   state.drawerTab = name;
   setPanel(true);
@@ -3328,7 +3602,7 @@ function setDrawerTab(name) {
     pane.classList.toggle("active", pane.dataset.drawerPane === name);
   });
   const titles = { index: "rail.index", privacy: "rail.privacy", encryption: "rail.encryption",
-                   search: "rail.searchTitle", keys: "hotkeys.title" };
+                   search: "rail.searchTitle", keys: "hotkeys.title", appearance: "settings.appearance" };
   $("drawer-title").setAttribute("data-i18n", titles[name] || "rail.index");
   applyStaticText();
   if (name === "search") {
@@ -3336,21 +3610,32 @@ function setDrawerTab(name) {
     loadTypes(true).then(() => { renderTypes(); renderTypeTabs(); });
   }
   if (name === "keys") loadHotkeys().then(renderHotkeys);
+  if (name === "appearance") { renderWalls(); renderLook(); }
+}
+
+/* Clicking the circle whose function is already open slides that drawer
+   away: the same button opens and closes, like a dock icon. A double click
+   lands as two toggles, so the drawer answers each press instead of
+   ignoring the second one. */
+function toggleDrawerTab(name) {
+  if ($("panel").classList.contains("open") && state.drawerTab === name) {
+    setPanel(false);
+    if (typesTimer) saveTypes();
+  } else {
+    setDrawerTab(name);
+  }
 }
 
 $("rail-dups").addEventListener("click", () => {
-  ["rail-index", "rail-privacy", "rail-seal", "rail-search", "rail-keys"].forEach((id) => {
-    const button = $(id);
-    if (button) button.classList.remove("active");
-  });
-  $("rail-dups").classList.add("active");
-  setDups(true);
+  if ($("dups-drawer").classList.contains("open")) setDups(false);
+  else setDups(true);
 });
-$("rail-index").addEventListener("click", () => setDrawerTab("index"));
-$("rail-privacy").addEventListener("click", () => setDrawerTab("privacy"));
-$("rail-seal").addEventListener("click", () => setDrawerTab("encryption"));
-$("rail-search").addEventListener("click", () => setDrawerTab("search"));
-$("rail-keys").addEventListener("click", () => setDrawerTab("keys"));
+$("rail-index").addEventListener("click", () => toggleDrawerTab("index"));
+$("rail-privacy").addEventListener("click", () => toggleDrawerTab("privacy"));
+$("rail-seal").addEventListener("click", () => toggleDrawerTab("encryption"));
+$("rail-search").addEventListener("click", () => toggleDrawerTab("search"));
+$("rail-keys").addEventListener("click", () => toggleDrawerTab("keys"));
+$("rail-appearance").addEventListener("click", () => toggleDrawerTab("appearance"));
 $("drawer-tabs").addEventListener("click", (event) => {
   const tab = event.target.closest("[data-drawer-tab]");
   if (tab) setDrawerTab(tab.dataset.drawerTab);
@@ -3682,17 +3967,6 @@ document.addEventListener("keydown", (event) => {
     if (editor.open) { closeWallEditor(); return; }
     if ($("preview").classList.contains("open")) { $("preview").classList.remove("open"); return; }
     if ($("settings").classList.contains("open")) { setSettings(false); return; }
-  // Double Enter on the same result = open containing folder
-  if (state.selected >= 0 && state.lastEnterHit === state.selected) {
-    const hit = state.hits[state.selected];
-    if (hit) {
-      const folder = hit.path.replace(/[^\\]+$/, "");
-      window.open(`file:///${folder.replace(/\\/g, "/")}`);
-      state.lastEnterHit = -1;
-      return;
-    }
-  }
-  if (state.selected >= 0) state.lastEnterHit = state.selected;
     if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }
     if ($("panel").classList.contains("open")) { setPanel(false); return; }
     if ($("dups-drawer").classList.contains("open")) { setDups(false); return; }
@@ -3716,6 +3990,24 @@ document.addEventListener("keydown", (event) => {
     || $("dups-drawer").classList.contains("open");
   if (overlay && ["preview", "open", "reveal", "next", "prev", "select"].includes(action)) {
     return;
+  }
+
+  // Double Enter on the same result = open the containing folder. The first
+  // Enter opens the file through the "open" hotkey; the second one on the
+  // still-selected row aims one level up. Any other key resets the pairing.
+  if (action === "open" && state.selected >= 0) {
+    if (state.lastEnterHit === state.selected) {
+      const hit = state.hits[state.selected];
+      state.lastEnterHit = -1;
+      if (hit) {
+        const folder = hit.path.replace(/[^\\]+$/, "");
+        window.open(`file:///${folder.replace(/\\/g, "/")}`);
+        event.preventDefault();
+        return;
+      }
+    } else {
+      state.lastEnterHit = state.selected;
+    }
   }
 
   if (runHotkey(action)) event.preventDefault();
@@ -4234,8 +4526,10 @@ document.addEventListener("click", (event) => {
 }, true);
 
 applyStaticText();
+loadLook();
 loadTheme();
 renderWalls();
+renderLook();
 paintLang();
 paintSince();
 renderIdle();

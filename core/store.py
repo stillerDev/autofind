@@ -225,6 +225,7 @@ IMAGE_COLUMNS = {
     "size": "INTEGER",
     "mtime": "REAL",
     "ocr_text": "TEXT",
+    "ocr_boxes": "TEXT",
     "ocr_engine": "TEXT",
     # 64-bit dHash, written at index time: screenshot bursts are collapsed by
     # comparing it against neighbours in the same folder.
@@ -365,7 +366,7 @@ def _regexp(pattern: str, value: str | None) -> bool:
         return False
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Contentless FTS: `content=''` keeps postings only — no copy of the corpus in
 # the index. `contentless_delete=1` (SQLite 3.43+) makes `DELETE FROM` work,
@@ -473,6 +474,8 @@ def _migrate_connection(conn: sqlite3.Connection) -> None:
         _quantize_vector_rows(conn)
     if version < 9:
         _migrate_v9(conn)
+    if version < 10:
+        _migrate_v10(conn)
     _ensure_fts(conn)
     if version < 9:
         # The dropped tiers (778 MB of trigram, 17 MB of CJK, the chunk text
@@ -892,6 +895,37 @@ def _repack_texts(conn: sqlite3.Connection) -> None:
         updates,
     )
     conn.commit()
+
+
+def _migrate_v10(conn: sqlite3.Connection) -> None:
+    """Schema v10: finish content-addressing the shared texts.
+
+    v9 already stores a document's text once per content hash; what was
+    missing was the bookkeeping around it. Two one-time steps:
+
+    * the refcount index on `files.text_hash` (the column arrives with the
+      v9 migration, so the index belongs here, not in SCHEMA), so dropping
+      a file can ask "who else still holds this text?" in one seek instead
+      of a scan;
+    * a sweep of orphaned `file_texts` rows — texts no file references
+      anymore, left behind by deletes from before the refcount check
+      existed. They were invisible in every count but still on disk.
+    """
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_text_hash ON files(text_hash)")
+    try:
+        removed = conn.execute(
+            "DELETE FROM file_texts WHERE hash NOT IN "
+            "(SELECT text_hash FROM files WHERE text_hash IS NOT NULL)"
+        ).rowcount
+    except sqlite3.Error:
+        removed = 0
+    if removed and removed > 0:
+        # The freed pages only leave the file on a VACUUM; this runs once.
+        try:
+            conn.commit()
+            conn.execute("VACUUM")
+        except sqlite3.Error:
+            pass
 
 
 def _migrate_v9(conn: sqlite3.Connection) -> None:
@@ -1498,16 +1532,17 @@ class Store:
         ocr_engine: str | None,
         vector: np.ndarray | None,
         phash: int = 0,
+        ocr_boxes: str | None = None,
     ) -> int:
         self.conn.execute(
             "INSERT INTO images(path, file_id, sha256, width, height, size, mtime, thumb, ocr_text, "
-            "ocr_engine, phash, indexed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ocr_boxes, ocr_engine, phash, indexed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(path) DO UPDATE SET file_id=excluded.file_id, sha256=excluded.sha256, "
             "width=excluded.width, height=excluded.height, size=excluded.size, mtime=excluded.mtime, "
             "thumb=excluded.thumb, ocr_text=excluded.ocr_text, ocr_engine=excluded.ocr_engine, "
-            "phash=excluded.phash, indexed_at=excluded.indexed_at",
+            "ocr_boxes=excluded.ocr_boxes, phash=excluded.phash, indexed_at=excluded.indexed_at",
             (path, file_id, sha256, width, height, size, mtime,
-             *self._seal_pair(thumb, ocr_text), ocr_engine, int(phash), time.time()),
+             *self._seal_pair(thumb, ocr_text), ocr_boxes, ocr_engine, int(phash), time.time()),
         )
         row = self.conn.execute("SELECT id FROM images WHERE path = ?", (path,)).fetchone()
         image_id = int(row["id"])
@@ -2568,12 +2603,13 @@ class Store:
         )
         return len(symbols)
 
-    def find_symbols(self, name: str, limit: int = 40) -> list[sqlite3.Row]:
+    def find_symbols(self, name: str, limit: int = 40, offset: int = 0) -> list[sqlite3.Row]:
         """Exact name first, then prefix, then substring — one query, one order.
 
         A symbol search is almost always a name you half-remember, so the
         ordering has to put `parse_query` above `_parse_query_legacy` above
-        everything that merely contains the letters.
+        everything that merely contains the letters. `offset` pages through
+        that fixed order for MCP clients that show one page at a time.
         """
         needle = name.strip().lower()
         if not needle:
@@ -2589,8 +2625,8 @@ class Store:
                 "  WHEN s.lowered = ? THEN 0 "
                 "  WHEN s.lowered LIKE ? THEN 1 "
                 "  ELSE 2 END, length(s.name), f.path, s.line "
-                "LIMIT ?",
-                (like, needle, f"{needle}%", limit),
+                "LIMIT ? OFFSET ?",
+                (like, needle, f"{needle}%", limit, max(0, int(offset))),
             ).fetchall()
         except sqlite3.OperationalError as exc:
             _reraises_unless_missing(exc)
