@@ -1000,7 +1000,8 @@ class Handler(BaseHTTPRequestHandler):
                 s.save_search_query(text)
                 s.close()
             except Exception:
-                pass        result = self._run_search(query)
+                pass
+        result = self._run_search(query)
         text = result["text"]
         if not text:
             self._json({"query": "", "ms": 0, "hits": [], "images": []})
