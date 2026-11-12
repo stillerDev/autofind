@@ -1464,6 +1464,19 @@ const I18N = {
     "unit.chunks.one": "{n} chunk",
     "unit.chunks.few": "{n} chunks",
     "unit.chunks.many": "{n} chunks",
+    "look.blur": "模糊",
+    "look.cardOpacity": "卡片透明度",
+    "look.dim": "背景亮度",
+    "look.hue": "色调",
+    "look.panelOpacity": "面板透明度",
+    "look.radius": "圆角",
+    "look.reset": "重置",
+    "look.sat": "饱和度",
+    "look.surfacesTitle": "外观",
+    "look.tintAuto": "自动",
+    "look.tintNote": "从壁纸照片派生的颜色。",
+    "look.tintTitle": "色彩",
+
   },
 };
 
