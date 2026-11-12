@@ -1077,6 +1077,40 @@ class Store:
                 "Reindex into a fresh database or pass --db."
             )
 
+    def self_test(self) -> dict:
+        """Integrity check: counts, orphans, sealed state."""
+        report = {"ok": True, "issues": []}
+        try:
+            for name, sql in (
+                ("files", "SELECT COUNT(*) FROM files"),
+                ("chunks", "SELECT COUNT(*) FROM chunks"),
+                ("texts", "SELECT COUNT(*) FROM file_texts"),
+                ("images", "SELECT COUNT(*) FROM images"),
+            ):
+                report[name] = int(self.conn.execute(sql).fetchone()[0])
+            orphans = self.conn.execute(
+                "SELECT COUNT(*) FROM chunks c LEFT JOIN files f ON f.id = c.file_id "
+                "WHERE f.id IS NULL"
+            ).fetchone()[0]
+            if orphans:
+                report["issues"].append(f"{orphans} orphan chunks")
+            orphan_imgs = self.conn.execute(
+                "SELECT COUNT(*) FROM images i LEFT JOIN files f ON f.id = i.file_id "
+                "WHERE f.id IS NULL"
+            ).fetchone()[0]
+            if orphan_imgs:
+                report["issues"].append(f"{orphan_imgs} orphan images")
+            empty = self.conn.execute(
+                "SELECT COUNT(*) FROM file_texts WHERE data IS NULL OR data = ''"
+            ).fetchone()[0]
+            if empty:
+                report["issues"].append(f"{empty} empty text rows")
+            report["ok"] = len(report["issues"]) == 0
+        except Exception as exc:
+            report["ok"] = False
+            report["issues"].append(str(exc))
+        return report
+
     @property
     def sealed(self) -> bool:
         """Paranoid mode: content blobs are sealed at rest."""

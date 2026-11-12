@@ -599,6 +599,10 @@ class Handler(BaseHTTPRequestHandler):
             self._privacy()
         elif route == "/api/seal":
             self._seal_status()
+        elif route == "/api/self-test":
+            self._self_test()
+        elif route == "/api/export":
+            self._export_results(query)
         elif route == "/api/personal":
             self._personal()
         elif route == "/api/background":
@@ -1619,6 +1623,53 @@ class Handler(BaseHTTPRequestHandler):
                 ]
             }
         )
+
+    def _self_test(self) -> None:
+        store = self._store()
+        try:
+            report = store.self_test()
+        finally:
+            store.close()
+        self._json(report)
+
+    def _export_results(self, query: dict) -> None:
+        """Export search results as CSV or JSON."""
+        fmt = (query.get("format") or ["json"])[0]
+        text = (query.get("q") or [""])[0].strip()
+        limit = int((query.get("limit") or ["100"])[0])
+        if not text:
+            self._error("q required")
+            return
+        from .search import search_page
+        from .query import understand
+        emb = get_embedder("auto", self.config.model_dir)
+        store = self._store()
+        try:
+            page = search_page(store, emb, text, limit=limit,
+                             parsed=understand(text), usage=store.usage_map())
+        finally:
+            store.close()
+        if fmt == "csv":
+            import csv as _csv
+            import io as _io
+            buf = _io.StringIO()
+            writer = _csv.writer(buf)
+            writer.writerow(["path", "kind", "score", "snippet"])
+            for hit in page.hits:
+                writer.writerow([hit.path, hit.kind, hit.score, hit.snippet or ""])
+            body = buf.getvalue()
+            ctype = "text/csv"
+        else:
+            body = json.dumps({
+                "query": text,
+                "results": [{"path": h.path, "kind": h.kind, "score": h.score} for h in page.hits]
+            }, ensure_ascii=False, indent=2)
+            ctype = "application/json"
+        self.send_response(200)
+        self.send_header("Content-Type", f"{ctype}; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="export.{fmt}"')
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
 
     def _seal_status(self) -> None:
         """Paranoid-mode state plus live progress of a running (un)seal."""

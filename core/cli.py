@@ -120,6 +120,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     seal_cmd.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
 
+    export_cmd = sub.add_parser("export", help="export search results as CSV or JSON")
+    export_cmd.add_argument("query", help="search query")
+    export_cmd.add_argument("--format", default="csv", choices=["csv", "json"])
+    export_cmd.add_argument("--limit", type=int, default=100)
+    export_cmd.add_argument("--output", type=Path, default=None)
+
+    uninstall_cmd = sub.add_parser("uninstall", help="remove index, vault key, autostart")
+    uninstall_cmd.add_argument("--confirm", action="store_true")
+
     update_cmd = sub.add_parser("update", help="check GitHub for a newer release and install it")
     update_cmd.add_argument("--check", action="store_true",
                             help="only check for an update, do not install")
@@ -1111,3 +1120,90 @@ def _cmd_seal(args, config: IndexConfig, db_path: Path) -> int:
 
     print(f"unknown action {action!r}", file=sys.stderr)
     return 2
+
+
+def _cmd_export(args, config: IndexConfig, db_path: Path) -> int:
+    from .search import search_page
+    from .query import understand
+    from .embed import get_embedder
+    from .store import Store
+    import csv as _csv
+    import io as _io
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    emb = get_embedder("auto", config.model_dir)
+    store = Store(db_path, emb.name, emb.dim, readonly=True)
+    try:
+        page = search_page(store, emb, args.query, limit=args.limit,
+                          parsed=understand(args.query), usage=store.usage_map())
+    finally:
+        store.close()
+
+    fmt = args.format
+    if fmt == "csv":
+        buf = _io.StringIO()
+        writer = _csv.writer(buf)
+        writer.writerow(["path", "kind", "score", "snippet"])
+        for hit in page.hits:
+            writer.writerow([hit.path, hit.kind, hit.score, hit.snippet or ""])
+        body = buf.getvalue()
+    else:
+        body = json.dumps({
+            "query": args.query,
+            "results": [{"path": h.path, "kind": h.kind, "score": h.score} for h in page.hits]
+        }, ensure_ascii=False, indent=2)
+
+    if args.output:
+        Path(args.output).write_text(body, encoding="utf-8")
+        print(f"exported {len(page.hits)} results to {args.output}")
+    else:
+        print(body)
+    return 0
+
+
+def _cmd_uninstall(args, config: IndexConfig, db_path: Path) -> int:
+    """Clean uninstaller: removes index, vault key, autostart, shortcuts."""
+    items = [
+        ("index database", db_path),
+        ("vault key", config.home / "vault.key"),
+        ("BM25 sidecar", Path(str(db_path) + ".bm25seal")),
+        ("nameidx sidecar", Path(str(db_path) + ".nameidx")),
+        ("nameidx binary", Path(str(db_path) + ".nameidx.bin")),
+    ]
+    if args.confirm:
+        removed = 0
+        for label, path in items:
+            if path.exists():
+                path.unlink()
+                print(f"  removed {label}: {path}")
+                removed += 1
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                 r"Software\Microsoft\Windows\CurrentVersion\Run",
+                                 0, winreg.KEY_SET_VALUE)
+            winreg.DeleteValue(key, "AutoFind")
+            winreg.CloseKey(key)
+            print("  removed autostart entry")
+            removed += 1
+        except Exception:
+            pass
+        desktop = Path.home() / "Desktop"
+        for sc in desktop.glob("AutoFind*"):
+            sc.unlink(missing_ok=True)
+            removed += 1
+        start_menu = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        for sc in start_menu.glob("AutoFind*"):
+            sc.unlink(missing_ok=True)
+            removed += 1
+        print(f"uninstall complete: {removed} items removed")
+        return 0
+    else:
+        print("Would remove:")
+        for label, path in items:
+            status = "exists" if path.exists() else "not found"
+            print(f"  {label}: {path} ({status})")
+        print("\nRun with --confirm to actually delete.")
+        return 0
