@@ -23,7 +23,7 @@
   --font-display: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
   --panel-alpha: 0.92;
   --card-alpha: 0.92;
-  --blur: 0px;
+  --blur: 11px;
   --wall-dim: 0;
   --space-xs: 4px;
   --space-sm: 8px;
@@ -586,8 +586,7 @@ body {
   inset: 0;
   z-index: -1;
   background-color: #0a0b0d;
-  /* wallpaper disabled for minimalist mode */
-  /* background-image: var(--wall); */
+  background-image: var(--wall);
   background-repeat: no-repeat;
   background-position: var(--wall-pos, center);
   background-size: cover;
@@ -2852,8 +2851,7 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   position: absolute;
   inset: 0;
   background-color: #0a0b0d;
-  /* wallpaper disabled for minimalist mode */
-  /* background-image: var(--wall); */
+  background-image: var(--wall);
   background-repeat: no-repeat;
   background-position: var(--wall-pos, center);
   background-size: cover;
