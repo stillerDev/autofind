@@ -3,23 +3,30 @@
      own palette instead of fighting the old one. The defaults are the blue-grey
      the forest photo actually has; `applyTheme` in app.js moves `--hue` and
      `--sat` and the rest follows. */
-  --hue: 205;
-  --sat: 8%;
-  --bg: hsl(var(--hue) var(--sat) 6%);
-  --panel: hsl(var(--hue) var(--sat) 9%);
-  --panel-2: hsl(var(--hue) var(--sat) 12%);
-  --border: hsl(var(--hue) var(--sat) 16%);
-  --border-soft: hsl(var(--hue) var(--sat) 12%);
-  --text: hsl(var(--hue) 12% 92%);
-  --muted: hsl(var(--hue) 6% 62%);
-  --faint: hsl(var(--hue) 6% 45%);
-  /* The accent is a light grey: the only orange in the old design was the
-     button, the glowing dot and the highlight, and all three read as "warning"
-     against a foggy forest. */
-  --accent: hsl(var(--hue) 14% 91%);
-  --accent-soft: hsl(var(--hue) 20% 90% / 0.16);
-  --teal: #3fbfa0;
-  --radius: 12px;
+  /* Linear design: dark, precise, information-dense. */
+  --hue: 222;
+  --sat: 0%;
+  --bg: #0d0d0d;
+  --panel: #161616;
+  --panel-2: #1a1a1a;
+  --border: #1e1e1e;
+  --border-soft: #1a1a1a;
+  --text: #d0d0d0;
+  --muted: #888888;
+  --faint: #555555;
+  --accent: #7aa2f7;
+  --accent-soft: rgba(122, 162, 247, 0.12);
+  --teal: #7aa2f7;
+  --radius: 6px;
+  --font: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  /* Appearance sliders (the drawer's Appearance tab): how translucent the
+     glass surfaces are, how hard the glass blurs, how dark the wallpaper is
+     dimmed. Defaults are exactly what the hard-coded values used to be. */
+  --panel-alpha: 0.72;
+  --card-alpha: 0.82;
+  --blur: 11px;
+  --wall-dim: 0;
   /* The wallpaper: a url() for a photo or a gradient for a preset. */
   --wall: url("/fon.jpg");
 }
@@ -547,6 +554,7 @@ body.in-app .onboard-controls {
 }
 
 html, body {
+  font-family: var(--font);
   margin: 0;
   padding: 0;
   color: var(--text);
@@ -577,6 +585,9 @@ body {
   background-size: cover;
   transform: scale(var(--wall-scale, 1));
   transform-origin: var(--wall-pos, center);
+  /* The Appearance tab's dim slider: brightness on the layer itself, so the
+     veil below keeps its proven gradient and the photo just gets darker. */
+  filter: brightness(calc(1 - var(--wall-dim, 0)));
 }
 
 /* A single veil over the photo for the whole page. Without it the bright fog
@@ -1339,10 +1350,10 @@ main {
   align-items: start;
   gap: 14px;
   padding: 14px 16px;
-  background: rgba(21, 23, 26, 0.82);
+  background: rgba(21, 23, 26, var(--card-alpha, 0.82));
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: var(--radius);
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(var(--blur, 12px));
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 
@@ -2051,8 +2062,8 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   border-radius: var(--radius);
   padding: 9px 12px 10px;
   margin-bottom: 7px;
-  background: rgba(22, 24, 27, 0.72);
-  backdrop-filter: blur(10px);
+  background: rgba(22, 24, 27, var(--panel-alpha, 0.72));
+  backdrop-filter: blur(var(--blur, 11px));
 }
 
 .panel h3 {
@@ -2722,6 +2733,40 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 10px;
+}
+
+/* The Appearance tab's slider rows: label, range, live value. Kept narrow and
+   quiet so seven controls read as one instrument panel, not a form. */
+.look-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.look-row > span:first-child {
+  min-width: 118px;
+}
+
+.look-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+  cursor: ew-resize;
+}
+
+.look-row b {
+  min-width: 46px;
+  text-align: right;
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.look-row input[type="range"]:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .wall-tile {
