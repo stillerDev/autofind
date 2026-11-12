@@ -42,7 +42,8 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 # the match. `.7z` needs py7zr and stays out; Outlook `.msg` is mail here and
 # is read through the optional `extract-msg` package (see core/extract/msgoutlook).
 ARCHIVE_EXT = {".zip", ".tar", ".tgz", ".tbz2", ".txz", ".gz", ".bz2", ".xz"}
-EMAIL_EXT = {".eml", ".mbox", ".msg"}
+EMAIL_EXT = {".eml", ".mbox"}
+MSG_EXT = {".msg"}
 
 KIND_BY_EXT = {
     **{ext: "text" for ext in TEXT_EXT},
