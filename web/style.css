@@ -21,9 +21,9 @@
   --radius-lg: 12px;
   --font: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
   --font-display: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
-  --panel-alpha: 0.92;
-  --card-alpha: 0.92;
-  --blur: 11px;
+  --panel-alpha: 1;
+  --card-alpha: 1;
+  --blur: 0px;
   --wall-dim: 0;
   --space-xs: 4px;
   --space-sm: 8px;
@@ -707,7 +707,6 @@ body.in-app .win-controls { display: flex; align-items: center; }
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 10px;
   background: rgba(9, 11, 13, 0.42);
-  backdrop-filter: blur(10px) saturate(120%);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
@@ -768,7 +767,6 @@ body.in-app .win-controls { display: flex; align-items: center; }
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 999px;
   background: rgba(9, 11, 13, 0.42);
-  backdrop-filter: blur(10px) saturate(120%);
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
@@ -791,7 +789,6 @@ body.in-app .win-controls { display: flex; align-items: center; }
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 10px;
   background: rgba(9, 11, 13, 0.42);
-  backdrop-filter: blur(10px) saturate(120%);
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
@@ -937,7 +934,6 @@ body.in-app .win-controls { display: flex; align-items: center; }
   border-radius: 999px;
   cursor: pointer;
   font-size: 12.5px;
-  backdrop-filter: blur(8px);
   transition: all 0.14s ease;
 }
 
@@ -965,7 +961,6 @@ body.in-app .win-controls { display: flex; align-items: center; }
   padding: 10px 24px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(10, 11, 13, 0.5);
-  backdrop-filter: blur(14px) saturate(120%);
   /* Positioned so the calendar, which hangs below this bar, paints over the
      results instead of under them: `main` comes later in the document and
      would otherwise cover it. */
@@ -1187,7 +1182,6 @@ body.in-app .win-controls { display: flex; align-items: center; }
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 16px;
   background: rgba(28, 31, 35, 0.97);
-  backdrop-filter: blur(20px) saturate(130%);
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.55);
 }
 
@@ -1361,7 +1355,6 @@ main {
   background: rgba(21, 23, 26, var(--card-alpha, 0.82));
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: var(--radius);
-  backdrop-filter: blur(var(--blur, 12px));
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 
@@ -1630,7 +1623,6 @@ main {
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 14px;
   background: rgba(14, 16, 19, 0.97);
-  backdrop-filter: blur(14px) saturate(120%);
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
 }
 
@@ -1935,7 +1927,6 @@ main {
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(13, 15, 17, 0.86);
-  backdrop-filter: blur(18px) saturate(130%);
   color: inherit;
   display: grid;
   place-items: center;
@@ -1966,8 +1957,7 @@ main {
   padding: 14px 16px 16px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 18px;
-  background: rgba(13, 15, 17, 0.92);
-  backdrop-filter: blur(22px) saturate(130%);
+  background: #0d0f11;
   box-shadow: 18px 0 64px rgba(0, 0, 0, 0.5);
   overflow-y: auto;
   /* Hide to the left, past the rail: the drawer and the rail read as one
@@ -2071,7 +2061,6 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   padding: 9px 12px 10px;
   margin-bottom: 7px;
   background: rgba(22, 24, 27, var(--panel-alpha, 0.72));
-  backdrop-filter: blur(var(--blur, 11px));
 }
 
 .panel h3 {
@@ -2340,7 +2329,6 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 18px;
   background: rgba(14, 16, 19, 0.6);
-  backdrop-filter: blur(16px) saturate(120%);
 }
 
 .empty h2 { font-size: 17px; font-weight: 500; color: #e4e6e9; margin: 0 0 6px; }
@@ -2358,7 +2346,6 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   padding: 0;
   border: 0;
   background: none;
-  backdrop-filter: none;
 }
 
 .recent { width: 100%; }
@@ -2398,7 +2385,6 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 14px;
   background: rgba(14, 16, 19, 0.6);
-  backdrop-filter: blur(16px) saturate(120%);
 }
 
 .pin-row {
@@ -3610,7 +3596,6 @@ body.in-app .side-foot .only-app { display: inline-flex; }
   border-radius: 999px;
   background: rgba(22, 24, 28, 0.96);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(16px);
   transform: translateX(-50%);
 }
 
