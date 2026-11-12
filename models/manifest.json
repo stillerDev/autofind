@@ -4,36 +4,54 @@
   "models": {
     "e5-small": {
       "role": "text embeddings",
-      "files": ["model.onnx", "tokenizer.json"],
+      "files": [
+        "model.onnx",
+        "tokenizer.json"
+      ],
       "dim": 384,
       "quantization": "int8",
       "size_mb": 120,
       "license": "MIT",
       "source": "intfloat/multilingual-e5-small",
       "sha256": null,
-      "prefixes": { "query": "query: ", "passage": "passage: " }
+      "prefixes": {
+        "query": "query: ",
+        "passage": "passage: "
+      }
     },
     "clip-vit-b32": {
       "role": "image and text-to-image embeddings",
-      "files": ["visual.onnx", "textual.onnx", "tokenizer.json"],
+      "files": [
+        "visual.onnx",
+        "textual.onnx",
+        "tokenizer.json",
+        "textual_multi.onnx",
+        "tokenizer_multi.json"
+      ],
       "dim": 512,
       "quantization": "int8",
-      "size_mb": 45,
+      "size_mb": 280,
       "license": "MIT",
-      "source": "openai/clip-vit-base-patch32",
+      "source": "openai/clip-vit-base-patch32 + sentence-transformers/clip-ViT-B-32-multilingual-v1",
       "sha256": null,
-      "note": "English prompts only; Russian queries go through Argos before the text encoder"
+      "note": "Multilingual text tower preferred: ru/zh queries map directly into the ViT-B/32 image space, no translation hop."
     },
     "tesseract-rus-eng": {
       "role": "OCR traineddata",
-      "files": ["rus.traineddata", "eng.traineddata"],
+      "files": [
+        "rus.traineddata",
+        "eng.traineddata"
+      ],
       "size_mb": 22,
       "license": "Apache-2.0",
       "source": "tessdata_best"
     },
     "argos-ru-en": {
       "role": "offline query translation ru -> en",
-      "files": ["model/", "metadata.json"],
+      "files": [
+        "model/",
+        "metadata.json"
+      ],
       "size_mb": 100,
       "license": "MIT (engine) / CC-BY-4.0 (model)",
       "note": "largest single item in the bundle; the 150 MB installer target depends on this decision"

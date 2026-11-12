@@ -42,10 +42,22 @@ class ClipOnnx:
     def __init__(self, model_dir: str | Path) -> None:
         directory = Path(model_dir)
         visual = directory / "visual.onnx"
-        textual = directory / "textual.onnx"
         tokenizer = directory / "tokenizer.json"
-        if not (visual.exists() and textual.exists() and tokenizer.exists()):
+        # The image tower comes from English CLIP, but the text tower has two
+        # flavours: the original English one and a multilingual distilled one
+        # whose output lives in the same 512-d image space. The multilingual
+        # tower makes «найди скриншот с красным графиком» work natively, so it
+        # wins whenever it has been fetched (autofind clip).
+        textual = directory / "textual_multi.onnx"
+        text_tokenizer = directory / "tokenizer_multi.json"
+        if not (textual.exists() and text_tokenizer.exists()):
+            textual = directory / "textual.onnx"
+            text_tokenizer = tokenizer
+        if not (visual.exists() and textual.exists() and tokenizer.exists()
+                and text_tokenizer.exists()):
             raise FileNotFoundError(f"CLIP export not found in {directory}")
+        if textual.name == "textual_multi.onnx":
+            self.name = "clip-vit-b32-int8-multi"
         try:
             import onnxruntime as ort  # type: ignore
             from tokenizers import Tokenizer  # type: ignore
@@ -59,6 +71,9 @@ class ClipOnnx:
         self.tokenizer = Tokenizer.from_file(str(tokenizer))
         self.tokenizer.enable_truncation(max_length=77)
         self.tokenizer.enable_padding(length=77)
+        self.text_tokenizer = Tokenizer.from_file(str(text_tokenizer))
+        self.text_tokenizer.enable_truncation(max_length=77)
+        self.text_tokenizer.enable_padding(length=77)
 
     def encode_image(self, image: Image.Image) -> np.ndarray:
         array = np.asarray(
@@ -67,15 +82,42 @@ class ClipOnnx:
         mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
         std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
         tensor = ((array - mean) / std).transpose(2, 0, 1)[None, ...]
-        hidden = self.visual.run(None, {"pixel_values": tensor})[0]
-        return _normalise(hidden[0])
+        feed = {"pixel_values": tensor}
+        return _normalise(_embed_output(self.visual.run(None, self._accepted(self.visual, feed))))
 
     def encode_text(self, text: str) -> np.ndarray:
-        encoded = self.tokenizer.encode(text)
-        ids = np.array([encoded.ids], dtype=np.int64)
-        mask = np.array([encoded.attention_mask], dtype=np.int64)
-        hidden = self.textual.run(None, {"input_ids": ids, "attention_mask": mask})[0]
-        return _normalise(hidden[0])
+        encoded = self.text_tokenizer.encode(text)
+        feed = {
+            "input_ids": np.array([encoded.ids], dtype=np.int64),
+            "attention_mask": np.array([encoded.attention_mask], dtype=np.int64),
+        }
+        return _normalise(_embed_output(self.textual.run(None, self._accepted(self.textual, feed))))
+
+    @staticmethod
+    def _accepted(session, feed: dict) -> dict:
+        """Keep only the inputs this export actually declares.
+
+        Exporters disagree on whether attention_mask is wired up; asking a
+        session for an input it lacks aborts the run, so filter by signature.
+        """
+        declared = {item.name for item in session.get_inputs()}
+        return {name: value for name, value in feed.items() if name in declared}
+
+
+def _embed_output(outputs) -> np.ndarray:
+    """Pick the projected embedding out of a session's outputs.
+
+    Exporters disagree on output order and naming: some hand back the projected
+    (batch, dim) vector first, some the raw (batch, tokens, dim) states. Shape
+    is the only contract both honour, so pick the 2-D tensor whose last axis is
+    the projection width instead of trusting position.
+    """
+    for candidate in outputs:
+        array = np.asarray(candidate)
+        if array.ndim == 2 and array.shape[1] == CLIP_DIM:
+            return array[0]
+    raise RuntimeError(f"CLIP export produced no ({CLIP_DIM},) embedding: "
+                       + ", ".join(f"{a.shape}" for a in outputs))
 
 
 def _normalise(vector: np.ndarray) -> np.ndarray:
