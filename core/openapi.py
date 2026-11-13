@@ -12,7 +12,7 @@ anything.
 
 from __future__ import annotations
 
-from . import __version__
+from .__version__ import __version__
 
 SERVER_URL = "http://127.0.0.1:8765"  # default; the served doc is port-aware
 

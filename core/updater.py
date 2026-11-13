@@ -57,7 +57,7 @@ class UpdateError(RuntimeError):
 
 def current_version() -> str:
     try:
-        from . import __version__
+        from .__version__ import __version__
         return __version__
     except ImportError:
         try:

@@ -27,7 +27,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from . import __version__
+from .__version__ import __version__
 from .store import SCHEMA_VERSION
 from .vectors import hot_path, pack_path
 
@@ -175,7 +175,12 @@ def import_index(archive: str | Path, home: str | Path, force: bool = False) -> 
             )
         backup = home / "import-backup"
         backup.mkdir(exist_ok=True)
-        for existing in sidecar_paths(db_path) + [db_path]:
+        # -wal and -shm must move with the db: leaving them beside a fresh
+        # index.db lets SQLite apply a foreign WAL and corrupt the import.
+        stale = sidecar_paths(db_path) + [db_path,
+                                          Path(str(db_path) + "-wal"),
+                                          Path(str(db_path) + "-shm")]
+        for existing in stale:
             if existing.is_file():
                 existing.replace(backup / existing.name)
 

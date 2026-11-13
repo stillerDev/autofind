@@ -331,6 +331,8 @@ def _run_extraction(
                 _flush_batch()
     _flush_batch()
     done = done_before
+    processed: set[int] = set()  # job keys already stored, so a broken pool
+    # cannot reprocess them and report done > total
     try:
         for future in as_completed(futures):
             jobs = futures[future]
@@ -339,6 +341,7 @@ def _run_extraction(
                 prepared_batch = [prepared_batch]  # single-heavy-file future
             for (position, entry), prepared in zip(jobs, prepared_batch):
                 done += 1
+                processed.add(id(entry))
                 try:
                     mark = time.perf_counter()
                     # Each worker reports its own stopwatch per file: sha, extract,
@@ -361,7 +364,10 @@ def _run_extraction(
     except BrokenExecutor:
         stats.errors.append(("", "worker pool died; finishing sequentially"))
         pool.shutdown(cancel_futures=True)
-        remaining = [item for jobs in futures.values() for item in jobs]
+        remaining = [
+            item for jobs in futures.values() for item in jobs
+            if id(item[1]) not in processed
+        ]
         for position, entry in remaining:
             _store_one(position, entry, config, store, embedder, visual, stats, progress,
                        len_todo=len(todo), done_before=done_before, commit_every=commit_every)
@@ -455,8 +461,8 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
             entry.path, file_id, digest, prepared["width"], prepared["height"],
             entry.size, entry.mtime, prepared.get("thumb"),
             prepared.get("ocr_text") or None, prepared.get("engine"),
-            prepared.get("ocr_boxes"),
-            visual_vector, phash=prepared.get("phash"),
+            vector=visual_vector, phash=prepared.get("phash") or 0,
+            ocr_boxes=prepared.get("ocr_boxes"),
         )
         stats.images += 1
         status = "index-image"
@@ -614,6 +620,9 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
 
     ocr_text = ""
     engine_name = None
+    # Bound before the try: OcrUnavailable must not leave the dict-building
+    # code below reading an unassigned name.
+    ocr_boxes = None
     if config.ocr_enabled:
         mark = time.perf_counter()
         try:

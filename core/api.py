@@ -67,6 +67,7 @@ from .query import Range, understand
 from .nameindex import NAME_CACHE
 from .search import search_page, similar_images, visual_text_search
 from .store import Store, VectorCache
+from .__version__ import __version__ as _APP_VERSION
 from .watch import Watcher
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -164,8 +165,8 @@ class IndexJob:
             )
             self.result = stats.as_dict()
             LOG.write(
-                f"index finished in {stats.elapsed:.1f}s: "
-                f"{stats.added} added, {stats.updated} updated, {stats.removed} removed"
+                f"index finished in {stats.seconds:.1f}s: "
+                f"{stats.indexed} indexed, {stats.skipped} skipped, {stats.pruned} pruned"
             )
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
@@ -359,7 +360,11 @@ def _ram_bm25_for(db_path) -> bool:
     except sqlite3.Error:
         count = 0
     ok = 0 < count <= _RAM_BM25_LIMIT
-    _RAM_BM25_OK[str(db_path)] = ok
+    if count > 0:
+        # Only a non-empty verdict is cached: an empty index cached False
+        # would keep the in-RAM BM25 off forever after the first indexing,
+        # and a verdict cached on a tiny index would not track the limit.
+        _RAM_BM25_OK[str(db_path)] = ok
     return ok
 
 
@@ -445,7 +450,7 @@ def _raise_opened_window(
         def scan(hwnd, _):
             nonlocal fresh, named
             handle = int(hwnd)
-            if handle in before or not user32.IsWindowVisible(hwnd):
+            if not user32.IsWindowVisible(hwnd):
                 return True
             # Popups, tooltips and IME hosts are top-level enough to appear in
             # EnumWindows while a window is being built; only a root owner that
@@ -499,7 +504,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _host_ok(self) -> bool:
         host = (self.headers.get("Host") or "").split(":")[0]
-        return host in ALLOWED_HOSTS
+        if host not in ALLOWED_HOSTS:
+            return False
+        # A browser sends Origin on every cross-site request - including the
+        # text/plain form posts a hostile page can aim at these endpoints.
+        # Any Origin that is not this server means the request came from
+        # somewhere else, and CSRF is exactly that.
+        origin = self.headers.get("Origin")
+        if origin:
+            origin_host = urlparse(origin).hostname or ""
+            if origin_host not in ALLOWED_HOSTS:
+                return False
+        return True
 
     def _send(self, status: int, body: bytes, content_type: str = "application/json; charset=utf-8") -> None:
         self.send_response(status)
@@ -601,8 +617,6 @@ class Handler(BaseHTTPRequestHandler):
             self._seal_status()
         elif route == "/api/self-test":
             self._self_test()
-        elif route == "/api/export":
-            self._export_results(query)
         elif route == "/api/personal":
             self._personal()
         elif route == "/api/background":
@@ -1046,7 +1060,9 @@ class Handler(BaseHTTPRequestHandler):
         text = (query.get("q") or [""])[0].strip()
         if text and len(text) > 2:
             try:
-                s = self._store()
+                # recent searches are a write; on a read-only connection the
+                # table would silently stay empty forever
+                s = self._store(readonly=False)
                 s.save_search_query(text)
                 s.close()
             except Exception:
@@ -1121,7 +1137,7 @@ class Handler(BaseHTTPRequestHandler):
         from what the screen shows.
         """
         fmt = ((query.get("format") or ["csv"])[0] or "csv").lower()
-        if fmt not in ("csv", "json"):
+        if fmt not in ("csv", "json", "md"):
             fmt = "csv"
         result = self._run_search(query, limit=5000, visual=False)
         page = result["page"]
@@ -1218,7 +1234,7 @@ class Handler(BaseHTTPRequestHandler):
                 "watching": bool(WATCHER and WATCHER.state.running),
                 "db": str(self.db_path),
                 "default_roots": _default_roots(),
-                "version": "0.1.0",
+                "version": _APP_VERSION,
             }
         )
 
@@ -1598,7 +1614,7 @@ class Handler(BaseHTTPRequestHandler):
                 (int(image_id),)
             ).fetchone()
         finally:
-            pass
+            store.close()
         if not row or not row["ocr_boxes"]:
             self._json({"boxes": [], "width": 0, "height": 0})
             return
@@ -1686,45 +1702,6 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             store.close()
         self._json(report)
-
-    def _export_results(self, query: dict) -> None:
-        """Export search results as CSV or JSON."""
-        fmt = (query.get("format") or ["json"])[0]
-        text = (query.get("q") or [""])[0].strip()
-        limit = int((query.get("limit") or ["100"])[0])
-        if not text:
-            self._error("q required")
-            return
-        from .search import search_page
-        from .query import understand
-        emb = get_embedder("auto", self.config.model_dir)
-        store = self._store()
-        try:
-            page = search_page(store, emb, text, limit=limit,
-                             parsed=understand(text), usage=store.usage_map())
-        finally:
-            store.close()
-        if fmt == "csv":
-            import csv as _csv
-            import io as _io
-            buf = _io.StringIO()
-            writer = _csv.writer(buf)
-            writer.writerow(["path", "kind", "score", "snippet"])
-            for hit in page.hits:
-                writer.writerow([hit.path, hit.kind, hit.score, hit.snippet or ""])
-            body = buf.getvalue()
-            ctype = "text/csv"
-        else:
-            body = json.dumps({
-                "query": text,
-                "results": [{"path": h.path, "kind": h.kind, "score": h.score} for h in page.hits]
-            }, ensure_ascii=False, indent=2)
-            ctype = "application/json"
-        self.send_response(200)
-        self.send_header("Content-Type", f"{ctype}; charset=utf-8")
-        self.send_header("Content-Disposition", f'attachment; filename="export.{fmt}"')
-        self.end_headers()
-        self.wfile.write(body.encode("utf-8"))
 
     def _seal_status(self) -> None:
         """Paranoid-mode state plus live progress of a running (un)seal."""
@@ -1921,12 +1898,14 @@ class Handler(BaseHTTPRequestHandler):
         # Frecency is fed by real opens only, so "show in folder" must not count:
         # a file you reveal to delete it is not a file you care about.
         if not reveal:
-            store = self._store()
+            # record_open writes; a read-only connection would swallow the
+            # update and the frecency bonus would silently never move.
+            store = self._store(readonly=False)
             try:
                 store.record_open(file_id)
                 store.commit()
             except Exception:
-                pass  # a read-only index must not fail the open
+                pass  # a locked index must not fail the open
             finally:
                 store.close()
         self._json({"ok": True})
@@ -1934,7 +1913,7 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self, route: str) -> None:
         relative = "index.html" if route in ("/", "") else unquote(route.lstrip("/"))
         target = (WEB_DIR / relative).resolve()
-        if not str(target).startswith(str(WEB_DIR.resolve())) or not target.is_file():
+        if not target.is_relative_to(WEB_DIR.resolve()) or not target.is_file():
             self._error("not found", 404)
             return
         content_type, _ = mimetypes.guess_type(str(target))

@@ -292,7 +292,14 @@ class ParsedQuery:
             if not any(fnmatchcase(base, mask) for mask in self.masks):
                 return False
         for prefix in self.in_paths:
-            if not lowered.startswith(prefix.lower()):
+            prefix = prefix.lower().rstrip("\\/")
+            if not prefix:
+                continue
+            # The boundary matters: `in:"C:\Docs"` must not admit
+            # `C:\DocsOld\...`, so the next character must be a separator.
+            if not (lowered == prefix
+                    or lowered.startswith(prefix)
+                    and lowered[len(prefix)] in "\\/"):
                 return False
         for fragment in self.not_paths:
             if fragment.lower() in lowered:
@@ -495,7 +502,7 @@ def _apply_key(query: ParsedQuery, token: Token, now: float | None) -> None:
             query.chips.append(Chip("ext", word, literal, literal))
             return
 
-        if word in ("dir", "dirs", "folder", "folderа", "папка", "папки"):
+        if word in ("dir", "dirs", "folder", "folder", "папка", "папки"):
             query.hints.append(Hint("folders_not_indexed"))
             query.kinds.add("__dir__")
             return

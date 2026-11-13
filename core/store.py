@@ -1369,11 +1369,14 @@ class Store:
             "SELECT id FROM chunks WHERE file_id = ?", (file_id,)
         )]
         if old_ids:
-            if self._fts_delete:
+            # Sealed mode dropped the FTS tables entirely (their postings are
+            # plaintext); touching them here would raise "no such table" on
+            # every update of an already-indexed file.
+            if self._fts_delete and not self.sealed:
                 self.conn.executemany(
                     "DELETE FROM chunks_fts WHERE rowid = ?", [(i,) for i in old_ids]
                 )
-            else:
+            elif not self.sealed:
                 # Pre-3.43 SQLite: a contentless table can only unindex a row
                 # through the `'delete'` command, which wants the text back.
                 rows = self.conn.execute(
@@ -1803,7 +1806,13 @@ class Store:
                         if was_sealed:
                             self._write_sealed_bm25(index)
                     except Exception:
-                        pass  # the database went away mid-build; FTS5 stays the path
+                        # The database went away mid-build; FTS5 stays the
+                        # path. Clear the in-flight marker or this corpus
+                        # state never retries — the guard below compares
+                        # `building` against the key on every call.
+                        with _BM25_LOCK:
+                            if _BM25.get("building") == build_key:
+                                _BM25["building"] = None
 
                 threading.Thread(target=_build, daemon=True, name="af-bm25-build").start()
         return None
@@ -1935,9 +1944,28 @@ class Store:
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.conn.execute("VACUUM")
         self.conn.commit()
+        # The nameindex sidecar is every file name and full path in plaintext:
+        # sealing the index but keeping the sidecar would defeat the promise.
+        # It is a cache — the name index rebuilds from the (sealed) database.
+        self._evict_name_sidecars()
         self.reseal_bm25()
         # The search index is re-encrypted: only now the job reads 100%.
         _tick(total, total, "reseal")
+
+    def _evict_name_sidecars(self) -> None:
+        """Delete every nameindex sidecar file for this database."""
+        base = Path(str(self.path) + ".nameidx")
+        for path in [base, *base.parent.glob(base.name + ".*.bin")]:
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass  # a locked cache file is removed on the next run
+        try:
+            from .nameindex import NAME_CACHE
+            NAME_CACHE.clear()
+        except Exception:
+            pass
 
     def unseal_index(self, progress=None) -> None:
         """Decrypt everything back and rebuild FTS (paranoid mode off)."""

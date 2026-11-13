@@ -28,10 +28,14 @@ def _glob_to_regex(pattern: str) -> re.Pattern:
         char = pattern[index]
         if char == "*":
             if pattern[index:index + 2] == "**":
-                out.append(".*")
                 index += 2
                 if index < len(pattern) and pattern[index] == "/":
+                    # `**/` spans zero or more whole directories; a bare `.*`
+                    # would let `**/build` also match `mybuild`.
+                    out.append("(?:[^/]+/)*")
                     index += 1
+                else:
+                    out.append(".*")
                 continue
             out.append("[^/]*")
         elif char == "?":

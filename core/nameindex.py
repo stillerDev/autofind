@@ -317,6 +317,15 @@ class NameIndex:
         # the loader validates the files and falls back to a rebuild.
         suffix = self._bin_suffix(stamps)
         bin_path = Path(str(path) + "." + suffix + ".bin")
+        # The fingerprint is in the file name, so every reindex writes a new
+        # companion; sweep the predecessors or dead bins pile up forever (and
+        # a transfer would ship them all).
+        for stale in path.parent.glob(path.name + ".*.bin"):
+            if stale != bin_path:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
         with open(bin_path, "wb") as fh:
             fh.write(self.blob_array.tobytes())
             fh.write(self.name_blob_array.tobytes())
@@ -868,7 +877,16 @@ def _build(store) -> NameIndex:
     if _vault_mod.current() is not None:
         # Paranoid mode: the sidecar's blobs are file names and paths in
         # plaintext, which is exactly what seal promises not to store. The
-        # index is rebuilt in RAM on each server start (~0.5 s at 100k).
+        # index is rebuilt in RAM on each server start (~0.5 s at 100k), and
+        # any sidecar left on disk by a pre-seal run is removed here.
+        base = Path(str(store.path) + NameIndex.SIDE_SUFFIX)
+        for path in [base, *base.parent.glob(base.name + ".*.bin")]:
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        NAME_CACHE.clear()
         return index
     try:
         index.save_sidecar(Path(str(store.path) + NameIndex.SIDE_SUFFIX), fingerprint)

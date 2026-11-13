@@ -568,8 +568,8 @@ def _rank(
     # `sym:` is a filter too, but a listing would answer it with every file in
     # the index, so it is excluded here and served by its own channel below.
     if parsed.mode == "exhaustive" or (
-        not parsed.text and not parsed.regexes
-        and not parsed.content_text and not parsed.symbols
+        not parsed.text and not parsed.regexes and not parsed.symbols
+        and not parsed.content_text
     ):
         return _listing(store, parsed, _resolve_sort(sort, parsed, listing=True), since)
 
@@ -738,6 +738,12 @@ def _rank(
         lexical_files = ranked_scope["bm25"]
         tri_files = ranked_scope["tri"]
         semantic_files = ranked_scope["vector"]
+        # regex and symbol hits go through the same scope: a `re:` hit outside
+        # `in:` is exactly the row the user asked to exclude.
+        regex_files = ranked_scope["regex"]
+        symbol_files = ranked_scope["symbol"]
+        if fuzzy:
+            fuzzy = [row for row in fuzzy if int(row["id"]) in scope_ids]
 
     # Document-date mode: `since` also matches the date the document claims
     # for itself, so a receipt screenshotted yesterday still surfaces when it
@@ -933,7 +939,8 @@ def search_page(
     applied = applied or []
     parsed = parsed or understand(query)
     listing = parsed.mode == "exhaustive" or (
-        not parsed.text and not parsed.regexes and not parsed.content_text
+        not parsed.text and not parsed.regexes
+        and not parsed.content_text and not parsed.symbols
     )
     resolved = _resolve_sort(sort, parsed, listing=listing)
     hits, facets = _rank(

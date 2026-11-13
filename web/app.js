@@ -12,6 +12,7 @@ const state = {
   preview: null,
   dupMode: "images", dupGroups: [], dupCache: {},
   watchAdded: -1, watchTimer: null,
+  searchSeq: 0,
 };
 
 // The three letters inside the file-type tile. Abbreviations of extensions, not
@@ -744,6 +745,9 @@ async function runSearch(options = {}) {
   // fails there is nothing new below, so the old button returns where it was.
   const moreBtn = append ? $("more-btn") : null;
   if (moreBtn) moreBtn.remove();
+  // A slow response must never overwrite a newer one: every search gets a
+  // sequence number and only the latest may paint.
+  const seq = ++state.searchSeq;
   const params = new URLSearchParams({ q: query, limit: "12", offset: String(offset) });
   if (state.kind) params.set("kind", state.kind);
   if (state.folder) params.set("folder", state.folder);
@@ -753,6 +757,7 @@ async function runSearch(options = {}) {
 
   try {
     const data = await api(`/api/search?${params}`);
+    if (seq !== state.searchSeq) return;
     state.hits = append ? state.hits.concat(data.hits) : data.hits;
     state.total = data.total ?? data.hits.length;
     state.nextOffset = data.next_offset ?? null;
@@ -1974,8 +1979,13 @@ async function drawOcrHighlights() {
 
 async function loadStats() {
   try {
+    // Only /api/stats decides whether the server is alive; a failure in a
+    // side panel (watch, privacy) must degrade that panel alone, not blank
+    // every counter behind a "server is down" message.
     const [stats, status, privacy, watch, seal] = await Promise.all([
-      api("/api/stats"), api("/api/status"), api("/api/privacy"), api("/api/watch"),
+      api("/api/stats"), api("/api/status"),
+      api("/api/privacy").catch(() => null),
+      api("/api/watch").catch(() => null),
       api("/api/seal").catch(() => null),
     ]);
     state.stats = stats;
@@ -1996,8 +2006,8 @@ async function loadStats() {
     $("status-dot").style.background = stats.files ? "var(--teal)" : "var(--accent)";
     $("status-dot").classList.toggle("live", Boolean(stats.files));
 
-    renderPrivacy(privacy);
-    renderWatch(watch);
+    if (privacy) renderPrivacy(privacy);
+    if (watch) renderWatch(watch);
     if (seal) renderSeal(seal);
     // extra data for the index tab
     const set = (id, value) => { const el = $(id); if (el) el.textContent = value; };
@@ -2642,9 +2652,12 @@ function suggestItems(text) {
 }
 
 function paintSuggest() {
+  // data-suggest-index, not data-suggest: the document click delegate reads
+  // [data-suggest] as a query string, and these buttons carry a row number —
+  // a click here used to replace the query with "0".."7".
   $("suggest").innerHTML = SUGGEST.items.map((item, index) => `
     <button type="button" class="suggest-item${index === SUGGEST.index ? " active" : ""}"
-            data-suggest="${index}">
+            data-suggest-index="${index}">
       <span class="suggest-kind">${esc(t(item.kind === "saved" ? "suggest.saved" : "suggest.recent"))}</span>
       <span class="suggest-label">${esc(item.label)}</span>
     </button>`).join("");
@@ -2709,9 +2722,9 @@ $("q").addEventListener("keydown", (event) => {
 
 $("suggest").addEventListener("mousedown", (event) => {
   event.preventDefault(); // keep the input focused; click runs the query
-  const button = event.target.closest("[data-suggest]");
+  const button = event.target.closest("[data-suggest-index]");
   if (!button) return;
-  SUGGEST.index = Number(button.dataset.suggest);
+  SUGGEST.index = Number(button.dataset.suggestIndex);
   acceptSuggest();
 });
 
@@ -3534,43 +3547,6 @@ $("privacy-filters-list").addEventListener("change", () => {
   savePrivacy({ categories });
 });
 $("modal-close").addEventListener("click", () => $("modal").classList.remove("open"));
-  // Context menu on result cards (right-click): copy path, open folder, pin.
-  document.addEventListener('contextmenu', (event) => {
-    const card = event.target.closest('.card[data-index]');
-    if (!card || !state.hits[Number(card.dataset.index)]) return;
-    event.preventDefault();
-    const hit = state.hits[Number(card.dataset.index)];
-    const menu = document.createElement('div');
-    menu.className = 'ctx-menu';
-    menu.style.cssText = 'position:fixed;left:'+Math.min(event.clientX,innerWidth-180)+
-      'px;top:'+Math.min(event.clientY,innerHeight-120)+'px;z-index:1001;'+
-      'background:var(--bg,#1a1d21);border:1px solid rgba(255,255,255,.15);'+
-      'border-radius:8px;padding:4px 0;min-width:170px;box-shadow:0 8px 32px rgba(0,0,0,.5)';
-    const mk = (label, fn) => {
-      const item = document.createElement('div');
-      item.textContent = label;
-      item.style.cssText = 'padding:6px 14px;cursor:pointer;font-size:13px;color:inherit';
-      item.addEventListener('mouseenter', () => item.style.background = 'rgba(255,255,255,.08)');
-      item.addEventListener('mouseleave', () => item.style.background = '');
-      item.addEventListener('click', () => { fn(); menu.remove(); });
-      menu.appendChild(item);
-    };
-    mk('Copy path', () => navigator.clipboard.writeText(hit.path));
-    mk('Open folder', () => {
-      const dir = hit.path.replace(/[^\/]+$/, '');
-      window.open('file:///' + dir.replace(/\\/g, '/'));
-    });
-    mk(hit.pinned ? 'Unpin' : 'Pin', () => {
-      const star = card.querySelector('[data-pin]');
-      if (star) star.click();
-    });
-    document.body.appendChild(menu);
-    const close = (e) => {
-      if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', close); }
-    };
-    setTimeout(() => document.addEventListener('click', close), 0);
-  });
-
   // Drag-and-drop: dragging a result card into Explorer copies the file.
   document.addEventListener('dragstart', (event) => {
     const card = event.target.closest('.card[data-index]');
@@ -3580,7 +3556,7 @@ $("modal-close").addEventListener("click", () => $("modal").classList.remove("op
       'file:///' + hit.path.replace(/\\/g, '/'));
     event.dataTransfer.setData('text/plain', hit.path);
     event.dataTransfer.effectAllowed = 'copy';
-  });
+});
 
 $("modal").addEventListener("click", (event) => { if (event.target.id === "modal") $("modal").classList.remove("open"); });
 $("preview-close").addEventListener("click", () => $("preview").classList.remove("open"));
