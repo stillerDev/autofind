@@ -3982,3 +3982,39 @@ body.in-app .side-foot .only-app { display: inline-flex; }
 .k-image { position: relative; overflow: hidden; }
 .k-image img { display: block; width: 100%; height: auto; }
 .ocr-boxes { position: absolute; inset: 0; pointer-events: none; }
+
+/* Help overlay: one card, one list, Escape closes it. */
+#help-overlay {
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(0, 0, 0, .55);
+  display: grid; place-items: center;
+}
+#help-overlay[hidden] { display: none; }
+.help-card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px 28px; min-width: 320px;
+}
+.help-card h3 { margin: 0 0 14px; font-size: 15px; }
+.help-rows { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; margin: 0; }
+.help-rows dt { font-weight: 600; color: var(--accent); font-family: ui-monospace, monospace; }
+.help-rows dd { margin: 0; color: var(--text); font-size: 13px; }
+.help-close {
+  margin-top: 16px; width: 100%; padding: 7px; cursor: pointer;
+  background: var(--accent-soft); color: var(--accent);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+
+/* Density: compact rows for people who read lists, not posters. */
+body.compact .card { padding-top: 6px; padding-bottom: 6px; }
+body.compact .result-list .card { min-height: 0; }
+
+/* Font scale: only the root variable changes; every rem follows. */
+html { font-size: calc(16px * var(--font-scale, 1)); }
+
+/* The did-you-mean hint under the meta line. */
+.suggestion {
+  display: inline-block; margin: 6px 0 0; padding: 4px 10px;
+  background: var(--accent-soft); color: var(--accent);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  cursor: pointer; font-size: 12px;
+}

@@ -17,7 +17,17 @@
 
 const I18N = {
   en: {
-    "app.title": "AutoFind — local search over files and screenshots",
+
+    "help.title": 'Keyboard shortcuts',
+    "help.overlay": 'toggle this overlay',
+    "help.density": 'compact / comfortable list',
+    "help.font_up": 'bigger text',
+    "help.font_down": 'smaller text',
+    "help.copy_path": "copy the first result's path",
+    "help.focus": 'focus the search box',
+    "help.search": 'run the search',
+    "help.close": 'Close',
+    "copied": 'copied',    "app.title": "AutoFind — local search over files and screenshots",
     "win.hide": "Hide the window (Ctrl+Alt+Space brings it back)",
     "win.quit": "Quit AutoFind",
     "suggest.recent": "recent",
@@ -528,7 +538,17 @@ const I18N = {
   },
 
   ru: {
-    "app.title": "AutoFind — локальный поиск по файлам и скриншотам",
+
+    "help.title": 'Горячие клавиши',
+    "help.overlay": 'показать/скрыть подсказку',
+    "help.density": 'компактный/обычный список',
+    "help.font_up": 'крупнее текст',
+    "help.font_down": 'мельче текст',
+    "help.copy_path": 'скопировать путь первого результата',
+    "help.focus": 'фокус в строку поиска',
+    "help.search": 'запустить поиск',
+    "help.close": 'Закрыть',
+    "copied": 'скопировано',    "app.title": "AutoFind — локальный поиск по файлам и скриншотам",
     "win.hide": "Скрыть окно (Ctrl+Alt+Space вернёт его)",
     "win.quit": "Выйти из AutoFind",
     "suggest.recent": "недавний",
@@ -1038,7 +1058,17 @@ const I18N = {
     "unit.chunks.many": "{n} фрагментов",
   },
   zh: {
-    "app.title": "AutoFind — 本地文件和截图搜索",
+
+    "help.title": '键盘快捷键',
+    "help.overlay": '显示/隐藏此面板',
+    "help.density": '紧凑/舒适列表',
+    "help.font_up": '放大文字',
+    "help.font_down": '缩小文字',
+    "help.copy_path": '复制第一个结果的路径',
+    "help.focus": '聚焦搜索框',
+    "help.search": '执行搜索',
+    "help.close": '关闭',
+    "copied": '已复制',    "app.title": "AutoFind — 本地文件和截图搜索",
     "win.hide": "隐藏窗口",
     "win.quit": "退出",
     "suggest.recent": "最近搜索",

@@ -747,6 +747,7 @@ async function runSearch(options = {}) {
   if (moreBtn) moreBtn.remove();
   // A slow response must never overwrite a newer one: every search gets a
   // sequence number and only the latest may paint.
+  document.querySelectorAll(".suggestion").forEach((el) => el.remove());
   const seq = ++state.searchSeq;
   const params = new URLSearchParams({ q: query, limit: "12", offset: String(offset) });
   if (state.kind) params.set("kind", state.kind);
@@ -772,6 +773,19 @@ async function runSearch(options = {}) {
         shown, total: state.total, ms: data.ms, sign: state.approx ? "≈" : "",
       })
       : `${data.ms} ${t("unit.ms")}`;
+    const suggestion = data.suggestion;
+    if (suggestion) {
+      const hint = document.createElement("button");
+      hint.type = "button";
+      hint.className = "suggestion";
+      hint.textContent = t("hint.did_you_mean", { value: suggestion });
+      hint.addEventListener("click", () => {
+        $("q").value = suggestion;
+        scheduleSearch();
+        hint.remove();
+      });
+      $("meta").after(hint);
+    }
   } catch (error) {
     if (moreBtn) $("content").appendChild(moreBtn);
     toast(t("search.failed", { error: error.message }));
@@ -3931,6 +3945,68 @@ function runHotkey(action) {
       return false;
   }
 }
+
+/* Personal-layer shortcuts that need no server: the help overlay, the
+   density and font-size toggles, and copy-path. All of them persist so the
+   next session starts the way this one ended. */
+const HELP_KEY_STORAGE = "af.font-scale";
+
+function toggleHelpOverlay() {
+  const overlay = $("help-overlay");
+  if (!overlay) return;
+  overlay.hidden = !overlay.hidden;
+}
+
+function cycleDensity() {
+  const next = document.body.classList.toggle("compact") ? "compact" : "cozy";
+  try { localStorage.setItem("af.density", next); } catch (e) {}
+}
+
+function applyFontScale(scale) {
+  const clamped = Math.min(1.4, Math.max(0.85, scale));
+  document.documentElement.style.setProperty("--font-scale", clamped);
+  try { localStorage.setItem(HELP_KEY_STORAGE, String(clamped)); } catch (e) {}
+}
+
+try {
+  const savedScale = parseFloat(localStorage.getItem(HELP_KEY_STORAGE));
+  if (savedScale) applyFontScale(savedScale);
+  if (localStorage.getItem("af.density") === "compact") document.body.classList.add("compact");
+} catch (e) {}
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "?" && !event.ctrlKey && !event.altKey) {
+    const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+    if (!typing) { toggleHelpOverlay(); return; }
+  }
+  if (event.ctrlKey && event.altKey && (event.key === "d" || event.key === "D")) {
+    event.preventDefault();
+    cycleDensity();
+    return;
+  }
+  if (event.ctrlKey && event.altKey && (event.key === "+" || event.key === "=")) {
+    event.preventDefault();
+    const scale = parseFloat(localStorage.getItem(HELP_KEY_STORAGE)) || 1;
+    applyFontScale(scale + 0.05);
+    return;
+  }
+  if (event.ctrlKey && event.altKey && event.key === "-") {
+    event.preventDefault();
+    const scale = parseFloat(localStorage.getItem(HELP_KEY_STORAGE)) || 1;
+    applyFontScale(scale - 0.05);
+    return;
+  }
+  if (event.ctrlKey && event.shiftKey && (event.key === "C" || event.key === "c")) {
+    const first = [...state.picked][0]
+      ?? (state.hits[0] ? String(state.hits[0].file_id) : null);
+    const hit = state.hits.find((item) => String(item.file_id) === first);
+    if (hit) {
+      navigator.clipboard.writeText(hit.path);
+      toast(t("copied"));
+    }
+  }
+  if (event.key === "Escape") toggleHelpOverlay();
+});
 
 document.addEventListener("keydown", (event) => {
   if (event.target.closest && event.target.closest("#hotkeys-list")) return;

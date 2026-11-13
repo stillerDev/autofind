@@ -132,6 +132,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("clip", help="download the CLIP model for text-to-image visual search")
 
+    sub.add_parser("compact", help="VACUUM the index and checkpoint the WAL")
+    verify_cmd = sub.add_parser("verify", help="compare the index against disk: missing, changed, extra")
+    verify_cmd.add_argument("--prune", action="store_true", help="drop missing paths from the index")
+
     update_cmd = sub.add_parser("update", help="check GitHub for a newer release and install it")
     update_cmd.add_argument("--check", action="store_true",
                             help="only check for an update, do not install")
@@ -276,6 +280,23 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_uninstall(args, config)
     if args.command in ("big", "stale", "dupes", "dead", "top"):
         return _cmd_finder(args, config, db_path)
+    if args.command == "compact":
+        from .store import Store
+        if not db_path.exists():
+            print(f"no index at {db_path}", file=sys.stderr)
+            return 2
+        store = _open_store(config, db_path, readonly=False)
+        try:
+            t0 = time.perf_counter()
+            store.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            store.conn.execute("VACUUM")
+            store.conn.commit()
+            print(f"compacted in {time.perf_counter() - t0:.1f}s")
+        finally:
+            store.close()
+        return 0
+    if args.command == "verify":
+        return _cmd_verify(args, config, db_path)
     if args.command == "clip":
         # tools/ ships as loose scripts, not a package: load by path so an
         # installed copy finds the fetcher next to its own module tree.
@@ -948,6 +969,39 @@ def _cmd_finder(args, config: IndexConfig, db_path: Path) -> int:
         size_mb = r.size / 1048576
         print(f"  {size_mb:9.1f} MB  {r.path}" if args.command == "big"
               else f"  {r.score:>6}  {r.path}")
+    return 0
+
+
+def _cmd_verify(args, config: IndexConfig, db_path: Path) -> int:
+    """Index vs disk: missing paths, changed sizes, and a --prune that drops them."""
+    from . import finders
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path, readonly=not args.prune)
+    try:
+        rows = store.conn.execute("SELECT id, path, size, mtime FROM files").fetchall()
+        missing = []
+        changed = 0
+        for row in rows:
+            try:
+                st = os.stat(row["path"])
+            except OSError:
+                missing.append((int(row["id"]), row["path"]))
+                continue
+            if st.st_size != int(row["size"] or 0):
+                changed += 1
+        for _, path in missing:
+            print(f"  missing: {path}")
+        print(f"checked {len(rows)}: {len(missing)} missing, {changed} size-changed")
+        if args.prune and missing:
+            found = [finders.Found(path=path, name="", kind="", size=0, mtime=0)
+                     for _, path in missing]
+            removed = finders.prune_dead(store, found)
+            print(f"pruned {removed} missing paths")
+    finally:
+        store.close()
     return 0
 
 

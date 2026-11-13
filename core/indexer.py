@@ -375,6 +375,25 @@ def _run_extraction(
     pool.shutdown()
 
 
+def index_single(store, embedder, path, config) -> int:
+    """Re-read one file in this process and rewrite its rows. Returns chunk count."""
+    from .scanner import iter_entries
+
+    entries = [entry for entry in iter_entries([Path(path)], config) if entry.path == str(path)]
+    if not entries:
+        return 0
+    entry = entries[0]
+    stats = IndexStats()
+    visual = None
+    store.drop_file(int(store.conn.execute(
+        "SELECT id FROM files WHERE path = ?", (str(path),)
+    ).fetchone()[0]))
+    _store_one(0, entry, config, store, embedder, visual, stats,
+               progress=None, len_todo=1, done_before=0, commit_every=1)
+    store.commit()
+    return stats.chunks
+
+
 def _store_one(position, entry, config, store, embedder, visual, stats, progress,
                len_todo: int, done_before: int, commit_every: int) -> None:
     """The sequential path: one process does everything for one file."""

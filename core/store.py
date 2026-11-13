@@ -2068,6 +2068,29 @@ class Store:
         query = " OR ".join(f'"{term}"*' for term in corrected if '"' not in term)
         return self.bm25(query, limit) if query else []
 
+    def did_you_mean(self, text: str) -> str | None:
+        """A corrected version of `text`, or None when every term is known.
+
+        Used for the zero-result screen: "did you mean ..." comes from the
+        same vocabulary the typo channel fixes with, so the suggestion is a
+        query that can actually match."""
+        terms = bm25mod.TOKEN_RE.findall(text)
+        if not terms:
+            return None
+        changed = False
+        out = []
+        for term in terms:
+            if len(term) >= 4 and self.bm25(f'"{term}"', limit=1) == []:
+                fixed = self._correct_term(term.lower())
+                if fixed and fixed != term.lower():
+                    out.append(fixed)
+                    changed = True
+                    continue
+            out.append(term)
+        if not changed:
+            return None
+        return " ".join(out)
+
     def _correct_term(self, term: str) -> str | None:
         """The closest vocabulary term to `term`, or None if it is spelled right.
 

@@ -264,6 +264,8 @@ def _maybe_evict() -> None:
 # What the boot screen polls. The server answers requests from the first
 # millisecond, but "ready" means the vector pack has been faulted in — that is
 # the difference between a window that opens and a window that can search.
+SERVER_STARTED = time.time()
+
 READY: dict = {
     "ready": False,
     "stage": "boot",
@@ -617,6 +619,8 @@ class Handler(BaseHTTPRequestHandler):
             self._seal_status()
         elif route == "/api/self-test":
             self._self_test()
+        elif route == "/api/health":
+            self._health()
         elif route == "/api/personal":
             self._personal()
         elif route == "/api/background":
@@ -765,6 +769,31 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"notes": store.notes_for(ids)})
         finally:
             store.close()
+
+    def _reindex_one(self, payload: dict) -> None:
+        """Re-read exactly one file: the right-click fix for a stale row."""
+        file_id = payload.get("id")
+        try:
+            file_id = int(file_id)
+        except (TypeError, ValueError):
+            self._error("id required")
+            return
+        store = self._store(readonly=False)
+        try:
+            row = store.file_by_id(file_id)
+            if row is None:
+                self._error("no such file", 404)
+                return
+            path = Path(row["path"])
+            if not path.exists():
+                self._error("file is gone from disk", 410)
+                return
+            embedder = get_embedder("auto", self.config.model_dir)
+            from .indexer import index_single
+            count = index_single(store, embedder, path, self.config)
+        finally:
+            store.close()
+        self._json({"id": file_id, "chunks": count, "ok": True})
 
     def _set_note(self, payload: dict) -> None:
         try:
@@ -1048,12 +1077,19 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             READ_STORES.release(store)
         elapsed = (time.perf_counter() - started) * 1000
+        suggestion = None
+        if page.total == 0 and parsed.text:
+            try:
+                suggestion = store.did_you_mean(parsed.text)
+            except Exception:
+                suggestion = None  # a broken suggestion must not fail the query
         return {
             "text": text,
             "page": page,
             "images": images,
             "tags": tags,
             "elapsed": elapsed,
+            "suggestion": suggestion,
         }
 
     def _search(self, query: dict) -> None:
@@ -1086,6 +1122,7 @@ class Handler(BaseHTTPRequestHandler):
                 "mode": page.mode,
                 "chips": page.chips,
                 "hints": page.hints,
+                "suggestion": result.get("suggestion"),
                 "facets": page.facets,
                 "groups": page.groups,
                 "collapsed": page.collapsed,
@@ -1695,6 +1732,24 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
+    def _health(self) -> None:
+        """Liveness for scripts and monitors: uptime, version, index freshness."""
+        store = self._store()
+        try:
+            files = int(store.conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
+            newest = store.conn.execute(
+                "SELECT MAX(indexed_at) FROM files").fetchone()[0]
+        finally:
+            store.close()
+        self._json({
+            "ok": True,
+            "version": _APP_VERSION,
+            "uptime_s": round(time.time() - SERVER_STARTED, 1),
+            "files": files,
+            "last_index_age_s": round(time.time() - newest, 1) if newest else None,
+            "working": JOB.running,
+        })
+
     def _self_test(self) -> None:
         store = self._store()
         try:
@@ -1971,6 +2026,8 @@ class Handler(BaseHTTPRequestHandler):
             self._set_types(payload)
         elif parsed.path == "/api/tag":
             self._set_tags(payload)
+        elif parsed.path == "/api/reindex-one":
+            self._reindex_one(payload)
         elif parsed.path == "/api/note":
             self._set_note(payload)
         elif parsed.path == "/api/tag-color":
