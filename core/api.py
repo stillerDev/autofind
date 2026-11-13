@@ -617,6 +617,10 @@ class Handler(BaseHTTPRequestHandler):
             self._types()
         elif route == "/api/tags":
             self._tags()
+        elif route == "/api/notes":
+            self._notes(query)
+        elif route == "/api/tag-colors":
+            self._tag_colors()
         elif route == "/api/collections":
             self._collections()
         elif route == "/api/hotkeys":
@@ -733,6 +737,46 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"tags": store.all_tags()})
         finally:
             store.close()
+
+    def _notes(self, query: dict) -> None:
+        """Notes on the hits of a page, so the UI can show them inline."""
+        raw = query.get("ids") or []
+        try:
+            ids = sorted({int(item) for item in raw})
+        except (TypeError, ValueError):
+            self._error("ids must be integers")
+            return
+        store = self._store()
+        try:
+            self._json({"notes": store.notes_for(ids)})
+        finally:
+            store.close()
+
+    def _set_note(self, payload: dict) -> None:
+        try:
+            file_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            self._error("id required")
+            return
+        text = payload.get("text")
+        self._write(lambda store: store.set_note(file_id, text))
+        self._json({"id": file_id, "ok": True})
+
+    def _tag_colors(self) -> None:
+        store = self._store()
+        try:
+            self._json({"colors": store.tag_colors()})
+        finally:
+            store.close()
+
+    def _set_tag_color(self, payload: dict) -> None:
+        tag = " ".join(str(payload.get("tag") or "").split())[:64]
+        if not tag:
+            self._error("tag required")
+            return
+        color = payload.get("color")
+        self._write(lambda store: store.set_tag_color(tag, color))
+        self._json({"tag": tag, "color": color, "ok": True})
 
     def _collections(self) -> None:
         store = self._store()
@@ -1110,6 +1154,15 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
             content_type = "application/json; charset=utf-8"
             filename = "autofind-export.json"
+        elif fmt == "md":
+            lines = [f"# AutoFind: {result['text']}", ""]
+            for hit in rows:
+                lines.append(f"- **{hit.name}** — `{hit.path}` ({hit.kind}, {hit.size} B)")
+                if hit.snippet:
+                    lines.append(f"  > {hit.snippet[:160]}")
+            body = "\n".join(lines).encode("utf-8")
+            content_type = "text/markdown; charset=utf-8"
+            filename = "autofind-export.md"
         else:
             buffer = io.StringIO()
             writer = csv.writer(buffer)
@@ -1939,6 +1992,10 @@ class Handler(BaseHTTPRequestHandler):
             self._set_types(payload)
         elif parsed.path == "/api/tag":
             self._set_tags(payload)
+        elif parsed.path == "/api/note":
+            self._set_note(payload)
+        elif parsed.path == "/api/tag-color":
+            self._set_tag_color(payload)
         elif parsed.path == "/api/collections":
             self._set_collections(payload)
         elif parsed.path == "/api/hotkeys":

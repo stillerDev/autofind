@@ -169,6 +169,20 @@ CREATE TABLE IF NOT EXISTS tags (
     PRIMARY KEY (file_id, tag)
 );
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
+-- A note is a sentence a human wrote about a file. kensaku has no answer to
+-- "why did I keep this?" — this is ours, stored beside the index like the
+-- rest of the personal layer.
+CREATE TABLE IF NOT EXISTS notes (
+    file_id  INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    text     TEXT NOT NULL,
+    added_at REAL NOT NULL
+);
+-- A tag can wear a colour: the row's dot in the UI and the drawer chip use
+-- it, and the colour travels with the tag, not the file.
+CREATE TABLE IF NOT EXISTS tag_colors (
+    tag    TEXT PRIMARY KEY,
+    color  TEXT NOT NULL
+);
 -- A collection is a named set of files, like a playlist: "Project X", "To
 -- read". Membership is many-to-many; the order is the moment a file joined.
 CREATE TABLE IF NOT EXISTS collections (
@@ -370,7 +384,7 @@ def _regexp(pattern: str, value: str | None) -> bool:
         return False
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Contentless FTS: `content=''` keeps postings only — no copy of the corpus in
 # the index. `contentless_delete=1` (SQLite 3.43+) makes `DELETE FROM` work,
@@ -480,6 +494,8 @@ def _migrate_connection(conn: sqlite3.Connection) -> None:
         _migrate_v9(conn)
     if version < 10:
         _migrate_v10(conn)
+    if version < 11:
+        _migrate_v11(conn)
     _ensure_fts(conn)
     if version < 9:
         # The dropped tiers (778 MB of trigram, 17 MB of CJK, the chunk text
@@ -946,6 +962,14 @@ def _migrate_v9(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM meta WHERE key IN ('trigram', 'aux_fts_backfill', 'fts_v9')")
     _migrate_file_vectors(conn)
     conn.commit()
+
+
+def _migrate_v11(conn: sqlite3.Connection) -> None:
+    """Schema v11: the personal-layer tables (notes, tag_colors) are additive
+    and arrive with executescript(SCHEMA); the migration re-runs the v10
+    orphan sweep because it is idempotent and a database can sit at v10 with
+    sweep work still owed (an interrupted upgrade)."""
+    _migrate_v10(conn)
 
 
 class Store:
@@ -2439,6 +2463,57 @@ class Store:
         return cursor.rowcount > 0
 
     # ---------------------------------------------------------------- tags
+
+    def set_note(self, file_id: int, text: str | None) -> bool:
+        """Write (or clear, with None/empty) the human note on a file."""
+        clean = " ".join((text or "").split())[:2000]
+        if clean:
+            self.conn.execute(
+                "INSERT INTO notes(file_id, text, added_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(file_id) DO UPDATE SET text = excluded.text, "
+                "added_at = excluded.added_at",
+                (int(file_id), clean, time.time()),
+            )
+        else:
+            self.conn.execute("DELETE FROM notes WHERE file_id = ?", (int(file_id),))
+        self.conn.commit()
+        return bool(clean)
+
+    def notes_for(self, file_ids: Iterable[int]) -> dict[int, str]:
+        ids = [int(fid) for fid in file_ids]
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT file_id, text FROM notes WHERE file_id IN ({marks})", ids
+        ).fetchall()
+        return {int(row[0]): str(row[1]) for row in rows}
+
+    def tag_colors(self) -> dict[str, str]:
+        return {
+            str(row[0]): str(row[1])
+            for row in self.conn.execute("SELECT tag, color FROM tag_colors")
+        }
+
+    def set_tag_color(self, tag: str, color: str | None) -> bool:
+        """ colour = '#rrggbb'; None removes the custom colour. """
+        clean = " ".join(str(tag or "").split())[:64]
+        if not clean:
+            return False
+        if color is None or color == "":
+            # no colour means "remove the custom colour"
+            self.conn.execute("DELETE FROM tag_colors WHERE tag = ?", (clean,))
+            self.conn.commit()
+            return True
+        if not (len(color) == 7 and color.startswith("#")):
+            return False  # a bad literal is rejected, never stored
+        self.conn.execute(
+            "INSERT INTO tag_colors(tag, color) VALUES (?, ?) "
+            "ON CONFLICT(tag) DO UPDATE SET color = excluded.color",
+            (clean, color),
+        )
+        self.conn.commit()
+        return True
 
     def tags_for(self, file_ids: Iterable[int]) -> dict[int, list[str]]:
         """Tags per file, in one query — a page of results must not cost N."""

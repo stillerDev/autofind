@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
 
     export_cmd = sub.add_parser("export", help="export search results as CSV or JSON")
     export_cmd.add_argument("query", help="search query")
-    export_cmd.add_argument("--format", default="csv", choices=["csv", "json"])
+    export_cmd.add_argument("--format", default="csv", choices=["csv", "json", "md"])
     export_cmd.add_argument("--limit", type=int, default=100)
     export_cmd.add_argument("--out", dest="out", type=Path, default=None,
                             help="write to a file instead of stdout")
@@ -194,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
     alias_cmd.add_argument("expand", nargs="?", default=None)
     alias_cmd.add_argument("--drop", default=None, metavar="ALIAS", help="forget this alias")
     alias_cmd.add_argument("--json", action="store_true")
+
+    note_cmd = sub.add_parser("note", help="a human note on a file (\"why did I keep this?\")")
+    note_cmd.add_argument("target", help="file id, or a path inside the index")
+    note_cmd.add_argument("text", nargs="*", help="the note; omit text or --off to clear")
+    note_cmd.add_argument("--off", action="store_true", help="remove the note")
 
     sym_cmd = sub.add_parser("sym", help="find definitions in code (functions, classes, types)")
     sym_cmd.add_argument("name", help="symbol name, or a prefix of it")
@@ -313,6 +318,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_install(args)
     if args.command == "pin":
         return _cmd_pin(args, config, db_path)
+    if args.command == "note":
+        return _cmd_note(args, config, db_path)
     if args.command == "pins":
         return _cmd_pins(args, config, db_path)
     if args.command == "saved":
@@ -944,6 +951,36 @@ def _cmd_finder(args, config: IndexConfig, db_path: Path) -> int:
     return 0
 
 
+def _cmd_note(args, config: IndexConfig, db_path: Path) -> int:
+    """Set, replace or clear the human note on one file."""
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path, readonly=False)
+    try:
+        target = args.target.strip()
+        file_id = 0
+        if target.isdigit():
+            row = store.file_by_id(int(target))
+            file_id = int(row["id"]) if row else 0
+        if not file_id:
+            resolved = store.resolve_paths([target])
+            file_id = int(resolved.get(target, 0))
+        if not file_id:
+            print(f"not in the index: {target}", file=sys.stderr)
+            return 1
+        text = " ".join(args.text or []).strip()
+        if args.off or not text:
+            store.set_note(file_id, None)
+            print("note cleared")
+        else:
+            store.set_note(file_id, text)
+            print(f"note saved on {target}")
+    finally:
+        store.close()
+    return 0
+
+
 def _cmd_pins(args, config: IndexConfig, db_path: Path) -> int:
     if not db_path.exists():
         print(f"no index at {db_path}", file=sys.stderr)
@@ -1229,7 +1266,15 @@ def _cmd_export(args, config: IndexConfig, db_path: Path) -> int:
 
     rows = page.hits
     fmt = args.format
-    if fmt == "csv":
+    if fmt == "md":
+        lines = [f"# AutoFind: {args.query}", ""]
+        for hit in rows:
+            lines.append(f"- **{hit.name}** — `{hit.path}` ({hit.kind}, {hit.size} B)")
+            if hit.snippet:
+                lines.append(f"  > {hit.snippet[:160]}")
+        body = "\n".join(lines).encode("utf-8")
+    elif fmt == "csv":
+
         buffer = _io.StringIO()
         writer = _csv.writer(buffer)
         writer.writerow(["name", "path", "kind", "size", "modified", "score", "opens", "tags"])
