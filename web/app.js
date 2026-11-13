@@ -3974,6 +3974,23 @@ try {
   if (localStorage.getItem("af.density") === "compact") document.body.classList.add("compact");
 } catch (e) {}
 
+try {
+  if (localStorage.getItem("af.hc") === "1") document.body.classList.add("high-contrast");
+  if (localStorage.getItem("af.rtl") === "1") document.body.setAttribute("dir", "rtl");
+} catch (e) {}
+
+function toggleHighContrast() {
+  const on = document.body.classList.toggle("high-contrast");
+  try { localStorage.setItem("af.hc", on ? "1" : "0"); } catch (e) {}
+}
+
+function toggleRTL() {
+  const rtl = document.body.getAttribute("dir") !== "rtl";
+  if (rtl) document.body.setAttribute("dir", "rtl");
+  else document.body.removeAttribute("dir");
+  try { localStorage.setItem("af.rtl", rtl ? "1" : "0"); } catch (e) {}
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "?" && !event.ctrlKey && !event.altKey) {
     const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
@@ -3982,6 +3999,16 @@ document.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.altKey && (event.key === "d" || event.key === "D")) {
     event.preventDefault();
     cycleDensity();
+    return;
+  }
+  if (event.ctrlKey && event.altKey && (event.key === "h" || event.key === "H")) {
+    event.preventDefault();
+    toggleHighContrast();
+    return;
+  }
+  if (event.ctrlKey && event.altKey && (event.key === "r" || event.key === "R")) {
+    event.preventDefault();
+    toggleRTL();
     return;
   }
   if (event.ctrlKey && event.altKey && (event.key === "+" || event.key === "=")) {

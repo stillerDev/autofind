@@ -89,6 +89,9 @@ class IndexConfig:
     chunk_chars: int = 1200
     chunk_overlap: int = 200
     max_file_bytes: int = 20 * 1024 * 1024
+    # Files above this size contribute no full text: their name,
+    # hash and visual vector still index. 0 disables the rule.
+    content_skip_over_mb: int = 0
     min_file_bytes: int = 32
     batch_size: int = 32
     thumb_size: int = 320

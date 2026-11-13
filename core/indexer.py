@@ -26,6 +26,7 @@ import numpy as np
 
 from . import filevec
 from .chunker import chunk_spans, normalize
+from . import lifespan
 from .config import IndexConfig
 from .embed import get_embedder, get_visual_embedder
 from .extract import extract_text, PLAIN_KINDS
@@ -90,6 +91,23 @@ class IndexStats:
         }
 
 
+def _apply_nice() -> None:
+    """AUTOFIND_NICE=1 lowers this process to below-normal priority: the
+    indexer keeps working while the foreground app stays responsive."""
+    if os.environ.get("AUTOFIND_NICE") != "1":
+        return
+    try:
+        import ctypes
+        # BELOW_NORMAL_PRIORITY_CLASS on Windows, nice on POSIX.
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        ctypes.windll.kernel32.SetPriorityClass(handle, 0x00004000)
+    except Exception:
+        try:
+            os.nice(5)
+        except Exception:
+            pass
+
+
 def run_index(
     roots: Sequence[str | Path],
     config: IndexConfig,
@@ -101,6 +119,7 @@ def run_index(
     commit_every: int = 1000,
     workers: int | None = None,
 ) -> IndexStats:
+    _apply_nice()
     started = time.perf_counter()
     # The root list can carry repeats — the same folder twice, or a folder and
     # its subfolder side by side — and every caller feeds it straight from user
@@ -642,7 +661,10 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
     # Bound before the try: OcrUnavailable must not leave the dict-building
     # code below reading an unassigned name.
     ocr_boxes = None
-    if config.ocr_enabled:
+    # A laptop on battery skips the OCR pass: minutes of CPU per
+    # screenshot is not worth a drained battery. The name and the
+    # visual vector still index; text comes with the next plugged run.
+    if config.ocr_enabled and not lifespan.on_battery():
         mark = time.perf_counter()
         try:
             result = ocr_image(

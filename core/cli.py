@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -132,7 +133,40 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("clip", help="download the CLIP model for text-to-image visual search")
 
-    sub.add_parser("compact", help="VACUUM the index and checkpoint the WAL")
+    backup_cmd = sub.add_parser("backup", help="pack the index and sidecars into a timestamped ZIP")
+    backup_cmd.add_argument("--to", dest="to_dir", default=None, help="target directory (default: the desktop)")
+
+    share_cmd = sub.add_parser("share", help="copy the results of a query as markdown to the clipboard")
+    share_cmd.add_argument("query")
+    share_cmd.add_argument("--limit", type=int, default=10)
+
+    open_cmd = sub.add_parser("open", help="open the top hit of a query right now")
+    open_cmd.add_argument("query")
+
+    openq_top = sub.add_parser("pin-top", help="pin the top hit of a query")
+    openq_top.add_argument("query")
+
+    tag_cmd = sub.add_parser("tag", help="add or remove a tag on a file")
+    tag_cmd.add_argument("target", help="file id or path")
+    tag_cmd.add_argument("tag")
+    tag_cmd.add_argument("--off", action="store_true", help="remove the tag")
+
+    sub.add_parser("watch-status", help="show watched roots and watcher state")
+
+    stats_cmd = sub.add_parser("stats", help="show index size and settings")
+    stats_cmd.add_argument("--verbose", action="store_true", help="per-kind counts and top extensions")
+
+
+    changelog_cmd = sub.add_parser("changelog", help="print the what's-new notes")
+    changelog_cmd.add_argument("--lines", type=int, default=40)
+
+    register_url = sub.add_parser("register-url", help="handle autofind:// links (search from anywhere)")
+    register_url.add_argument("--remove", action="store_true")
+
+    start_min = sub.add_parser("config", help="show or set a preference (start_minimized, content_skip_over_mb)")
+    start_min.add_argument("key", nargs="?")
+    start_min.add_argument("value", nargs="?")
+
     verify_cmd = sub.add_parser("verify", help="compare the index against disk: missing, changed, extra")
     verify_cmd.add_argument("--prune", action="store_true", help="drop missing paths from the index")
 
@@ -154,7 +188,6 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("mcp", help="MCP server over stdio for AI agents (read-only)")
     sub.add_parser("cheat", help="print the query grammar")
-    sub.add_parser("stats", help="show index size and settings")
 
     big_cmd = sub.add_parser("big", help="largest files in the index")
     big_cmd.add_argument("min_mb", nargs="?", type=float, default=10.0)
@@ -280,6 +313,24 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_uninstall(args, config)
     if args.command in ("big", "stale", "dupes", "dead", "top"):
         return _cmd_finder(args, config, db_path)
+    if args.command == "backup":
+        return _cmd_backup(args, config, db_path)
+    if args.command == "share":
+        return _cmd_share(args, config, db_path)
+    if args.command == "open":
+        return _cmd_open_top(args, config, db_path)
+    if args.command == "pin-top":
+        return _cmd_pin_top(args, config, db_path)
+    if args.command == "tag":
+        return _cmd_tag(args, config, db_path)
+    if args.command == "watch-status":
+        return _cmd_watch_status(args, config, db_path)
+    if args.command == "register-url":
+        return _cmd_register_url(args)
+    if args.command == "changelog":
+        return _cmd_changelog(args)
+    if args.command == "config":
+        return _cmd_config(args, config)
     if args.command == "compact":
         from .store import Store
         if not db_path.exists():
@@ -927,6 +978,237 @@ def _cmd_pin(args, config: IndexConfig, db_path: Path) -> int:
         print(json.dumps({"id": file_id, "pinned": state, "path": row["path"]}, ensure_ascii=False))
     else:
         print(f"{'pinned' if state else 'unpinned'} {row['path']}")
+    return 0
+
+
+def _cmd_backup(args, config: IndexConfig, db_path: Path) -> int:
+    """A timestamped ZIP of the whole index: safe to copy, safe to restore."""
+    from .transfer import export_index
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    target_dir = Path(args.to_dir) if args.to_dir else (
+        Path.home() / "Desktop")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    archive = target_dir / f"autofind-backup-{stamp}.zip"
+    manifest = export_index(db_path, archive)
+    print(f"backup: {archive}")
+    print(f"  files in archive: {len(manifest['entries'])}")
+    return 0
+
+
+def _results_markdown(store, embedder, query: str, limit: int) -> str:
+    from .query import understand
+    from .search import search_page
+
+    page = search_page(store, embedder, query, limit=limit,
+                       parsed=understand(query), usage=store.usage_map())
+    lines = [f"# AutoFind: {query}", ""]
+    for hit in page.hits:
+        lines.append(f"- **{hit.name}** — `{hit.path}` ({hit.kind}, {hit.size} B)")
+        if hit.snippet:
+            lines.append(f"  > {hit.snippet[:160]}")
+    return "\n".join(lines)
+
+
+def _cmd_share(args, config: IndexConfig, db_path: Path) -> int:
+    """Results as markdown straight onto the clipboard: chat-ready."""
+    from .embed import get_embedder
+    from .store import Store
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    emb = get_embedder("auto", config.model_dir)
+    store = Store(db_path, emb.name, emb.dim, readonly=True)
+    try:
+        text = _results_markdown(store, emb, args.query, args.limit)
+    finally:
+        store.close()
+    try:
+        import subprocess
+        subprocess.run(["clip"], input=text.encode("utf-16-le"), check=True)
+        print(f"copied {text.count(chr(10))} lines to the clipboard")
+        return 0
+    except (OSError, subprocess.CalledProcessError):
+        print(text)
+        return 0
+
+
+def _top_hit(store, embedder, query: str):
+    from .query import understand
+    from .search import search_page
+
+    page = search_page(store, embedder, query, limit=1,
+                       parsed=understand(query), usage=store.usage_map())
+    return page.hits[0] if page.hits else None
+
+
+def _cmd_open_top(args, config: IndexConfig, db_path: Path) -> int:
+    """`autofind open invoice` - the best hit opens, no UI round trip."""
+    from .embed import get_embedder
+    from .store import Store
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    emb = get_embedder("auto", config.model_dir)
+    store = Store(db_path, emb.name, emb.dim, readonly=True)
+    try:
+        hit = _top_hit(store, emb, args.query)
+    finally:
+        store.close()
+    if hit is None:
+        print("no results", file=sys.stderr)
+        return 1
+    print(hit.path)
+    os.startfile(hit.path)  # noqa: S606 - a local indexed file, user-asked
+    return 0
+
+
+def _cmd_pin_top(args, config: IndexConfig, db_path: Path) -> int:
+    """Pin the top hit of a query without leaving the terminal."""
+    from .embed import get_embedder
+    from .store import Store
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    emb = get_embedder("auto", config.model_dir)
+    store = Store(db_path, emb.name, emb.dim, readonly=True)
+    try:
+        hit = _top_hit(store, emb, args.query)
+    finally:
+        store.close()
+    if hit is None:
+        print("no results", file=sys.stderr)
+        return 1
+    store = _open_store(config, db_path, readonly=False)
+    try:
+        store.set_pin(int(hit.file_id), True)
+        store.commit()
+        print(f"pinned {hit.path}")
+    finally:
+        store.close()
+    return 0
+
+
+def _cmd_tag(args, config: IndexConfig, db_path: Path) -> int:
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path, readonly=False)
+    try:
+        target = args.target.strip()
+        file_id = 0
+        if target.isdigit():
+            row = store.file_by_id(int(target))
+            file_id = int(row["id"]) if row else 0
+        if not file_id:
+            resolved = store.resolve_paths([target])
+            file_id = int(resolved.get(target, 0))
+        if not file_id:
+            print(f"not in the index: {target}", file=sys.stderr)
+            return 1
+        store.set_tag(file_id, args.tag, on=not args.off)
+        store.commit()
+        print(("tag removed" if args.off else "tagged") + f": {args.tag}")
+    finally:
+        store.close()
+    return 0
+
+
+def _cmd_watch_status(args, config: IndexConfig, db_path: Path) -> int:
+    """Which roots are watched and whether the watcher is alive."""
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path)
+    try:
+        roots = [row[0] for row in store.conn.execute(
+            "SELECT DISTINCT substr(path, 1, 3) FROM files"
+        ).fetchall()]
+    finally:
+        store.close()
+    # The watcher keeps a lock file with its pid while it runs.
+    alive = False
+    lock = Path(str(db_path) + ".watch")
+    if lock.exists():
+        try:
+            import psutil
+            pid = int(lock.read_text(encoding="utf-8").strip() or 0)
+            alive = bool(pid) and psutil.pid_exists(pid)
+        except (ValueError, OSError, ImportError):
+            alive = lock.exists()
+    print(f"watcher alive: {'yes' if alive else 'no'}")
+    for root in roots:
+        print(f"  root: {root}")
+    return 0
+
+
+def _cmd_register_url(args) -> int:
+    """autofind://search?q=... from the Run dialog or any app."""
+    import winreg
+
+    key_path = r"Software\Classes\autofind"
+    if args.remove:
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
+            print("autofind:// handler removed")
+        except FileNotFoundError:
+            print("no handler registered")
+        return 0
+    command = f'"{sys.executable}" "{Path(__file__).resolve().parent.parent / "run.py"}" --url "%1"'
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+        winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "URL:AutoFind Search")
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path + r"\shell\open\command") as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, command)
+    print("autofind:// registered")
+    return 0
+
+
+def _cmd_changelog(args) -> int:
+    for name in ("WHATSNEW.TXT", "CHANGELOG.md"):
+        path = Path(__file__).resolve().parent.parent / name
+        if path.exists():
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            print("\n".join(lines[:args.lines]))
+            return 0
+    print("no changelog file in this build")
+    return 0
+
+
+def _cmd_config(args, config: IndexConfig) -> int:
+    """Show or set a preference: start_minimized, content_skip_over_mb."""
+    prefs_path = config.home / "prefs.json"
+    try:
+        prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        prefs = {}
+    if not args.key:
+        print(json.dumps(prefs, indent=2, ensure_ascii=False))
+        return 0
+    config.ensure_home()
+    if args.value is None:
+        print(json.dumps(prefs.get(args.key), indent=2, ensure_ascii=False))
+        return 0
+    value: object = args.value
+    if args.value.lower() in ("on", "true", "1"):
+        value = True
+    elif args.value.lower() in ("off", "false", "0"):
+        value = False
+    else:
+        try:
+            value = int(args.value)
+        except ValueError:
+            pass
+    prefs[args.key] = value
+    config.ensure_home()
+    prefs_path.write_text(json.dumps(prefs, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"{args.key} = {value!r}")
     return 0
 
 

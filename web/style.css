@@ -4018,3 +4018,20 @@ html { font-size: calc(16px * var(--font-scale, 1)); }
   border: 1px solid var(--border); border-radius: var(--radius);
   cursor: pointer; font-size: 12px;
 }
+
+/* High contrast: every surface at full opacity, borders at 2x, text at max. */
+body.high-contrast {
+  --panel: #0a0a0a;
+  --panel-2: #101010;
+  --border: #5a5a5a;
+  --text: #f2f2f2;
+  --muted: #c8c8c8;
+  --faint: #9a9a9a;
+}
+body.high-contrast .card,
+body.high-contrast .drawer,
+body.high-contrast .rail button {
+  border-width: 2px;
+}
+body[dir="rtl"] .rail { left: auto; right: 12px; }
+body[dir="rtl"] .drawer { left: auto; right: 0; }
