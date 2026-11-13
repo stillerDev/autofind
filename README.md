@@ -467,21 +467,26 @@ Two numbers the plan should have known:
 
 ### Against Kensaku
 
-Measured side by side with Kensaku-new 1.0.17 on the same machine and the same
-20 461-file index. Medians over the query set; CLI is 7 queries × 5 runs, HTTP
-is 7 queries × 25 runs.
+Measured side by side with Kensaku-new 1.0.17 (built from source, commit
+`9585797`) on the same machine and the same 100 000-file corpus. Cold CLI is
+7 queries × 5 runs, best of each; warm HTTP is 7 queries × 15 runs, median of
+each, measured only after the server finished every lazy build. Kensaku's
+warm path is its MCP JSON-RPC endpoint — that is its only server interface.
 
 | Metric | AutoFind v9 | Kensaku-new 1.0.17 | Result |
 |---|---|---|---|
-| Cold CLI | 170.3 ms | 217.8 ms | 28% faster |
-| Warm HTTP | 7.3 ms | 13.7 ms | 47% faster |
-| Search (median) | 27.9 s | 31.1 s | 10% faster |
-| Index on disk | 222.3 MB | 226.5 MB | ≈ same |
-| Memory | 102.9 MB | 104.9 MB | overlap |
-| Index coverage | 20 461 files, 311 235 chunks | 18 745 files, 8 447 full-text docs | wider coverage |
+| Cold CLI | 295 ms | 624 ms | 2.1× faster |
+| Warm HTTP | 8.9 ms | 23.2 ms | 2.6× faster |
+| Memory, server | 99 MiB USS | 131 MiB USS (daemon + serve) | 24% less |
+| Index on disk | 109 MB db (+42 MB name cache) | 112 MB | ≈ same |
+| Content coverage | 104 009 chunks over 100 000 files | 8 192 full-text docs | wider reach |
+| Text-to-image search | CLIP ViT-B/32, multilingual (ru/zh) | — | exclusive |
 
-Chunks and full-text documents are different units, so the last row is about
-reach rather than a like-for-like count.
+Chunks and full-text documents are different units, so the coverage row is
+about reach rather than a like-for-like count. The 99 MiB figure is the
+text-only search stack: when a corpus has images and a query runs the visual
+channel, the CLIP text tower adds ~140 MiB on first use — that is the price
+of the feature Kensaku does not ship.
 
 ## Scaling past 100k files
 

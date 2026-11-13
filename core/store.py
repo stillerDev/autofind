@@ -1678,6 +1678,11 @@ class Store:
             return vault.open_bytes(blob)
         return blob
 
+    def image_count(self) -> int:
+        """Cheap guard for the visual channel: an imageless corpus must never
+        pay for loading an image/text embedder."""
+        return int(self.conn.execute("SELECT COUNT(*) FROM images").fetchone()[0])
+
     def image_rows(self, limit: int = 200, offset: int = 0) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT i.id, i.path, i.width, i.height, i.ocr_text, i.file_id, f.mtime "

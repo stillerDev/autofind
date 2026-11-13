@@ -64,16 +64,51 @@ class ClipOnnx:
         except ImportError as exc:
             raise FileNotFoundError("onnxruntime and tokenizers are required for CLIP") from exc
 
-        options = ort.SessionOptions()
-        options.log_severity_level = 3
-        self.visual = ort.InferenceSession(str(visual), options, providers=["CPUExecutionProvider"])
-        self.textual = ort.InferenceSession(str(textual), options, providers=["CPUExecutionProvider"])
+        self._ort = ort
+        # Each parsed session is ~100+ MB of private RAM even though the
+        # weights are file-backed. The two towers are used by different
+        # processes — the indexer embeds images, the search server only ever
+        # encodes text — so load a tower the first time it is actually used
+        # and never pay for the one this process does not need.
+        self._visual_path = visual
+        self._textual_path = textual
+        self._visual_session = None
+        self._textual_session = None
         self.tokenizer = Tokenizer.from_file(str(tokenizer))
         self.tokenizer.enable_truncation(max_length=77)
         self.tokenizer.enable_padding(length=77)
         self.text_tokenizer = Tokenizer.from_file(str(text_tokenizer))
         self.text_tokenizer.enable_truncation(max_length=77)
         self.text_tokenizer.enable_padding(length=77)
+
+    @staticmethod
+    def _ort_for_options():
+        import onnxruntime as ort
+
+        options = ort.SessionOptions()
+        options.log_severity_level = 3
+        # The BFC arena holds onto peak activation across calls; for
+        # 224x224 images and 77-token texts the peaks are tiny and the
+        # retained pool is pure waste.
+        options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = False
+        return options
+
+    @property
+    def visual(self):
+        if self._visual_session is None:
+            self._visual_session = self._ort.InferenceSession(
+                str(self._visual_path), self._ort_for_options(),
+                providers=["CPUExecutionProvider"])
+        return self._visual_session
+
+    @property
+    def textual(self):
+        if self._textual_session is None:
+            self._textual_session = self._ort.InferenceSession(
+                str(self._textual_path), self._ort_for_options(),
+                providers=["CPUExecutionProvider"])
+        return self._textual_session
 
     def encode_image(self, image: Image.Image) -> np.ndarray:
         array = np.asarray(
@@ -125,7 +160,23 @@ def _normalise(vector: np.ndarray) -> np.ndarray:
     return (vector / norm).astype(np.float32) if norm else vector.astype(np.float32)
 
 
+_VISUAL_CACHE: dict[tuple[str, str], "ClipOnnx | LayoutEmbedder"] = {}
+
+
 def get_visual_embedder(model_dir: str | Path | None = None, prefer: str = "auto"):
+    # One ClipOnnx holds two ONNX sessions (~210 MB of weights faulted in);
+    # constructing it per request made every search pay ~0.5 s of session
+    # setup. onnxruntime sessions are safe to share across request threads.
+    key = (str(Path(model_dir).resolve()) if model_dir is not None else "", prefer)
+    cached = _VISUAL_CACHE.get(key)
+    if cached is not None:
+        return cached
+    embedder = _make_visual_embedder(model_dir, prefer)
+    _VISUAL_CACHE[key] = embedder
+    return embedder
+
+
+def _make_visual_embedder(model_dir: str | Path | None, prefer: str):
     if prefer in ("auto", "clip") and model_dir is not None:
         try:
             return ClipOnnx(model_dir)

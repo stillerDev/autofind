@@ -53,14 +53,21 @@ MAX_ENTRIES = 1_500_000
 # `np.frombuffer(...)` would import numpy on every cold CLI start.
 BOUNDARY_CHARS = b" ._-("
 
-# Byte values the match-position table covers: lowercase ASCII letters and
-# digits. A query byte outside it (punctuation, non-ASCII) sends the whole
-# query to the Python scorer.
-ALPHABET_BYTES = b"abcdefghijklmnopqrstuvwxyz0123456789"
-# Bytes the vectorised scorer's position table actually knows. Any other
-# ASCII byte (`_`, `-`, `.`, space…) has no indexed positions, so such queries
-# take the Python scorer, exactly like non-ASCII ones.
-ALPHABET_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
+# Byte values the match-position table covers: every printable ASCII byte.
+# The greedy walk matches query bytes against positions of the same byte in
+# the names' UTF-8 blobs, and a byte-level greedy equals the char-level one
+# exactly while the query is ASCII (every ASCII byte is its own char, and an
+# ASCII query can only match ASCII bytes of a name). Extending the table from
+# 36 letters to all 95 printable bytes is what lets `budget review` or
+# `readme_00001234` take the vectorised path instead of a 20k-row Python loop.
+ALPHABET_BYTES = bytes(range(0x20, 0x7F))
+ALPHABET_FIRST = 0x20
+# Query bytes outside the table (control chars, non-ASCII) take the Python
+# scorer, exactly like before.
+ALPHABET_CHARS = frozenset(chr(code) for code in range(0x20, 0x7F))
+# Bumped whenever the alpha table's byte range changes: a sidecar saved under
+# a different table must not be read by code whose column math assumes this one.
+ALPHA_VERSION = 2
 
 
 def subsequence_score(query: str, name: str) -> float | None:
@@ -223,21 +230,22 @@ class NameIndex:
                 self.kind_vocab.append(kind)
             self.kind_codes[position] = code
 
-        # Sorted positions of every alphabet byte inside the lowered-name
-        # blob — the backbone of the vectorised subsequence match. One
-        # C-level scan per byte value at build, ~4 ms at 100k names; the
-        # table is roughly the size of the blob itself, int32.
-        chunks: list[np.ndarray] = []
-        alpha_starts = np.zeros(len(ALPHABET_BYTES) + 1, dtype=np.int64)
-        for column, byte in enumerate(ALPHABET_BYTES):
-            hits = np.flatnonzero(self.blob_array == byte)
-            chunks.append(hits.astype(np.int32, copy=False))
-            alpha_starts[column + 1] = alpha_starts[column] + len(hits)
-        self.alpha_starts = alpha_starts
-        self.alpha_positions = (
-            np.concatenate(chunks).astype(np.int32, copy=False)
-            if chunks else np.empty(0, dtype=np.int32)
-        )
+        # Sorted positions of every printable-ASCII byte inside the lowered-
+        # name blob — the backbone of the vectorised subsequence match. One
+        # stable argsort over the whole blob instead of one scan per byte
+        # value: 95 scans at 100k names measured ~120 ms, the sort ~35 ms.
+        flat = np.asarray(self.blob_array, dtype=np.uint8).ravel()
+        known = (flat >= ALPHABET_FIRST) & (flat < ALPHABET_FIRST + len(ALPHABET_BYTES))
+        where = np.flatnonzero(known).astype(np.int32, copy=False)
+        values = flat[where]
+        order = np.argsort(values, kind="stable")
+        self.alpha_positions = where[order].astype(np.int32, copy=False)
+        # bincount over table columns, not raw byte codes: alpha_starts is
+        # indexed by column (byte - ALPHABET_FIRST) everywhere else.
+        counts = np.bincount(values - ALPHABET_FIRST, minlength=len(ALPHABET_BYTES))
+        self.alpha_starts = np.concatenate(
+            ([0], np.cumsum(counts))
+        ).astype(np.int64, copy=False)
 
     def __len__(self) -> int:
         return int(self.ids.shape[0])
@@ -298,6 +306,10 @@ class NameIndex:
             "numeric_order": np.array([name for name, _ in NUMERIC_ORDER], dtype=np.str_),
             "stamps": np.array(stamps, dtype=np.float64),
             "build_seconds": np.array([self.build_seconds], dtype=np.float64),
+            # The alpha tables' byte range is part of the sidecar contract: an
+            # older table (36 letters) indexed by the newer code's column math
+            # would silently return wrong matches, so the loader refuses it.
+            "alpha_version": np.array([ALPHA_VERSION], dtype=np.int64),
         }
         # Written straight to the final path: on Windows a just-closed file can
         # stay locked for a while by antivirus scans, which made the classic
@@ -591,7 +603,9 @@ class NameIndex:
 
         match_positions = np.empty((len(encoded), len(candidates)), dtype=np.int32)
         for step, byte in enumerate(encoded):
-            column = int(np.nonzero(np.frombuffer(ALPHABET_BYTES, dtype=np.uint8) == byte)[0][0])
+            # The table is a contiguous ASCII range, so the column is an
+            # offset, not a lookup — 95 bytes otherwise cost a scan per step.
+            column = byte - ALPHABET_FIRST
             table = self.alpha_positions[
                 self.alpha_starts[column]:self.alpha_starts[column + 1]
             ]
@@ -878,6 +892,9 @@ def _load_sidecar(store, fingerprint: tuple[int, int, float, float]) -> NameInde
                 saved = (saved[0], saved[1], 0.0, 0.0)  # sidecar predates the fingerprint switch
             elif len(saved) != 4:
                 return None
+            if "alpha_version" not in data.files or \
+                    int(data["alpha_version"][0]) != ALPHA_VERSION:
+                return None  # tables from a different byte range: rebuild
             if saved != fingerprint:
                 return None
             blobs = None

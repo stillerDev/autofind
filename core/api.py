@@ -976,13 +976,15 @@ class Handler(BaseHTTPRequestHandler):
             )
             tags = store.tags_for(hit.file_id for hit in page.hits)
             # Visual text search only makes sense when the query still has free
-            # text; a pure filter query would send nonsense to the image model.
+            # text and the corpus has images to match against; a pure filter
+            # query would send nonsense to the image model, and loading a
+            # 100+ MB text tower for a text-only corpus is pure waste.
             images = []
-            if visual:
+            if visual and parsed.text and store.image_count() > 0:
                 visual_embedder = get_visual_embedder(self.config.model_dir)
                 images = (
                     visual_text_search(store, visual_embedder, parsed.text or text, limit=8)
-                    if getattr(visual_embedder, "supports_text", False) and parsed.text
+                    if getattr(visual_embedder, "supports_text", False)
                     else []
                 )
         finally:

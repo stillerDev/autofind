@@ -21,6 +21,9 @@
 - GitHub updater (core/updater.py), lazy BM25 sidecar для CLI
 - rowid alias fix, _repack seal-check, segfault fix, NAME_CACHE eviction
 
-## Результат vs Kensaku v1.0.17
+## Результат vs Kensaku v1.0.17 (100k корпус, 2026-11-14)
 
-Warm ×4.6, Cold ×2.2, Контент ×3.2, Имена ×2, Индексация ×1.02, Размер ⚪, RSS ⚪
+Cold ×2.1 (295 vs 624 ms), Warm ×2.6 (8.9 vs 23.2 ms), RSS −24% (99 vs 131 MiB USS),
+Размер ⚪ (109+42 vs 112 MB), Контент-покрытие 104k чанков vs 8192 docs, CLIP ru/zh — только у нас.
+Память теперь НЕ паритет, а победа: sidecar nameindex реально работает (44 МБ блобов больше не в RAM),
+CLIP-сессии ленивые и по одной башне.
