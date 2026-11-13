@@ -246,6 +246,18 @@ class NameIndex:
 
     SIDE_SUFFIX = ".nameidx"
 
+    @staticmethod
+    def _bin_suffix(stamps) -> str:
+        """A hashable name for the companion file, identical on both sides.
+
+        repr() cannot do this: the savers' tuple holds ints and the loader's
+        comes back from a float64 npz (100000 vs 100000.0), which hashed to a
+        different file name and silently forced a full RAM rebuild."""
+        parts = []
+        for index, value in enumerate(stamps):
+            parts.append(str(int(value)) if index < 2 else f"{float(value):.6f}")
+        return hashlib.sha1("|".join(parts).encode()).hexdigest()[:10]
+
     def save_sidecar(self, path, stamps: tuple[int, int]) -> None:
         """Persist every build product to `<db>.nameidx` so the next process
         can `np.load` it instead of re-encoding 100k rows (~450 ms). Best
@@ -291,7 +303,7 @@ class NameIndex:
         # stay locked for a while by antivirus scans, which made the classic
         # tmp-then-replace dance fail repeatedly. A torn write here is safe —
         # the loader validates the files and falls back to a rebuild.
-        suffix = hashlib.sha1(repr(stamps).encode()).hexdigest()[:10]
+        suffix = self._bin_suffix(stamps)
         bin_path = Path(str(path) + "." + suffix + ".bin")
         with open(bin_path, "wb") as fh:
             fh.write(self.blob_array.tobytes())
@@ -872,31 +884,39 @@ def _load_sidecar(store, fingerprint: tuple[int, int, float, float]) -> NameInde
             arrays = {}
             if "bin_sizes" in data.files:
                 sizes = data["bin_sizes"].tolist()
-                suffix = hashlib.sha1(repr(saved).encode()).hexdigest()[:10]
+                suffix = NameIndex._bin_suffix(saved)
                 bin_path = Path(str(path) + "." + suffix + ".bin")
-                if bin_path.exists() and bin_path.stat().st_size == sum(sizes):
+                # The companion carries the four text blobs AND, in the newer
+                # layout, every numeric array raw — the expected size grows
+                # with the payload, so gate on both, not on the blobs alone.
+                expected = sum(sizes)
+                numeric_sizes = None
+                numeric_order = None
+                if "numeric_sizes" in data.files and "numeric_order" in data.files:
+                    numeric_sizes = data["numeric_sizes"].tolist()
+                    numeric_order = [str(n) for n in data["numeric_order"].tolist()]
+                    expected += sum(numeric_sizes)
+                if bin_path.exists() and bin_path.stat().st_size == expected:
                     view = np.memmap(bin_path, dtype=np.uint8, mode="r")
                     edges = np.concatenate(([0], np.cumsum(sizes)))
                     blobs = tuple(view[edges[i]:edges[i + 1]] for i in range(4))
-                if "numeric_sizes" in data.files and bin_path.exists() and \
-                        bin_path.stat().st_size == sum(sizes) + sum(data["numeric_sizes"].tolist()):
-                    n_sizes = data["numeric_sizes"].tolist()
-                    order = [str(n) for n in data["numeric_order"].tolist()]
-                    dtypes = {"ids": np.int64, "masks": np.int64, "sizes": np.int64,
-                              "mtimes": np.float64, "name_len": np.int32,
-                              "name_chars": np.int32, "offsets": np.int64,
-                              "name_offsets": np.int64, "path_offsets": np.int64,
-                              "path_lower_offsets": np.int64, "kind_codes": np.uint8,
-                              "alpha_starts": np.int64, "alpha_positions": np.int32}
-                    offset = int(sum(sizes))
-                    for name, size in zip(order, n_sizes):
-                        arrays[name] = np.frombuffer(
-                            view[offset:offset + size], dtype=dtypes[name]
-                        )
-                        offset += size
+                    if numeric_sizes is not None:
+                        dtypes = {"ids": np.int64, "masks": np.int64, "sizes": np.int64,
+                                  "mtimes": np.float64, "name_len": np.int32,
+                                  "name_chars": np.int32, "offsets": np.int64,
+                                  "name_offsets": np.int64, "path_offsets": np.int64,
+                                  "path_lower_offsets": np.int64, "kind_codes": np.uint8,
+                                  "alpha_starts": np.int64, "alpha_positions": np.int32}
+                        offset = int(sum(sizes))
+                        for name, size in zip(numeric_order, numeric_sizes):
+                            arrays[name] = np.frombuffer(
+                                view[offset:offset + size], dtype=dtypes[name]
+                            )
+                            offset += size
             for name in ("ids", "masks", "sizes", "mtimes", "name_len", "name_chars",
                          "offsets", "name_offsets", "path_offsets", "path_lower_offsets",
-                         "kind_codes", "alpha_starts", "alpha_positions"):
+                         "kind_codes", "alpha_starts", "alpha_positions",
+                         "kind_vocab", "blob", "name_blob", "path_blob", "path_lower_blob"):
                 if name not in arrays and name in data.files:
                     arrays[name] = data[name]
             index = NameIndex.from_arrays(
