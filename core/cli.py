@@ -152,6 +152,29 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("cheat", help="print the query grammar")
     sub.add_parser("stats", help="show index size and settings")
 
+    big_cmd = sub.add_parser("big", help="largest files in the index")
+    big_cmd.add_argument("min_mb", nargs="?", type=float, default=10.0)
+    big_cmd.add_argument("--limit", type=int, default=50)
+    big_cmd.add_argument("--json", action="store_true")
+
+    stale_cmd = sub.add_parser("stale", help="files not modified in N days")
+    stale_cmd.add_argument("days", nargs="?", type=float, default=365.0)
+    stale_cmd.add_argument("--limit", type=int, default=50)
+    stale_cmd.add_argument("--json", action="store_true")
+
+    dupes_cmd = sub.add_parser("dupes", help="files with identical content (sha256)")
+    dupes_cmd.add_argument("--limit", type=int, default=50)
+    dupes_cmd.add_argument("--json", action="store_true")
+
+    dead_cmd = sub.add_parser("dead", help="indexed paths that no longer exist")
+    dead_cmd.add_argument("--prune", action="store_true",
+                          help="remove dead paths from the index, not just list them")
+    dead_cmd.add_argument("--json", action="store_true")
+
+    top_cmd = sub.add_parser("top", help="files you open the most")
+    top_cmd.add_argument("--limit", type=int, default=25)
+    top_cmd.add_argument("--json", action="store_true")
+
     pin_cmd = sub.add_parser("pin", help="pin a file so it sits on the empty screen")
     pin_cmd.add_argument("target", help="file id, or a path inside the index")
     pin_cmd.add_argument("--off", action="store_true", help="unpin instead of pin")
@@ -246,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_export(args, config, db_path)
     if args.command == "uninstall":
         return _cmd_uninstall(args, config)
+    if args.command in ("big", "stale", "dupes", "dead", "top"):
+        return _cmd_finder(args, config, db_path)
     if args.command == "clip":
         # tools/ ships as loose scripts, not a package: load by path so an
         # installed copy finds the fetcher next to its own module tree.
@@ -874,6 +899,48 @@ def _cmd_pin(args, config: IndexConfig, db_path: Path) -> int:
         print(json.dumps({"id": file_id, "pinned": state, "path": row["path"]}, ensure_ascii=False))
     else:
         print(f"{'pinned' if state else 'unpinned'} {row['path']}")
+    return 0
+
+
+def _cmd_finder(args, config: IndexConfig, db_path: Path) -> int:
+    """big / stale / dupes / dead / top — corpus questions, one SQL each."""
+    from . import finders
+
+    if not db_path.exists():
+        print(f"no index at {db_path}", file=sys.stderr)
+        return 2
+    store = _open_store(config, db_path)
+    try:
+        if args.command == "big":
+            rows = finders.biggest(store.conn, min_mb=args.min_mb, limit=args.limit)
+        elif args.command == "stale":
+            rows = finders.stale(store.conn, days=args.days, limit=args.limit)
+        elif args.command == "dupes":
+            rows = finders.duplicates(store.conn, limit=args.limit)
+        elif args.command == "dead":
+            rows = finders.dead_paths(store.conn)
+            if args.prune and rows:
+                removed = finders.prune_dead(store, rows)
+                print(f"pruned {removed} dead paths")
+        else:  # top
+            rows = finders.most_opened(store.conn, limit=args.limit)
+    finally:
+        store.close()
+
+    if args.json:
+        print(json.dumps(
+            [{"name": r.name, "path": r.path, "kind": r.kind, "size": r.size,
+              "mtime": r.mtime, "score": r.score} for r in rows],
+            ensure_ascii=False, indent=2,
+        ))
+        return 0
+    if not rows:
+        print("nothing found")
+        return 0
+    for r in rows:
+        size_mb = r.size / 1048576
+        print(f"  {size_mb:9.1f} MB  {r.path}" if args.command == "big"
+              else f"  {r.score:>6}  {r.path}")
     return 0
 
 
