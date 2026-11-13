@@ -235,6 +235,10 @@ class ParsedQuery:
     # live in several, and asking for two collections means "either").
     tags: list[str] = field(default_factory=list)
     collections: list[str] = field(default_factory=list)
+    # ocr: / from: / subject: — narrow by pixels' text and by mail headers.
+    ocr_terms: list[str] = field(default_factory=list)
+    email_from: list[str] = field(default_factory=list)
+    email_subject: list[str] = field(default_factory=list)
     modified: Range | None = None
     size: Range | None = None
     mode: str = "ranked"
@@ -262,6 +266,7 @@ class ParsedQuery:
             self.kinds or self.exts or self.masks or self.in_paths or self.not_paths
             or self.names or self.contents or self.regexes or self.symbols
             or self.tags or self.collections
+            or self.ocr_terms or self.email_from or self.email_subject
             or self.modified or self.size
         )
 
@@ -557,6 +562,37 @@ def _apply_key(query: ParsedQuery, token: Token, now: float | None) -> None:
         query.terms.append(Term(literal))
         return
 
+    if key == "ocr":
+        # Screenshots are found by their pixels' text, not their names:
+        # `ocr:invoice` narrows to files whose images' OCR text carries it.
+        clean = value.strip()[:120]
+        if clean:
+            query.ocr_terms.append(clean.lower())
+            query.chips.append(Chip("ocr", clean, literal, literal))
+            return
+        query.terms.append(Term(literal))
+        return
+
+    if key in ("from", "sender"):
+        # Mail headers are part of the indexed text, so the answer lives in
+        # the email corpus: `from:anna` narrows to files whose From: matches.
+        clean = value.strip()[:200]
+        if clean:
+            query.email_from.append(clean.lower())
+            query.chips.append(Chip("from", clean, literal, literal))
+            return
+        query.terms.append(Term(literal))
+        return
+
+    if key in ("subject", "subj"):
+        clean = value.strip()[:200]
+        if clean:
+            query.email_subject.append(clean.lower())
+            query.chips.append(Chip("subject", clean, literal, literal))
+            return
+        query.terms.append(Term(literal))
+        return
+
     if key == "modified":
         window = parse_modified(value, now)
         if window is None:
@@ -792,6 +828,10 @@ def cheat_sheet() -> list[tuple[str, str]]:
         ("content:timeout", "только содержимое"),
         ("sym:parse_query", "определение в коде"),
         ('re:"TODO|FIXME"', "регулярное выражение"),
+        ("ocr:invoice", "текст внутри скриншота"),
+        ("from:anna", "письма от отправителя"),
+        ("subject:отчёт", "письма с темой"),
+        ("tag:работа", "файлы с меткой"),
         ("-node_modules", "исключить"),
         ('"exact phrase"', "фраза целиком"),
         ("mode:exhaustive", "все совпадения по пути"),

@@ -2497,6 +2497,59 @@ class Store:
             changed += 1
         return changed
 
+    def ocr_scope(self, terms: Sequence[str]) -> set[int]:
+        """Files whose images' OCR text carries every term (AND).
+
+        `ocr:invoice` is the answer to "the screenshot where the word invoice
+        appears" — a question the name and the pixels' caption answer together.
+        Case-insensitive LIKE over the OCR column: images are the smallest
+        table here, and the terms are short.
+        """
+        clean = [str(term or "").strip().lower()[:120] for term in terms]
+        clean = [term for term in clean if term]
+        if not clean:
+            return set()
+        rows = self.conn.execute(
+            "SELECT i.file_id, i.ocr_text FROM images i "
+            "WHERE i.file_id IS NOT NULL AND i.ocr_text IS NOT NULL"
+        ).fetchall()
+        scope: set[int] = set()
+        for row in rows:
+            text = (self._unseal_text(row[1]) or "").lower()
+            if all(term in text for term in clean):
+                scope.add(int(row[0]))
+        return scope
+
+    def email_scope(self, from_values: Sequence[str], subject_values: Sequence[str]) -> set[int]:
+        """Files whose mail headers match `from:` / `subject:` (each AND).
+
+        Headers are part of the extracted text, so this decompresses only the
+        email corpus — a small fraction of any index — and matches the header
+        line case-insensitively.
+        """
+        froms = [str(v or "").strip().lower()[:200] for v in from_values]
+        subjects = [str(v or "").strip().lower()[:200] for v in subject_values]
+        froms = [v for v in froms if v]
+        subjects = [v for v in subjects if v]
+        if not froms and not subjects:
+            return set()
+        rows = self.conn.execute(
+            "SELECT id FROM files WHERE kind = 'email'"
+        ).fetchall()
+        scope: set[int] = set()
+        for row in rows:
+            text = (self.file_text(int(row[0])) or "").lower()
+            headers_from = []
+            headers_subj = []
+            for line in text.splitlines():
+                if line.lower().startswith("from:"):
+                    headers_from.append(line[5:].strip())
+                elif line.lower().startswith("subject:"):
+                    headers_subj.append(line[8:].strip())
+            if all(any(v in header for header in headers_from) for v in froms)                     and all(any(v in header for header in headers_subj) for v in subjects):
+                scope.add(int(row[0]))
+        return scope
+
     def file_ids_for_tags(self, tags: Sequence[str]) -> set[int]:
         """Files carrying every one of these tags (AND, not OR)."""
         clean = [" ".join(str(tag or "").split())[:64] for tag in tags]

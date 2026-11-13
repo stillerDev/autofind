@@ -483,7 +483,8 @@ def _tag_collection_scope(store: Store, parsed: ParsedQuery) -> set[int] | None:
     `collection:Work collection:Home` means either, because a collection is a
     place a file lives, and a file can live in two places.
     """
-    if not parsed.tags and not parsed.collections:
+    if not (parsed.tags or parsed.collections or parsed.ocr_terms
+            or parsed.email_from or parsed.email_subject):
         return None
     scope: set[int] | None = None
     if parsed.tags:
@@ -492,6 +493,12 @@ def _tag_collection_scope(store: Store, parsed: ParsedQuery) -> set[int] | None:
     if parsed.collections:
         places = store.collection_ids_for_names(parsed.collections)
         scope = places if scope is None else scope & places
+    if parsed.ocr_terms:
+        ocr = store.ocr_scope(parsed.ocr_terms)
+        scope = ocr if scope is None else scope & ocr
+    if parsed.email_from or parsed.email_subject:
+        mail = store.email_scope(parsed.email_from, parsed.email_subject)
+        scope = mail if scope is None else scope & mail
     return scope if scope is not None else set()
 
 
