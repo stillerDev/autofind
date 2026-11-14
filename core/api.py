@@ -1566,7 +1566,12 @@ class Handler(BaseHTTPRequestHandler):
         with _WRITE_STORE_LOCK:
             global _WRITE_STORE
             if _WRITE_STORE is None:
-                _WRITE_STORE = self._store(readonly=False)
+                embedder = get_embedder("auto", self.config.model_dir)
+                _WRITE_STORE = Store(
+                    self.db_path, embedder.name, embedder.dim, readonly=False,
+                    vector_backend=self.config.vector_backend, ram_bm25=False,
+                    cache_kb=-8000,
+                )
             result = action(_WRITE_STORE)
             _WRITE_STORE.commit()
             return result

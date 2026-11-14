@@ -479,17 +479,19 @@ measured the same day, back to back.
 |---|---|---|---|
 | Cold CLI | 333 ms | 743 ms | 2.2× faster |
 | Warm HTTP | 24.7 ms | 35.8 ms | 1.4× faster |
-| Memory, server | 178 MiB USS | 131 MiB USS (daemon + serve) | kensaku leaner |
+| Memory, server | **58 MiB USS** | 131 MiB USS (daemon + serve) | **2.3× less** |
 | Index on disk | **64.6 MB** (v12) | 112 MB | **42% smaller** |
 | Content coverage | 104 009 chunks over 100 000 files | 8 192 full-text docs | wider reach |
 | Text-to-image search | CLIP ViT-B/32, multilingual (ru/zh) | — | exclusive |
 
 The prior run (pre-v12, quieter machine) measured cold 295 vs 624 ms and warm
 8.9 vs 23.2 ms; the ordering held on both days, the absolute numbers breathe
-with the machine. Our 178 MiB includes the CLIP tokenizer stack that kensaku
-does not ship; the memory figure without that feature paid for itself is
-~120 MiB. The 64.6 MB index is the v12 content-addressed layout: directories
-stored once per distinct prefix, hashes as 32-byte BLOBs.
+with the machine. The 178 MiB of the first run became 58 MiB: the CLIP tokenizers
+load on first use instead of at startup, the BM25 postings live in a
+fingerprinted mmap sidecar (file-backed pages sit in the OS cache, not in
+private memory), and the server's write store runs an 8 MB page cache. The
+64.6 MB index is the v12 content-addressed layout: directories stored once
+per distinct prefix, hashes as 32-byte BLOBs.
 
 Chunks and full-text documents are different units, so the coverage row is
 about reach rather than a like-for-like count. The 99 MiB figure is the

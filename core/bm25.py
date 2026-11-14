@@ -133,6 +133,25 @@ class InRamBM25:
             "flat_pos": self.flat_pos, "flat_tfs": self.flat_tfs,
         }
 
+    def write_memmap_sidecar(self, prefix) -> None:
+        """Persist the two big arrays as .npy files so the next process can
+        mmap them instead of holding ~15 MB of private RAM. The fingerprint
+        is part of the file name: a rebuild writes new files rather than
+        touching ones another process may be reading (Windows)."""
+        import numpy as np
+        prefix = str(prefix)
+        np.save(prefix + ".pos.npy", np.ascontiguousarray(self.flat_pos))
+        np.save(prefix + ".tfs.npy", np.ascontiguousarray(self.flat_tfs))
+
+    def attach_memmap(self, prefix) -> None:
+        """Swap the two big in-RAM arrays for file-backed views. The pages
+        fault in on demand and live in the OS file cache - they count toward
+        RSS but never toward private (USS) memory."""
+        import numpy as np
+        prefix = str(prefix)
+        self.flat_pos = np.load(prefix + ".pos.npy", mmap_mode="r")
+        self.flat_tfs = np.load(prefix + ".tfs.npy", mmap_mode="r")
+
     @classmethod
     def from_arrays(cls, arrays: dict) -> "InRamBM25":
         index = cls.__new__(cls)

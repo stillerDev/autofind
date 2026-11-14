@@ -1128,6 +1128,7 @@ class Store:
         cache: "VectorCache | None" = None,
         vector_backend: str = "pack",
         ram_bm25: bool | None = None,
+        cache_kb: int | None = None,
     ) -> None:
         self.path = Path(path)
         self.readonly = readonly
@@ -1160,7 +1161,11 @@ class Store:
         # (the mmap above), so a private 32 MB cache is 24 MB of duplicated
         # RSS per open Store. Writers keep the bigger cache: indexing is the
         # workload where the hot vocabulary actually pays.
-        self.conn.execute("PRAGMA cache_size=-4000" if readonly else "PRAGMA cache_size=-32000")
+        # The indexer's write store wants the big hot-vocabulary cache; the
+        # server's write store only ever saves recent searches and pins, so
+        # the caller may ask for a smaller one.
+        default_cache = -4000 if readonly else -32000
+        self.conn.execute(f"PRAGMA cache_size={cache_kb or default_cache}")
         self.conn.execute("PRAGMA busy_timeout=5000")
         if not readonly:
             self.conn.execute("PRAGMA journal_mode=WAL")
@@ -1970,6 +1975,15 @@ class Store:
             # recent-searches write, which has nothing to do with chunks.
             # Gating on the fingerprint here is what keeps one search write
             # from superseding an in-flight build every keystroke.
+            if not sealed:
+                # The fingerprinted memmap sidecar serves a cold server in
+                # milliseconds and costs no private memory.
+                side = self._load_bm25_memmap(fp)
+                if side is not None:
+                    _BM25["index"] = side
+                    _BM25["key"] = key
+                    _BM25["fp"] = fp
+                    return side
             if _BM25["building"] != key and (
                 _BM25["index"] is None or _BM25.get("fp") != fp
             ):
@@ -1987,6 +2001,33 @@ class Store:
                         finally:
                             conn.close()
                         index.fingerprint = build_fp
+                        if not was_sealed:
+                            # Normal mode keeps the two big arrays file-backed:
+                            # write the sidecar, then swap the RAM copies for
+                            # mmap views. Sealed mode keeps its own encrypted
+                            # sidecar and the arrays in RAM.
+                            try:
+                                prefix = self._bm25_sidecar_prefix(build_fp)
+                                index.write_memmap_sidecar(prefix)
+                                np.savez(
+                                    str(prefix) + ".meta.npz",
+                                    ids=index.ids, doc_len=index.doc_len,
+                                    avgdl=np.asarray([index.avgdl]),
+                                    vocab_blob=np.frombuffer(index.vocab_blob, dtype=np.uint8),
+                                    vocab_offsets=index.vocab_offsets, indptr=index.indptr,
+                                    build_seconds=np.asarray([index.built_in]),
+                                )
+                                for stale in self.path.parent.glob(
+                                    self.path.name + ".bm25.*.npy"
+                                ):
+                                    if not stale.name.startswith(prefix.name):
+                                        try:
+                                            stale.unlink()
+                                        except OSError:
+                                            pass
+                                index.attach_memmap(prefix)
+                            except OSError:
+                                pass  # a read-only disk keeps the RAM arrays
                         with _BM25_LOCK:
                             _BM25["index"] = index
                             _BM25["key"] = build_key
@@ -2008,6 +2049,46 @@ class Store:
     def _chunks_fingerprint(self) -> tuple[int, int]:
         row = self.conn.execute("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM chunks").fetchone()
         return (int(row[0]), int(row[1]))
+
+    def _bm25_sidecar_prefix(self, fp: tuple[int, int]) -> "Path":
+        from pathlib import Path as _Path
+
+        return _Path(str(self.path) + f".bm25.{fp[0]}x{fp[1]}")
+
+    def _load_bm25_memmap(self, fp: tuple[int, int]):
+        """Restore the mmap-backed CSR from the fingerprinted sidecar, or None."""
+        prefix = self._bm25_sidecar_prefix(fp)
+        if not (os.path.exists(str(prefix) + ".pos.npy")
+                and os.path.exists(str(prefix) + ".tfs.npy")):
+            return None
+        try:
+            index = bm25mod.InRamBM25.from_arrays({
+                "ids": np.array([], dtype=np.int64),
+                "doc_len": np.array([], dtype=np.float32),
+                "avgdl": np.array([1.0]),
+                "vocab_blob": np.frombuffer(b"", dtype=np.uint8),
+                "vocab_offsets": np.array([0], dtype=np.int64),
+                "indptr": np.array([0], dtype=np.int64),
+                "flat_pos": np.array([], dtype=np.int32),
+                "flat_tfs": np.array([], dtype=np.float32),
+            })
+            index.attach_memmap(prefix)
+            # The small arrays above are placeholders; the real ones ride in
+            # the fingerprinted .npz sidecar the build writes beside them.
+            meta = np.load(str(prefix) + ".meta.npz", allow_pickle=False)
+            index.ids = meta["ids"]
+            index.doc_len = meta["doc_len"]
+            index.avgdl = float(meta["avgdl"][0])
+            index.vocab_blob = meta["vocab_blob"].tobytes()
+            index.vocab_offsets = meta["vocab_offsets"]
+            index.indptr = meta["indptr"]
+            index.fingerprint = fp
+            index.built_in = float(meta["build_seconds"][0])
+            if int(index.ids.shape[0]) != int(fp[0]):
+                return None  # a fingerprint collision must not serve lies
+            return index
+        except Exception:
+            return None
 
     def _sealed_bm25_path(self):
         from pathlib import Path as _Path

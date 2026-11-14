@@ -69,17 +69,41 @@ class ClipOnnx:
         # weights are file-backed. The two towers are used by different
         # processes — the indexer embeds images, the search server only ever
         # encodes text — so load a tower the first time it is actually used
-        # and never pay for the one this process does not need.
+        # and never pay for the one this process does not need. The tokenizers
+        # follow the same rule: parsing a BPE vocab costs ~25 MB each, and a
+        # server that never runs the visual channel would hold both forever.
         self._visual_path = visual
         self._textual_path = textual
         self._visual_session = None
         self._textual_session = None
-        self.tokenizer = Tokenizer.from_file(str(tokenizer))
-        self.tokenizer.enable_truncation(max_length=77)
-        self.tokenizer.enable_padding(length=77)
-        self.text_tokenizer = Tokenizer.from_file(str(text_tokenizer))
-        self.text_tokenizer.enable_truncation(max_length=77)
-        self.text_tokenizer.enable_padding(length=77)
+        self._tokenizer_path = tokenizer
+        self._text_tokenizer_path = text_tokenizer
+        self._tokenizer = None
+        self._text_tokenizer = None
+
+    @staticmethod
+    def _prepare_tokenizer(tokenizer):
+        tokenizer.enable_truncation(max_length=77)
+        tokenizer.enable_padding(length=77)
+        return tokenizer
+
+    @property
+    def tokenizer(self):
+        if self._tokenizer is None:
+            from tokenizers import Tokenizer
+
+            self._tokenizer = self._prepare_tokenizer(
+                Tokenizer.from_file(str(self._tokenizer_path)))
+        return self._tokenizer
+
+    @property
+    def text_tokenizer(self):
+        if self._text_tokenizer is None:
+            from tokenizers import Tokenizer
+
+            self._text_tokenizer = self._prepare_tokenizer(
+                Tokenizer.from_file(str(self._text_tokenizer_path)))
+        return self._text_tokenizer
 
     @staticmethod
     def _ort_for_options():
