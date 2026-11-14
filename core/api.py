@@ -557,7 +557,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _store(self, readonly: bool = True) -> Store:
         embedder = get_embedder("auto", self.config.model_dir)
-        ram = _ram_bm25_for(self.db_path) or store_sealed(self.db_path)
+        # The BM25 build lands in the fingerprinted mmap sidecar, so the old
+        # 200k-chunk RAM gate is moot: any size pays one build, then serves
+        # file-backed postings with no private-memory cost.
+        ram = _ram_bm25_for(self.db_path) or store_sealed(self.db_path) or True
         return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly, cache=CACHE,
                      vector_backend=self.config.vector_backend, ram_bm25=ram)
 
