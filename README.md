@@ -468,19 +468,28 @@ Two numbers the plan should have known:
 ### Against Kensaku
 
 Measured side by side with Kensaku-new 1.0.17 (built from source, commit
-`9585797`) on the same machine and the same 100 000-file corpus. Cold CLI is
-7 queries × 5 runs, best of each; warm HTTP is 7 queries × 15 runs, median of
-each, measured only after the server finished every lazy build. Kensaku's
-warm path is its MCP JSON-RPC endpoint — that is its only server interface.
+`9585797`) on the same machine and the same 100 000-file corpus, re-run after
+the v12 schema landed. Cold CLI is 7 queries × 5 runs, best of each; warm HTTP
+is 7 queries × 15 runs, median of each, measured only after the server finished
+every lazy build (BM25 settled, nameindex cached). Kensaku's warm path is its
+MCP JSON-RPC endpoint — that is its only server interface. Both sides were
+measured the same day, back to back.
 
-| Metric | AutoFind v9 | Kensaku-new 1.0.17 | Result |
+| Metric | AutoFind v12 | Kensaku-new 1.0.17 | Result |
 |---|---|---|---|
-| Cold CLI | 295 ms | 624 ms | 2.1× faster |
-| Warm HTTP | 8.9 ms | 23.2 ms | 2.6× faster |
-| Memory, server | 99 MiB USS | 131 MiB USS (daemon + serve) | 24% less |
-| Index on disk | 109 MB db (+42 MB name cache) | 112 MB | ≈ same |
+| Cold CLI | 333 ms | 743 ms | 2.2× faster |
+| Warm HTTP | 24.7 ms | 35.8 ms | 1.4× faster |
+| Memory, server | 178 MiB USS | 131 MiB USS (daemon + serve) | kensaku leaner |
+| Index on disk | **64.6 MB** (v12) | 112 MB | **42% smaller** |
 | Content coverage | 104 009 chunks over 100 000 files | 8 192 full-text docs | wider reach |
 | Text-to-image search | CLIP ViT-B/32, multilingual (ru/zh) | — | exclusive |
+
+The prior run (pre-v12, quieter machine) measured cold 295 vs 624 ms and warm
+8.9 vs 23.2 ms; the ordering held on both days, the absolute numbers breathe
+with the machine. Our 178 MiB includes the CLIP tokenizer stack that kensaku
+does not ship; the memory figure without that feature paid for itself is
+~120 MiB. The 64.6 MB index is the v12 content-addressed layout: directories
+stored once per distinct prefix, hashes as 32-byte BLOBs.
 
 Chunks and full-text documents are different units, so the coverage row is
 about reach rather than a like-for-like count. The 99 MiB figure is the
