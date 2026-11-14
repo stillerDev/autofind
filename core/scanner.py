@@ -89,7 +89,7 @@ def sha256_file(path: str | Path, chunk: int = 1 << 20) -> str:
             if not block:
                 break
             digest.update(block)
-    return digest.hexdigest()
+    return digest.digest()
 
 
 def dedupe_roots(roots: Iterable[str | Path]) -> list[str]:

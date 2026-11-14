@@ -98,7 +98,13 @@ def prune_dead(store, found: list[Found]) -> int:
     """Drop dead paths and their chunks/images from the index."""
     removed = 0
     for item in found:
-        row = store.conn.execute("SELECT id FROM files WHERE path = ?", (item.path,)).fetchone()
+        from .store import _split_path
+        dirpath, name = _split_path(item.path)
+        row = store.conn.execute(
+            "SELECT r.id FROM file_rows r JOIN dirs d ON d.dir_id = r.dir_id "
+            "WHERE d.path = ? AND r.name = ?",
+            (dirpath, name),
+        ).fetchone()
         if row is None:
             continue
         file_id = int(row[0])

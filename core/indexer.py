@@ -404,9 +404,9 @@ def index_single(store, embedder, path, config) -> int:
     entry = entries[0]
     stats = IndexStats()
     visual = None
-    store.drop_file(int(store.conn.execute(
-        "SELECT id FROM files WHERE path = ?", (str(path),)
-    ).fetchone()[0]))
+    row = store.get_file(str(path))
+    if row is not None:
+        store.drop_file(int(row["id"]))
     _store_one(0, entry, config, store, embedder, visual, stats,
                progress=None, len_todo=1, done_before=0, commit_every=1)
     store.commit()
@@ -582,7 +582,7 @@ def _extract_text_job(entry, config: IndexConfig) -> dict:
             data = handle.read(min(cap, 1 << 20))
             if len(data) == min(cap, 1 << 20) and cap > (1 << 20):
                 data += handle.read(cap - len(data))
-        digest = hashlib.sha256(data).hexdigest()  # covers the indexed prefix
+        digest = hashlib.sha256(data).digest()  # covers the indexed prefix
         text = extract_plain_bytes(data)
         timing["read"] = time.perf_counter() - mark
         mark = time.perf_counter()

@@ -62,17 +62,37 @@ _RAM_BM25_ENABLED = os.environ.get("AUTOFIND_RAM_BM25", "0").strip().lower() not
 from .cjk import cjk_bigrams
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS files (
-    id        INTEGER PRIMARY KEY,
-    path      TEXT UNIQUE NOT NULL,
-    size      INTEGER NOT NULL,
-    mtime     REAL NOT NULL,
-    sha256    TEXT NOT NULL,
-    kind      TEXT NOT NULL,
-    indexed_at REAL NOT NULL
+-- The directory part of a path is stored once per distinct prefix: a corpus
+-- of 100k files in 100 directories wrote every folder name 1000 times over.
+CREATE TABLE IF NOT EXISTS dirs (
+    dir_id INTEGER PRIMARY KEY,
+    path   TEXT NOT NULL UNIQUE
 );
+-- The file row itself: basename + dir reference. Content hashes are 32-byte
+-- BLOBs, not 64-character hex strings - the hash is data, not prose.
+CREATE TABLE IF NOT EXISTS file_rows (
+    id         INTEGER PRIMARY KEY,
+    dir_id     INTEGER NOT NULL REFERENCES dirs(dir_id),
+    name       TEXT NOT NULL,
+    char_mask  INTEGER,
+    size       INTEGER NOT NULL,
+    mtime      REAL NOT NULL,
+    sha256     BLOB NOT NULL,
+    kind       TEXT NOT NULL,
+    doc_date   TEXT,
+    indexed_at REAL NOT NULL,
+    text_hash  BLOB,
+    UNIQUE(dir_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_files_text_hash ON file_rows(text_hash);
+CREATE INDEX IF NOT EXISTS idx_files_mtime ON file_rows(mtime);
+CREATE INDEX IF NOT EXISTS idx_files_size ON file_rows(size);
+-- The `files` view and its INSTEAD OF triggers are created by
+-- _migrate_v12, which is the only place that knows whether `files` is
+-- still a legacy table or already the view.
+
 CREATE TABLE IF NOT EXISTS file_texts (
-    hash       TEXT PRIMARY KEY,
+    hash       BLOB PRIMARY KEY,
     raw_len    INTEGER NOT NULL,
     block_size INTEGER NOT NULL DEFAULT 0,
     offsets    BLOB NOT NULL DEFAULT x'',
@@ -82,7 +102,7 @@ CREATE TABLE IF NOT EXISTS file_texts (
 -- once per *content*: two byte-identical documents share one `file_texts` row.
 CREATE TABLE IF NOT EXISTS chunks (
     id      INTEGER PRIMARY KEY,
-    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    file_id INTEGER NOT NULL REFERENCES file_rows(id) ON DELETE CASCADE,
     ord     INTEGER NOT NULL,
     start   INTEGER NOT NULL,
     len     INTEGER NOT NULL
@@ -91,7 +111,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
 -- One vector per file, one bit per dimension: 48 bytes at 384 dims. The sign
 -- pattern is what the KNN scan multiplies against a float query vector.
 CREATE TABLE IF NOT EXISTS file_vectors (
-    file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    file_id INTEGER PRIMARY KEY REFERENCES file_rows(id) ON DELETE CASCADE,
     dim     INTEGER NOT NULL,
     bits    BLOB NOT NULL
 );
@@ -99,7 +119,7 @@ CREATE TABLE IF NOT EXISTS images (
     id         INTEGER PRIMARY KEY,
     path       TEXT UNIQUE NOT NULL,
     file_id    INTEGER,
-    sha256     TEXT,
+    sha256     BLOB,
     width      INTEGER,
     height     INTEGER,
     size       INTEGER,
@@ -133,18 +153,17 @@ CREATE TABLE IF NOT EXISTS recent_searches (
 -- /api/open; ranking reads it as a bonus, so a file you actually use floats up
 -- without ever outranking an exact name match.
 CREATE TABLE IF NOT EXISTS usage (
-    file_id   INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    file_id   INTEGER PRIMARY KEY REFERENCES file_rows(id) ON DELETE CASCADE,
     opens     INTEGER NOT NULL DEFAULT 0,
     last_open REAL NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
-CREATE INDEX IF NOT EXISTS idx_files_size ON files(size);
+
 -- The personal layer: what makes this install *yours*. kensaku keeps pinned
 -- files, saved searches and a personal dictionary; these are the same three
 -- things, in the same file as the index, so they survive a reinstall of the
 -- application and never leave the machine.
 CREATE TABLE IF NOT EXISTS pins (
-    file_id  INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    file_id  INTEGER PRIMARY KEY REFERENCES file_rows(id) ON DELETE CASCADE,
     added_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS saved (
@@ -163,7 +182,7 @@ CREATE TABLE IF NOT EXISTS aliases (
 -- Tags are the user's own words about a file ("invoice", "tax 2025"). Any
 -- number per file; the filters are an AND so two tags narrow, not widen.
 CREATE TABLE IF NOT EXISTS tags (
-    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    file_id  INTEGER NOT NULL REFERENCES file_rows(id) ON DELETE CASCADE,
     tag      TEXT NOT NULL,
     added_at REAL NOT NULL,
     PRIMARY KEY (file_id, tag)
@@ -173,7 +192,7 @@ CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
 -- "why did I keep this?" — this is ours, stored beside the index like the
 -- rest of the personal layer.
 CREATE TABLE IF NOT EXISTS notes (
-    file_id  INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    file_id  INTEGER PRIMARY KEY REFERENCES file_rows(id) ON DELETE CASCADE,
     text     TEXT NOT NULL,
     added_at REAL NOT NULL
 );
@@ -192,7 +211,7 @@ CREATE TABLE IF NOT EXISTS collections (
 );
 CREATE TABLE IF NOT EXISTS collection_files (
     collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-    file_id       INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    file_id       INTEGER NOT NULL REFERENCES file_rows(id) ON DELETE CASCADE,
     added_at      REAL NOT NULL,
     PRIMARY KEY (collection_id, file_id)
 );
@@ -205,7 +224,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_name
 -- look like a definition.
 CREATE TABLE IF NOT EXISTS symbols (
     id      INTEGER PRIMARY KEY,
-    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    file_id INTEGER NOT NULL REFERENCES file_rows(id) ON DELETE CASCADE,
     name    TEXT NOT NULL,
     lowered TEXT NOT NULL,
     kind    TEXT NOT NULL,
@@ -285,6 +304,19 @@ def char_mask(text: str) -> int:
 
 def basename(path: str) -> str:
     return path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+
+
+def _split_path(path: str) -> tuple[str, str]:
+    """(directory prefix, basename) of an absolute path.
+
+    The directory keeps no trailing separator, so `dirs.path || '\\' || name`
+    reproduces the original string byte-for-byte; both separators are honoured
+    because imports may hand over forward slashes."""
+    text = str(path)
+    cut = max(text.rfind("\\"), text.rfind("/"))
+    if cut < 0:
+        return "", text
+    return text[:cut], text[cut + 1:]
 
 
 def _best_copy(items: Sequence[dict], prefer_size: bool = False) -> dict:
@@ -384,7 +416,7 @@ def _regexp(pattern: str, value: str | None) -> bool:
         return False
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Contentless FTS: `content=''` keeps postings only — no copy of the corpus in
 # the index. `contentless_delete=1` (SQLite 3.43+) makes `DELETE FROM` work,
@@ -455,6 +487,9 @@ def prepare_vectors(conn: sqlite3.Connection, dim: int, writable: bool = True) -
     return "sqlite-vec"
 
 
+VIEW_SCHEMA = "-- The `files` view is the stable read/write surface every caller has always\n-- used; the INSTEAD OF triggers keep it a table in every way that matters.\nCREATE VIEW IF NOT EXISTS files AS\n    SELECT r.id AS id,\n           d.path || '\\' || r.name AS path,\n           r.name AS name,\n           r.char_mask AS char_mask,\n           r.size AS size,\n           r.mtime AS mtime,\n           r.sha256 AS sha256,\n           r.kind AS kind,\n           r.doc_date AS doc_date,\n           r.indexed_at AS indexed_at,\n           r.text_hash AS text_hash\n    FROM file_rows r JOIN dirs d ON d.dir_id = r.dir_id;\nCREATE TRIGGER IF NOT EXISTS files_insert INSTEAD OF INSERT ON files BEGIN\n    INSERT INTO dirs(path) VALUES (substr(NEW.path, 1, length(NEW.path) - length(NEW.name) - 1))\n        ON CONFLICT(path) DO NOTHING;\n    INSERT INTO file_rows(dir_id, name, char_mask, size, mtime, sha256, kind, doc_date, indexed_at, text_hash)\n    VALUES ((SELECT dir_id FROM dirs WHERE path = substr(NEW.path, 1, length(NEW.path) - length(NEW.name) - 1)),\n            NEW.name, NEW.char_mask, NEW.size, NEW.mtime, NEW.sha256, NEW.kind,\n            NEW.doc_date, NEW.indexed_at, NEW.text_hash)\n    ON CONFLICT(dir_id, name) DO UPDATE SET\n        char_mask = excluded.char_mask, size = excluded.size, mtime = excluded.mtime,\n        sha256 = excluded.sha256, kind = excluded.kind,\n        doc_date = COALESCE(excluded.doc_date, doc_date), indexed_at = excluded.indexed_at,\n        text_hash = excluded.text_hash;\nEND;\nCREATE TRIGGER IF NOT EXISTS files_update INSTEAD OF UPDATE ON files BEGIN\n    UPDATE file_rows SET\n        name = NEW.name, char_mask = NEW.char_mask, size = NEW.size, mtime = NEW.mtime,\n        sha256 = NEW.sha256, kind = NEW.kind, doc_date = NEW.doc_date,\n        indexed_at = NEW.indexed_at, text_hash = NEW.text_hash\n    WHERE id = OLD.id;\n    -- A relocated file: the row keeps its id, the directory reference moves.\n    INSERT INTO dirs(path) VALUES (substr(NEW.path, 1, length(NEW.path) - length(NEW.name) - 1))\n        ON CONFLICT(path) DO NOTHING;\n    UPDATE file_rows SET dir_id = (SELECT dir_id FROM dirs WHERE path = substr(NEW.path, 1, length(NEW.path) - length(NEW.name) - 1))\n    WHERE id = OLD.id AND NEW.path <> OLD.path;\n    DELETE FROM dirs WHERE dir_id NOT IN (SELECT DISTINCT dir_id FROM file_rows);\nEND;\nCREATE TRIGGER IF NOT EXISTS files_delete INSTEAD OF DELETE ON files BEGIN\n    DELETE FROM file_rows WHERE id = OLD.id;\n    DELETE FROM dirs WHERE dir_id NOT IN (SELECT DISTINCT dir_id FROM file_rows);\nEND;"
+
+
 def _add_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> bool:
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     added = False
@@ -478,24 +513,31 @@ def _migrate_connection(conn: sqlite3.Connection) -> None:
     except sqlite3.Error:
         pass
     _add_columns(conn, "images", IMAGE_COLUMNS)
-    if _add_columns(conn, "files", FILE_COLUMNS):
-        rows = conn.execute("SELECT id, path FROM files").fetchall()
-        conn.executemany(
-            "UPDATE files SET name = ?, char_mask = ? WHERE id = ?",
-            [(basename(row["path"]), char_mask(basename(row["path"])), row["id"]) for row in rows],
-        )
-    _add_columns(conn, "files", TEXT_COLUMNS)
     if _add_columns(conn, "file_texts", TEXT_BLOCK_COLUMNS):
         pass  # the rows are repacked right below
-    _repack_texts(conn)
-    if version < 8:
-        _quantize_vector_rows(conn)
-    if version < 9:
-        _migrate_v9(conn)
-    if version < 10:
-        _migrate_v10(conn)
-    if version < 11:
-        _migrate_v11(conn)
+    # The legacy chain below assumes `files` is a real table; on a fresh v12
+    # layout it is a view over dirs+file_rows and the chain must not touch it.
+    layout = conn.execute("SELECT type FROM sqlite_master WHERE name = 'files'").fetchone()
+    legacy_layout = bool(layout) and layout[0] == "table"
+    if legacy_layout:
+        if _add_columns(conn, "files", FILE_COLUMNS):
+            rows = conn.execute("SELECT id, path FROM files").fetchall()
+            conn.executemany(
+                "UPDATE files SET name = ?, char_mask = ? WHERE id = ?",
+                [(basename(row["path"]), char_mask(basename(row["path"])), row["id"]) for row in rows],
+            )
+        _add_columns(conn, "files", TEXT_COLUMNS)
+        _repack_texts(conn)
+        if version < 8:
+            _quantize_vector_rows(conn)
+        if version < 9:
+            _migrate_v9(conn)
+        if version < 10:
+            _migrate_v10(conn)
+        if version < 11:
+            _migrate_v11(conn)
+    if version < 12:
+        _migrate_v12(conn)
     _ensure_fts(conn)
     if version < 9:
         # The dropped tiers (778 MB of trigram, 17 MB of CJK, the chunk text
@@ -567,7 +609,7 @@ def _pack_text(text: str) -> tuple[str, int, int, bytes, bytes]:
     bottleneck, so the extra level costs no wall time; level 3 was measured
     5 MB larger on the benchmark corpus for no speedup.
     """
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
     offsets = [0]
     blocks: list[bytes] = []
     total = 0
@@ -964,6 +1006,110 @@ def _migrate_v9(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_v12(conn: sqlite3.Connection) -> None:
+    """Schema v12: the directory prefixes move to their own table, the file
+    row keeps only the basename, and every content hash becomes a 32-byte
+    BLOB instead of a 64-character hex string.
+
+    The measured shape on the 100k corpus: 100k files shared 100 directory
+    prefixes, and the path column plus its UNIQUE autoindex cost ~25 MB of
+    duplicated text. `files` becomes a view with INSTEAD OF triggers, so the
+    read/write surface every caller uses stays exactly the same.
+    """
+    conn.execute("PRAGMA foreign_keys=OFF")
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='dirs'").fetchone():
+        conn.execute(
+            "CREATE TABLE dirs (dir_id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE)"
+        )
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='file_rows'").fetchone():
+        conn.execute(
+            "CREATE TABLE file_rows ("
+            "id INTEGER PRIMARY KEY, dir_id INTEGER NOT NULL REFERENCES dirs(dir_id), "
+            "name TEXT NOT NULL, char_mask INTEGER, size INTEGER NOT NULL, mtime REAL NOT NULL, "
+            "sha256 BLOB NOT NULL, kind TEXT NOT NULL, doc_date TEXT, indexed_at REAL NOT NULL, "
+            "text_hash BLOB, UNIQUE(dir_id, name))"
+        )
+    legacy = conn.execute(
+        "SELECT type FROM sqlite_master WHERE name = 'files'"
+    ).fetchone()
+    if legacy is not None and legacy[0] == "table":
+        # A path splits into directory + basename exactly: the row already
+        # carries `name`, so the prefix is pure arithmetic - no separator
+        # escaping, no instr-first-vs-last traps.
+        conn.execute(
+            "INSERT OR IGNORE INTO dirs(path) "
+            "SELECT DISTINCT substr(path, 1, length(path) - length(name) - 1) "
+            "FROM files WHERE name IS NOT NULL"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO file_rows(id, dir_id, name, char_mask, size, mtime, "
+            "sha256, kind, doc_date, indexed_at, text_hash) "
+            "SELECT f.id, d.dir_id, f.name, f.char_mask, f.size, f.mtime, "
+            "unhex(f.sha256), f.kind, f.doc_date, f.indexed_at, unhex(f.text_hash) "
+            "FROM files f JOIN dirs d ON d.path = substr(f.path, 1, length(f.path) - length(f.name) - 1)"
+        )
+        conn.execute("DROP TABLE files")
+        # The text store: same rows, the key becomes the 32 raw bytes.
+        conn.execute("ALTER TABLE file_texts RENAME TO file_texts_v11")
+        conn.execute(
+            "CREATE TABLE file_texts ("
+            "hash BLOB PRIMARY KEY, raw_len INTEGER NOT NULL, "
+            "block_size INTEGER NOT NULL DEFAULT 0, offsets BLOB NOT NULL DEFAULT x'', "
+            "data BLOB NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO file_texts SELECT unhex(hash), raw_len, block_size, offsets, data "
+            "FROM file_texts_v11"
+        )
+        conn.execute("DROP TABLE file_texts_v11")
+        conn.execute(
+            "UPDATE images SET sha256 = unhex(sha256) "
+            "WHERE sha256 IS NOT NULL AND typeof(sha256) = 'text'"
+        )
+        # The child tables carry `REFERENCES files(id)`, and a view cannot
+        # back a foreign key: each one is recreated against file_rows, rows
+        # copied verbatim.
+        for table, columns, target in (
+            ("chunks", "id, file_id, ord, start, len", "chunks_v12"),
+            ("file_vectors", "file_id, dim, bits", "file_vectors_v12"),
+            ("images", "id, path, file_id, sha256, width, height, size, mtime, thumb, "
+             "ocr_text, ocr_boxes, ocr_engine, phash, indexed_at", "images_v12"),
+            ("usage", "file_id, opens, last_open", "usage_v12"),
+            ("pins", "file_id, added_at", "pins_v12"),
+            ("tags", "file_id, tag, added_at", "tags_v12"),
+            ("collection_files", "collection_id, file_id, added_at", "collection_files_v12"),
+            ("symbols", "id, file_id, name, lowered, kind, line, text", "symbols_v12"),
+        ):
+            ddl = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()
+            if ddl is None:
+                continue
+            create = ddl[0].replace("REFERENCES files(id)", "REFERENCES file_rows(id)")
+            conn.execute(f"ALTER TABLE {table} RENAME TO {target}")
+            conn.execute(create)
+            conn.execute(f"INSERT OR IGNORE INTO {table} SELECT {columns} FROM {target}")
+            conn.execute(f"DROP TABLE {target}")
+    conn.execute("DROP INDEX IF EXISTS idx_files_text_hash")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_text_hash ON file_rows(text_hash)")
+    # The v10 orphan sweep is part of this upgrade too: a database can sit at
+    # v11 with sweep work still owed, and the hash conversion must not carry
+    # unreferenced texts across.
+    conn.execute(
+        "DELETE FROM file_texts WHERE hash NOT IN "
+        "(SELECT text_hash FROM file_rows WHERE text_hash IS NOT NULL)"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_files_mtime")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_mtime ON file_rows(mtime)")
+    conn.execute("DROP INDEX IF EXISTS idx_files_size")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_size ON file_rows(size)")
+    conn.commit()
+    conn.executescript(VIEW_SCHEMA)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
 def _migrate_v11(conn: sqlite3.Connection) -> None:
     """Schema v11: the personal-layer tables (notes, tag_colors) are additive
     and arrive with executescript(SCHEMA); the migration re-runs the v10
@@ -1182,7 +1328,19 @@ class Store:
     # ----------------------------------------------------------------- files
 
     def get_file(self, path: str) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM files WHERE path = ?", (path,)).fetchone()
+        # The indexed form: dirs lookup by unique path, then the thin
+        # (dir_id, name) index - a view filter on the computed path column
+        # would concatenate all 100k rows first.
+        dirpath, name = _split_path(path)
+        return self.conn.execute(
+            "SELECT r.id AS id, d.path || '\\' || r.name AS path, r.name AS name, "
+            "r.char_mask AS char_mask, r.size AS size, r.mtime AS mtime, "
+            "r.sha256 AS sha256, r.kind AS kind, r.doc_date AS doc_date, "
+            "r.indexed_at AS indexed_at, r.text_hash AS text_hash "
+            "FROM file_rows r JOIN dirs d ON d.dir_id = r.dir_id "
+            "WHERE d.path = ? AND r.name = ?",
+            (dirpath, name),
+        ).fetchone()
 
     def file_by_id(self, file_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
@@ -1191,17 +1349,28 @@ class Store:
         self, path: str, size: int, mtime: float, sha256: str, kind: str,
         doc_date: str | None = None,
     ) -> int:
-        name = basename(path)
+        # Writes go straight to dirs+file_rows: SQLite refuses an UPSERT
+        # against the `files` view, and this is the one writer that needs it.
+        dirpath, name = _split_path(path)
         self.conn.execute(
-            "INSERT INTO files(path, name, char_mask, size, mtime, sha256, kind, doc_date, indexed_at) "
+            "INSERT INTO dirs(path) VALUES(?) ON CONFLICT(path) DO NOTHING",
+            (dirpath,),
+        )
+        dir_id = int(self.conn.execute(
+            "SELECT dir_id FROM dirs WHERE path = ?", (dirpath,)
+        ).fetchone()[0])
+        self.conn.execute(
+            "INSERT INTO file_rows(dir_id, name, char_mask, size, mtime, sha256, kind, doc_date, indexed_at) "
             "VALUES(?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(path) DO UPDATE SET name=excluded.name, char_mask=excluded.char_mask, "
+            "ON CONFLICT(dir_id, name) DO UPDATE SET char_mask=excluded.char_mask, "
             "size=excluded.size, mtime=excluded.mtime, sha256=excluded.sha256, "
             "kind=excluded.kind, doc_date=COALESCE(excluded.doc_date, doc_date), "
             "indexed_at=excluded.indexed_at",
-            (path, name, char_mask(name), size, mtime, sha256, kind, doc_date, time.time()),
+            (dir_id, name, char_mask(name), size, mtime, sha256, kind, doc_date, time.time()),
         )
-        row = self.conn.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()
+        row = self.conn.execute(
+            "SELECT id FROM file_rows WHERE dir_id = ? AND name = ?", (dir_id, name)
+        ).fetchone()
         return int(row["id"])
 
     def doc_dates(self, file_ids: Iterable[int]) -> dict[int, str]:
@@ -1251,7 +1420,7 @@ class Store:
 
     def text_rows(self, hashes: Iterable[str | None]) -> dict[str, sqlite3.Row]:
         """The `file_texts` rows for several hashes, in as few queries as fit."""
-        wanted = [str(h) for h in hashes if h]
+        wanted = [h for h in hashes if h]
         if not wanted:
             return {}
         out: dict[str, sqlite3.Row] = {}
@@ -1263,7 +1432,7 @@ class Store:
                 block,
             ).fetchall()
             for row in rows:
-                out[str(row["hash"])] = row
+                out[row["hash"]] = row
         return out
 
     def texts_of(self, hashes: Iterable[str | None]) -> dict[str, str]:

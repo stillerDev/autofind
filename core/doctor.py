@@ -196,7 +196,7 @@ def self_test(db_path, sample: int = 20) -> dict:
                     f"stored text for {row['hash'][:12]}… cannot be inflated"
                 )
                 break
-            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            digest = hashlib.sha256(text.encode("utf-8")).digest()
             if digest != row["hash"]:
                 result["problems"].append(
                     f"stored text no longer matches its hash {row['hash'][:12]}…"

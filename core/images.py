@@ -68,7 +68,7 @@ def load_image(path: str | Path) -> Image.Image | None:
 
 
 def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+    return hashlib.sha256(data).digest()
 
 
 def image_info(path: str | Path) -> ImageInfo | None:
@@ -84,7 +84,7 @@ def image_info(path: str | Path) -> ImageInfo | None:
     with open(path, "rb") as handle:
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
-    return ImageInfo(str(Path(path).resolve()), width, height, stat.st_size, stat.st_mtime, digest.hexdigest())
+    return ImageInfo(str(Path(path).resolve()), width, height, stat.st_size, stat.st_mtime, digest.digest())
 
 
 def preprocess_for_ocr(
