@@ -1144,11 +1144,23 @@ class Store:
             return False
 
     def save_search_query(self, q: str) -> None:
-        """Store a search query in the recent searches table (max 10)."""
+        """Store a search query in the recent searches table (max 10).
+
+        A repeat of the newest entry writes nothing: the client fires a search
+        per settled keystroke, and every one of those commits moves the WAL,
+        which the BM25 stamp check treats as corpus churn."""
         import time as _t
+        clean = q.strip()
+        if not clean:
+            return
+        last = self.conn.execute(
+            "SELECT q FROM recent_searches ORDER BY at DESC LIMIT 1"
+        ).fetchone()
+        if last is not None and str(last[0]) == clean:
+            return
         self.conn.execute(
             "INSERT INTO recent_searches(q, at) VALUES(?, ?)",
-            (q.strip(), _t.time())
+            (clean, _t.time())
         )
         self.conn.execute(
             "DELETE FROM recent_searches WHERE at NOT IN "
@@ -1784,7 +1796,14 @@ class Store:
                     _BM25["key"] = key
                     _BM25["fp"] = fp
                     return index
-            if _BM25["building"] != key:
+            # Rebuild only when the corpus actually changed. The key carries
+            # the file stamps, and any commit moves them - including a
+            # recent-searches write, which has nothing to do with chunks.
+            # Gating on the fingerprint here is what keeps one search write
+            # from superseding an in-flight build every keystroke.
+            if _BM25["building"] != key and (
+                _BM25["index"] is None or _BM25.get("fp") != fp
+            ):
                 _BM25["building"] = key
 
                 def _build(store_path=str(self.path), build_key=key, build_fp=fp,

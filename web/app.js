@@ -43,19 +43,27 @@ function dateLabel(seconds) {
 }
 
 function sizeLabel(bytes) {
-  return `${(bytes / 1024).toFixed(0)} ${t("unit.kb")}`;
+  const n = Number(bytes) || 0;
+  if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} ${t("unit.gb")}`;
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} ${t("unit.mb")}`;
+  if (n >= 1024) return `${Math.round(n / 1024)} ${t("unit.kb")}`;
+  return `${n} ${t("unit.b")}`;
 }
 
-function highlight(snippet, query) {
-  let html = esc(snippet);
-  const terms = (query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) || [])
-    .filter((item) => item.length >= 3)
-    .slice(0, 12);
-  for (const term of terms) {
-    const safe = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    html = html.replace(new RegExp(`(${safe})`, "giu"), "<mark>$1</mark>");
-  }
-  return html;
+function highlight(text, query) {
+  // Three ways this used to corrupt its own markup: a query term that is
+  // itself `mark`/`amp`/`lt`/`gt`/`quot` matched the entities the previous
+  // pass had just written, a repeated term re-marked inside a <mark>, and a
+  // case change mid-word split a match in two. Dedupe, skip the entity
+  // words, and let the regex run once over the already-escaped text.
+  const terms = [...new Set(String(query || "").toLowerCase().split(/\s+/))]
+    .filter((word) => word.length >= 3 && !/^(mark|amp|lt|gt|quot|nbsp|#39)$/.test(word));
+  if (!terms.length) return text;
+  const pattern = new RegExp(
+    `(${terms.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+    "gi",
+  );
+  return String(text || "").replace(pattern, "<mark>$1</mark>");
 }
 
 function toast(message) {
@@ -623,8 +631,14 @@ function exportPicked() {
       (hit.tags || []).join("; "),
     ]);
   }
-  const csv = rows.map((row) => row
-    .map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+  // A file name is user-typed data; a cell that opens with = + - @ would
+  // run as a formula the moment Excel opens the export.
+  const safe = (cell) => {
+    let text = String(cell ?? "").replace(/"/g, '""');
+    if (/^[=+\-@]/.test(text)) text = `'${text}`;
+    return `"${text}"`;
+  };
+  const csv = rows.map((row) => row.map(safe).join(",")).join("\r\n");
   const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   downloadUrl(url, "autofind-selection.csv");
@@ -2287,7 +2301,13 @@ function pollJob() {
   clearTimeout(state.jobTimer);
   api("/api/progress").then((job) => {
     const done = job.total ? Math.round((job.position / job.total) * 100) : 0;
-    $("bar").style.width = `${job.running ? done : 100}%`;
+      if (job.error) {
+        $("bar").style.width = "0%";
+        $("bar").style.background = "var(--red, #e24b4a)";
+      } else {
+        $("bar").style.width = `${job.running ? done : 100}%`;
+        $("bar").style.background = "";
+      }
     $("progress-label").textContent = job.running
       ? `${job.position}/${job.total} · ${shortPath(job.path)}`
       : (job.result
@@ -2301,6 +2321,7 @@ function pollJob() {
     } else {
       $("index-btn").disabled = false;
       if (job.result) state.dupCache = {};
+  recentImages = null;
       loadStats();
       if (job.result && job.result.indexed) runSearch();
     }
@@ -4631,7 +4652,7 @@ if (initial) {
 // Deep link to a file: `?preview=<id>` opens Quick Look straight away, which is
 // what a link pasted into a chat should do.
 const initialPreview = params.get("preview");
-if (initialPreview) openPreview(Number(initialPreview));
+if (Number.isInteger(Number(initialPreview)) && Number(initialPreview) > 0) openPreview(Number(initialPreview));
 
 // A deep link is a request for a specific file, not a request for a greeting:
 // the splash would be in the way of the thing the link points at.
