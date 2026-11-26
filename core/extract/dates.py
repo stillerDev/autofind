@@ -31,11 +31,19 @@ WINDOW = 4000  # characters: the date lives in the header, not on page 40
 
 
 def _valid(year: int, month: int, day: int) -> bool:
-    return (
+    if not (
         1990 <= year <= date.today().year + 1
         and 1 <= month <= 12
         and 1 <= day <= 31
-    )
+    ):
+        return False
+    # 31.02 and 30.04 are not dates: let the calendar do the last check rather
+    # than accepting every 1..31 day for every month.
+    try:
+        date(year, month, day)
+    except ValueError:
+        return False
+    return True
 
 
 def find_doc_date(text: str) -> str | None:
@@ -53,7 +61,10 @@ def find_doc_date(text: str) -> str | None:
     for match in NUMERIC_RE.finditer(head):
         day, month, year = int(match.group(1)), int(match.group(2)), int(match.group(3))
         if year < 100:
-            year += 2000
+            # Pivot on the current century: "95" is 1995, "05" is 2005. Always
+            # adding 2000 threw away every date from the 1990s (and made 2095).
+            pivot = (date.today().year % 100) + 20
+            year += 1900 if year >= pivot else 2000
         if _valid(year, month, day):
             return f"{year:04d}-{month:02d}-{day:02d}"
 

@@ -19,11 +19,14 @@ on PATH.
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from core import DEFAULT_PORT  # noqa: E402
 from core.config import IndexConfig  # noqa: E402
 
 # A token from this set anywhere in argv means "the caller wants the CLI".
@@ -33,6 +36,11 @@ COMMANDS = {
     "shortcut", "install", "ocr",
     # The personal layer and the migration: `run.py pin`, `run.py import kensaku`.
     "pin", "pins", "saved", "alias", "sym", "import",
+    # Corpus tools, exports and maintenance: `run.py backup`, `run.py update`, …
+    "export", "uninstall", "clip", "backup", "share", "open", "pin-top",
+    "tag", "watch-status", "changelog", "register-url", "config", "verify",
+    "update", "compact", "big", "stale", "dupes", "dead", "top", "note",
+    "model", "vault",
 }
 
 
@@ -42,18 +50,33 @@ def launcher_parser() -> argparse.ArgumentParser:
         description="AutoFind: local search over files and screenshots",
         epilog="Subcommands: python run.py <index|search|app|autostart|...> (see `python run.py cheat`)",
     )
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-browser", action="store_true", help="start the server without opening anything")
     parser.add_argument("--browser", action="store_true", help="use the browser instead of the app window")
     parser.add_argument("--db", type=Path, default=None)
-    parser.add_argument("--hotkey", default="ctrl+alt+space", help="show/hide the window")
+    # No literal here: run_app() resolves hotkeys.json:focus when this is unset.
+    parser.add_argument("--hotkey", default=None, help="show/hide the window (default: hotkeys.json)")
     parser.add_argument("--no-hotkey", action="store_true")
     parser.add_argument("--no-tray", action="store_true")
     parser.add_argument("--hidden", action="store_true", help="start in the tray (used at login)")
     parser.add_argument("--windowed", action="store_true",
                         help="framed, resizable window instead of borderless")
+    parser.add_argument("--wait", action="store_true",
+                        help="stay attached to the GUI process (console stays open)")
     parser.add_argument("--debug", action="store_true")
     return parser
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True, timeout=5
+        )
+        # A recycled PID belonging to another process must not look like a
+        # resident shell: otherwise run.py exits without opening any window.
+        return str(pid) in result.stdout and "autofind-shell" in result.stdout.lower()
+    except Exception:
+        return False
 
 
 def launcher_flags() -> set[str]:
@@ -98,6 +121,59 @@ def main(argv: list[str] | None = None) -> int:
     config.ensure_home()
     db_path = args.db or config.db_path
 
+    # Native WebView2 shell: the exact web UI, no Python GUI stack on the
+    # hot path. It stays resident (like the kensaku tray app), so a second
+    # launch only raises the existing window. It falls back to pywebview when
+    # the binary has not been built.
+    if not args.browser and not args.no_browser:
+        name = "autofind-shell.exe" if os.name == "nt" else "autofind-shell"
+        candidates = []
+        if getattr(sys, "frozen", False):
+            # PyInstaller one-folder: spec-bundled shell lands in _internal,
+            # a hand-copied one may sit beside the exe.
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                candidates.append(Path(meipass) / name)
+            candidates.append(Path(sys.executable).resolve().parent / name)
+        else:
+            root = Path(__file__).resolve().parent
+            candidates.append(root / "shell-app" / "target" / "release" / name)
+        shell = next((c for c in candidates if c.is_file()), None)
+        home = getattr(config, "home", None)
+        if shell is not None and isinstance(home, (str, Path)):
+            home = Path(home)
+            pid_file = home / "shell.pid"
+            try:
+                pid = int(pid_file.read_text().strip())
+            except (OSError, ValueError):
+                pid = 0
+            if pid and _pid_alive(pid):
+                (home / "shell-show.flag").write_text("1")
+                return 0
+            env = os.environ.copy()
+            env["PYTHON"] = sys.executable
+            env["AUTOFIND_HOME"] = str(home)
+            if getattr(sys, "frozen", False):
+                # The shell must spawn `AutoFind.exe serve`, not `-m core.cli`.
+                env["AUTOFIND_FROZEN"] = "1"
+            env["AUTOFIND_PORT"] = str(args.port)
+            flags = 0
+            if os.name == "nt":
+                # Closing the terminal that launched run.py must not take the
+                # GUI down with it. A detached child owns its own process group.
+                flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            child = subprocess.Popen(
+                [str(shell)], cwd=str(Path(__file__).resolve().parent if not
+                                      getattr(sys, "frozen", False)
+                                      else Path(sys.executable).resolve().parent),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=flags,
+            )
+            return child.wait() if args.wait else 0
+
     if args.no_browser:
         from core.api import serve
 
@@ -114,16 +190,19 @@ def main(argv: list[str] | None = None) -> int:
         serve(db_path, config, port=args.port, open_browser=True)
         return 0
 
-    return run_app(
-        db_path,
-        config,
-        port=args.port,
-        hotkey=None if args.no_hotkey else args.hotkey,
-        tray=not args.no_tray,
-        start_hidden=args.hidden,
-        borderless=not args.windowed,
-        debug=args.debug,
-    )
+    app_kwargs: dict = {
+        "port": args.port,
+        "tray": not args.no_tray,
+        "start_hidden": args.hidden,
+        "borderless": not args.windowed,
+        "debug": args.debug,
+    }
+    if args.no_hotkey:
+        app_kwargs["hotkey"] = None          # explicitly disabled
+    elif args.hotkey:
+        app_kwargs["hotkey"] = args.hotkey   # explicit override
+    # Otherwise omit the key entirely so run_app reads the configured chord.
+    return run_app(db_path, config, **app_kwargs)
 
 
 if __name__ == "__main__":

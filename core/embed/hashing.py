@@ -33,7 +33,10 @@ class HashingEmbedder:
     semantic = False
 
     def encode_passages(self, texts: Iterable[str]) -> np.ndarray:
-        return np.vstack([self._vector(text) for text in texts]) if texts else np.zeros((0, DIM), np.float32)
+        # Materialise first: a generator is always truthy, so `if texts` used to
+        # send an empty one into np.vstack([]) and crash the indexing run.
+        vectors = [self._vector(text) for text in texts]
+        return np.vstack(vectors) if vectors else np.zeros((0, DIM), np.float32)
 
     def encode_query(self, text: str) -> np.ndarray:
         return self._vector(text)

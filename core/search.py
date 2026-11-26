@@ -31,14 +31,14 @@ from typing import Sequence
 
 from . import nameindex
 from . import cjk
-from .bm25 import tokenize
 from .cjk import cjk_query_phrase
 from .group import group_hits, hamming
 from .lazynp import np
-from .nameindex import subsequence_score
+# Re-exported here: tests and older callers import it from core.search.
+from .nameindex import subsequence_score  # noqa: F401
 from .personal import expand_aliases
 from .query import Hint, ParsedQuery, understand
-from .store import Store, basename
+from .store import Store, _regex_is_unsafe, basename
 
 RRF_K = 60
 # Channel weights for the fusion. Equal weights are the textbook default, but
@@ -65,6 +65,11 @@ SNIPPET_WINDOW = 180
 # weak match would beat an exact hit.
 NAME_SUBSTRING_BONUS = 0.20
 NAME_PREFIX_BONUS = 0.15
+# Multi-word free text: a file whose name contains every word is the answer a
+# launcher user expects, even when the words are separated by `_`, `-` or `.`.
+# The path variant is weaker because a folder match describes location, not the file.
+NAME_TOKENS_BONUS = 0.24
+NAME_TOKENS_PATH_BONUS = 0.18
 RECENCY_WEIGHT = 0.10
 RECENCY_TAU_DAYS = 7.0
 FRECENCY_WEIGHT = 0.08
@@ -329,7 +334,9 @@ def _suggest_term(query_text: str, best_chunk_by_file: dict) -> str | None:
 
 # --------------------------------------------------------------------- fuzzy
 
-def fuzzy_files(store: Store, text: str, limit: int) -> list[tuple[int, float]]:
+def fuzzy_files(
+    store: Store, text: str, limit: int, fast: bool | None = None
+) -> list[tuple[int, float]]:
     """Rank files by name similarity, newest first inside equal scores.
 
     Delegates to the process-wide in-memory name index: the bloom prefilter is
@@ -339,9 +346,12 @@ def fuzzy_files(store: Store, text: str, limit: int) -> list[tuple[int, float]]:
     A one-shot CLI process has no warm index to amortise, and importing numpy
     for it is most of a cold start. Until numpy is loaded the SQL-backed scan
     answers instead; the app server (numpy already in memory) keeps the fast
-    vectorised path.
+    vectorised path. `fast` makes that choice explicit: callers that know their
+    environment pass True/False, so an identical query cannot change ranking
+    just because some unrelated import happened to load numpy first.
     """
-    if "numpy" not in sys.modules:
+    use_numpy = ("numpy" in sys.modules) if fast is None else fast
+    if not use_numpy:
         return nameindex.search_rows(store, text, limit)
     index = nameindex.load(store)
     return index.search(text, limit)
@@ -368,6 +378,12 @@ def finalize_score(
             score += NAME_SUBSTRING_BONUS
         if lowered.startswith(needle):
             score += NAME_PREFIX_BONUS
+        tokens = needle.split()
+        if 2 <= len(tokens) <= 6 and all(len(token) >= 2 for token in tokens):
+            if all(token in lowered for token in tokens):
+                score += NAME_TOKENS_BONUS
+            elif all(token in lowered or token in path.lower() for token in tokens):
+                score += NAME_TOKENS_PATH_BONUS
 
     age_days = max(now - mtime, 0.0) / 86400.0
     score += RECENCY_WEIGHT * math.exp(-age_days / RECENCY_TAU_DAYS)
@@ -420,6 +436,7 @@ def _listing(
     index = nameindex.load(store)
     usage = store.usage_map()
     scope = _tag_collection_scope(store, parsed)
+    excluded = _negative_text_ids(store, parsed, max(10_000, len(index) * 8))
     hits: list[Hit] = []
     kinds: list[str] = []
     for position in range(len(index)):
@@ -429,6 +446,8 @@ def _listing(
         mtime = float(index.mtimes[position])
         file_id = int(index.ids[position])
         if scope is not None and file_id not in scope:
+            continue
+        if file_id in excluded:
             continue
         if since is not None and mtime < since:
             continue
@@ -469,6 +488,20 @@ def _listing(
     return hits, _facets(kinds)
 
 
+def _negative_text_ids(store: Store, parsed: ParsedQuery, limit: int) -> set[int]:
+    """Files rejected by negated `re:` / `content:` filters, via chunk text."""
+    patterns = [
+        f"(?:{pattern})" for pattern in parsed.not_regexes
+        if pattern and not _regex_is_unsafe(pattern)
+    ]
+    patterns += [f"(?:{re.escape(needle)})" for needle in parsed.not_contents if needle]
+    if not patterns:
+        return set()
+    rows = store.regex_chunks("|".join(patterns), limit)
+    files, _ = _files_from_chunks(store, [(int(row["id"]), 0.0) for row in rows])
+    return set(files)
+
+
 def _facets(kinds: Sequence[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for kind in kinds:
@@ -486,20 +519,27 @@ def _tag_collection_scope(store: Store, parsed: ParsedQuery) -> set[int] | None:
     if not (parsed.tags or parsed.collections or parsed.ocr_terms
             or parsed.email_from or parsed.email_subject):
         return None
-    scope: set[int] | None = None
+    # Each family is combined within itself first: repeated collections are a
+    # union (a file can live in several), repeated tags are an intersection.
+    # The families are then intersected with each other.
+    groups: list[set[int]] = []
     if parsed.tags:
-        tagged = store.file_ids_for_tags(parsed.tags)
-        scope = tagged if scope is None else scope & tagged
+        # The helper already applies AND across tags.
+        groups.append(set(store.file_ids_for_tags(parsed.tags)))
     if parsed.collections:
-        places = store.collection_ids_for_names(parsed.collections)
-        scope = places if scope is None else scope & places
+        # The helper already applies OR across collections, so one call keeps
+        # `collection:Work collection:Home` a union instead of an empty set.
+        groups.append(set(store.collection_ids_for_names(parsed.collections)))
     if parsed.ocr_terms:
-        ocr = store.ocr_scope(parsed.ocr_terms)
-        scope = ocr if scope is None else scope & ocr
+        groups.append(set(store.ocr_scope(parsed.ocr_terms)))
     if parsed.email_from or parsed.email_subject:
-        mail = store.email_scope(parsed.email_from, parsed.email_subject)
-        scope = mail if scope is None else scope & mail
-    return scope if scope is not None else set()
+        groups.append(set(store.email_scope(parsed.email_from, parsed.email_subject)))
+    if not groups:
+        return set()
+    scope = groups[0]
+    for part in groups[1:]:
+        scope &= part
+    return scope
 
 
 # -------------------------------------------------------------------- search
@@ -547,6 +587,7 @@ def _rank(
     parsed: ParsedQuery | None = None,
     usage: dict[int, tuple[int, float]] | None = None,
     doc_dates: bool = False,
+    fuzzy_fast: bool | None = None,
 ) -> tuple[list[Hit], dict[str, int]]:
     """Rank every matching file. Callers slice; `search_page` needs the total."""
     parsed = parsed or (query if isinstance(query, ParsedQuery) else understand(query))
@@ -647,7 +688,7 @@ def _rank(
 
     def _fuzzy_channel():
         if "fuzzy" in channels and fuzzy_text:
-            return fuzzy_files(store, fuzzy_text, pool)
+            return fuzzy_files(store, fuzzy_text, pool, fast=fuzzy_fast)
         return []
 
     # Fuzzy is submitted first and lexical runs inline, so the vector gate can
@@ -701,6 +742,11 @@ def _rank(
     )
     chunk_rows.update(regex_chunk_rows)
 
+    # Negative `re:` / `content:` filters must reject files by their text, not
+    # just their path. The same guarded chunk scanner the positive regex uses
+    # covers every chunk, so a hit in a non-best chunk still excludes the file.
+    negative_files = _negative_text_ids(store, parsed, pool * 2)
+
     # File metadata for every candidate, including fuzzy-only files that have no
     # chunk in the pool.
     file_rows = {int(row["file_id"]): row for row in chunk_rows.values()}
@@ -743,7 +789,8 @@ def _rank(
         regex_files = ranked_scope["regex"]
         symbol_files = ranked_scope["symbol"]
         if fuzzy:
-            fuzzy = [row for row in fuzzy if int(row["id"]) in scope_ids]
+            # nameindex.search returns (file_id, score) tuples, not dict rows.
+            fuzzy = [row for row in fuzzy if int(row[0]) in scope_ids]
 
     # Document-date mode: `since` also matches the date the document claims
     # for itself, so a receipt screenshotted yesterday still surfaces when it
@@ -776,7 +823,7 @@ def _rank(
     # Facets over every candidate that survives the filters — not just the
     # sliced page — so `type:` tabs can show real counts, the way kensaku
     # counts its matched set.
-    allowed_ids = {fid for fid in file_rows if allowed(fid)}
+    allowed_ids = {fid for fid in file_rows if allowed(fid)} - set(negative_files)
     # Tags and collections are a set of file ids the index already knows. The
     # intersection happens here, before the facets, so the tab counts describe
     # the same set the page will show.
@@ -898,19 +945,21 @@ def hybrid_search(
     sort: str | None = None,
     parsed: ParsedQuery | None = None,
     usage: dict[int, tuple[int, float]] | None = None,
+    fuzzy_fast: bool | None = None,
 ) -> list[Hit]:
     """One page of ranked files. `_rank` does the work; this slices the page."""
     hits, _ = _rank(
         store, embedder, query, candidates=candidates, k=k, kinds=kinds, folder=folder,
         since=since, channels=channels, weights=weights, sort=sort, parsed=parsed, usage=usage,
+        fuzzy_fast=fuzzy_fast,
     )
     return hits[offset:offset + limit]
 
 
-# Query result cache: (query_hash, limit, filter_sig) -> page dict.
-# Invalidated when the store's vector generation or nameindex stamps change —
-# a single `index_stamp()` comparison covers both. The cache is bounded:
-# 500 entries, LRU by access time.
+# No page cache here on purpose: every query re-ranks against the live index
+# (the vector pack and name index key themselves on the file stamps), and the
+# expensive sub-results — the vector matrix, the name index, the BM25
+# postings — are already shared caches at the store layer.
 def search_page(
     store: Store,
     embedder,
@@ -923,6 +972,7 @@ def search_page(
     group: bool = True,
     applied: list | None = None,
     doc_dates: bool = False,
+    fuzzy_fast: bool | None = None,
 ) -> SearchPage:
     """One query, with the counts and chips the UI needs to explain itself.
 
@@ -945,7 +995,7 @@ def search_page(
     resolved = _resolve_sort(sort, parsed, listing=listing)
     hits, facets = _rank(
         store, embedder, parsed, sort=resolved, parsed=parsed, usage=usage,
-        doc_dates=doc_dates,
+        doc_dates=doc_dates, fuzzy_fast=fuzzy_fast,
     )
     total = len(hits)
 

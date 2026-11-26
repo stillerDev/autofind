@@ -41,10 +41,10 @@ KEY_LEN = 32
 _ENTROPY = "autofind.vault.v1"
 _UI_FORBIDDEN = 0x1
 
-# Passphrase-mode KDF parameters. scrypt's 128 MiB / ~1 s is the same ballpark
-# OWASP recommends for Argon2id with m=19 MiB t=2... no: deliberately heavier,
-# because a passphrase unlock happens once per process, not per row.
-SCRYPT_PARAMS = {"n": 2 ** 17, "r": 8, "p": 1}   # 256 MiB, a few seconds
+# Passphrase-mode KDF parameters. Deliberately heavier than OWASP's Argon2id
+# baseline because a passphrase unlock happens once per process, not per row.
+# scrypt cost = 128 * n * r = 128 MiB here (not 256 MiB), a few seconds.
+SCRYPT_PARAMS = {"n": 2 ** 17, "r": 8, "p": 1}   # 128 MiB, a few seconds
 ARGON2_PARAMS = {"time_cost": 4, "memory_cost": 262144, "parallelism": 2}  # 256 MiB
 
 # The passphrase can arrive through the environment for headless runs (the
@@ -161,18 +161,53 @@ class Vault:
         self._key = key
         self._aes = _aesgcm(key)
 
-    def seal(self, data: bytes) -> bytes:
-        if data.startswith(MAGIC):
-            return data  # already sealed (idempotent re-seal of a sealed row)
-        nonce = os.urandom(NONCE)
-        return MAGIC + nonce + self._aes.encrypt(nonce, data, None)
+    def seal(self, data: bytes, *, already_sealed: bool = False) -> bytes:
+        """Seal `data` into ``AFS1 | nonce | ciphertext+tag``.
 
-    def open_bytes(self, blob: bytes) -> bytes:
-        if not blob.startswith(MAGIC):
-            return blob  # legacy plaintext row, migration tolerance
-        nonce = blob[len(MAGIC):len(MAGIC) + NONCE]
+        ``already_sealed=True`` is the explicit idempotent path for a caller
+        that *knows* the row was sealed by this vault. The prefix alone is not
+        trusted: arbitrary plaintext beginning with ``AFS1`` used to sail
+        through in paranoid mode. Genuine blobs are recognised by verifying
+        the AEAD tag with this master key, so the common re-seal path stays
+        idempotent without leaving a plaintext hole.
+        """
+        if already_sealed:
+            return data
+        if isinstance(data, (bytes, bytearray, memoryview)) and self._decryptable(data):
+            return data  # a real blob from this vault — idempotent re-seal
+        nonce = os.urandom(NONCE)
+        return MAGIC + nonce + self._aes.encrypt(nonce, bytes(data), None)
+
+    def _decryptable(self, blob) -> bool:
+        """True only for an ``AFS1`` blob whose AEAD tag verifies with our key."""
+        head = len(MAGIC) + NONCE
+        view = memoryview(blob)
+        if len(view) <= head + 16:  # AES-GCM tag is 16 bytes
+            return False
+        if bytes(view[:len(MAGIC)]) != MAGIC:
+            return False
+        nonce = bytes(view[len(MAGIC):head])
         try:
-            return self._aes.decrypt(nonce, blob[len(MAGIC) + NONCE:], None)
+            self._aes.decrypt(nonce, view[head:], None)
+        except Exception:
+            return False
+        return True
+
+    def open_bytes(self, blob) -> bytes:
+        # `blob` may be a memoryview (e.g. a slice of the mmapped sidecar):
+        # slicing an mmap as bytes copies the whole blob, while a memoryview
+        # slice is free — worth it for the ~30 MB sealed BM25 header.
+        if isinstance(blob, memoryview):
+            if bytes(blob[:len(MAGIC)]) != MAGIC:
+                return blob.tobytes()  # legacy plaintext row
+            mv = blob
+        else:
+            if not blob.startswith(MAGIC):
+                return blob  # legacy plaintext row, migration tolerance
+            mv = memoryview(blob)
+        nonce = bytes(mv[len(MAGIC):len(MAGIC) + NONCE])
+        try:
+            return self._aes.decrypt(nonce, mv[len(MAGIC) + NONCE:], None)
         except Exception as exc:
             raise VaultError("sealed blob failed to decrypt (wrong key or corrupt data)") from exc
 

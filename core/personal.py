@@ -64,7 +64,10 @@ def expand_aliases(store: Store, text: str) -> tuple[str, list[Applied]]:
         pattern = re.compile(rf"(?<![\w:-]){re.escape(alias)}(?![\w-])", re.IGNORECASE)
         if not pattern.search(out):
             continue
-        out = pattern.sub(expand, out)
+        # A path expansion (C:\work\cv) or one containing \1 is a replacement
+        # *string*, not a regex template — pass it as a callable so backslashes
+        # and group references are emitted literally.
+        out = pattern.sub(lambda _m: expand, out)
         applied.append(Applied(alias, expand))
         if len(out) > MAX_EXPANDED_CHARS:
             break

@@ -59,7 +59,8 @@ class OutputHygieneTests(unittest.TestCase):
     def test_highlight_never_matches_the_entities_it_emits(self):
         body = re.search(r"function highlight\(.*?\n\}", APP, re.S).group(0)
         self.assertIn("new Set", body, "terms must be deduped")
-        self.assertIn("mark|amp|lt|gt|quot", body, "entity words must be skipped")
+        self.assertIn("amp|lt|gt|quot", body, "entity text must be skipped")
+        self.assertIn("safe.split(", body, "highlight must not paint inside entities")
 
 
 class BootStageTests(unittest.TestCase):

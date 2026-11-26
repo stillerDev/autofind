@@ -24,6 +24,7 @@ import time
 import zlib
 from array import array
 from bisect import bisect_right
+from collections import OrderedDict
 from functools import lru_cache
 from itertools import groupby
 from pathlib import Path
@@ -40,6 +41,84 @@ from .chunker import chunk_spans, normalize
 _BM25: dict = {"key": None, "index": None, "building": None}
 _BM25_LOCK = threading.Lock()
 
+# Decrypted `file_texts` blobs, keyed by their content hash. Sealed indexes
+# re-decrypt the same documents on every query — a page of results costs ~50
+# AES-GCM opens plus zlib inflates, which measured at ~11 ms of a ~39 ms warm
+# query. The hash IS the content: the same hash always decrypts to the same
+# plaintext, so a bounded LRU here is safe for the life of the process.
+_DATA_CACHE: "OrderedDict[str, bytes]" = OrderedDict()
+_DATA_CACHE_LOCK = threading.Lock()
+# A warm server re-decrypts a blob in ~0.2 ms, so a 12 MB plaintext window is
+# enough to absorb result pages without pinning tens of MB of document text.
+_DATA_CACHE_MAX_BYTES = 12 * 1024 * 1024   # plaintext bytes, not ciphertext
+_DATA_CACHE_MAX_ENTRIES = 8192
+
+# `re:` queries run user-supplied patterns over stored document text. Python's
+# re has no timeout, so a pattern like `(a+)+$` on a large document pins a core
+# forever. Reject the shapes that cause catastrophic backtracking and bound
+# both the pattern and the total text one request may scan.
+MAX_REGEX_PATTERN = 256
+MAX_REGEX_SCAN_BYTES = 64 * 1024 * 1024
+MAX_REGEX_QUANTIFIERS = 16
+MAX_REGEX_GROUPS = 16
+_NESTED_QUANTIFIER = re.compile(r"\([^)]{0,80}(?:\*|\+|\{[^}]*\})[^)]{0,80}\)\s*(?:\*|\+|\?|\{)")
+# A quantified group followed by another quantifier on a sibling group is
+# exponential too, e.g. `(a+)(b+)+$` — the first guard only sees nesting.
+_ADJACENT_QUANTIFIED = re.compile(r"\([^)]*[+*][^)]*\)\s*(?:\(|\[)?[^)]*[+*]")
+_HUGE_REPEAT = re.compile(r"\{(\d+)(?:,(\d*))?\}")
+
+
+def _regex_is_unsafe(pattern: str) -> bool:
+    if len(pattern) > MAX_REGEX_PATTERN:
+        return True
+    if pattern.count("(") > MAX_REGEX_GROUPS or pattern.count("[") > MAX_REGEX_GROUPS:
+        return True
+    if _NESTED_QUANTIFIER.search(pattern) or _ADJACENT_QUANTIFIED.search(pattern):
+        return True
+    quantifiers = sum(pattern.count(ch) for ch in "*+?")
+    if quantifiers > MAX_REGEX_QUANTIFIERS:
+        return True
+    for match in _HUGE_REPEAT.finditer(pattern):
+        for group in match.groups():
+            if group and int(group) > 4096:
+                return True
+    return False
+
+
+def _data_cache_get(key: str) -> bytes | None:
+    with _DATA_CACHE_LOCK:
+        blob = _DATA_CACHE.get(key)
+        if blob is not None:
+            _DATA_CACHE.move_to_end(key)
+        return blob
+
+
+def _data_cache_put(key: str, blob: bytes) -> None:
+    with _DATA_CACHE_LOCK:
+        if key in _DATA_CACHE:
+            return
+        _DATA_CACHE[key] = blob
+        if len(_DATA_CACHE) > _DATA_CACHE_MAX_ENTRIES:
+            # The byte budget still applies after an entry-count eviction —
+            # returning here used to make the 12 MB limit dead past 8192 rows.
+            _DATA_CACHE.popitem(last=False)
+        # Bytes-only accounting: strings of sizes are cheap, sum() over 8k
+        # entries is not per-query work, so track the total on the side.
+        total = 0
+        for cached in _DATA_CACHE.values():
+            total += len(cached)
+        while total > _DATA_CACHE_MAX_BYTES and _DATA_CACHE:
+            _, evicted = _DATA_CACHE.popitem(last=False)
+            total -= len(evicted)
+
+
+# Inflated blocks, keyed (hash, block index). Snippets read one 16 K block per
+# hit; the same hot documents keep paying their zlib inflate on every query
+# (~3 ms per page of results). The decoded block is the same every time the
+# hash is the same, so this is the same kind of safe LRU as `_DATA_CACHE`.
+_BLOCK_CACHE: "OrderedDict[tuple[str, int], str]" = OrderedDict()
+_BLOCK_CACHE_MAX_ENTRIES = 256
+
 # One packed-bits array per database, shared process-wide: 4.8 MB at 100k
 # files. `knn` scores these rows through per-byte lookup tables, so the ±1
 # float32 matrix (154 MB at 100k files) never needs to exist in RAM.
@@ -53,12 +132,16 @@ _FILEVEC_LOCK = threading.Lock()
 # server, the MCP server) keep it; one-shot CLI searches pass `ram_bm25=False`
 # so a single query never starts a 35 s build the process will not outlive.
 # Set AUTOFIND_RAM_BM25=0 to turn it off everywhere.
-_RAM_BM25_ENABLED = os.environ.get("AUTOFIND_RAM_BM25", "0").strip().lower() not in {
+_RAM_BM25_ENABLED = os.environ.get("AUTOFIND_RAM_BM25", "1").strip().lower() not in {
     "0",
     "false",
     "no",
     "off",
 }
+# Below this many chunks FTS5 answers in microseconds and a background build
+# would write sidecars it cannot outlive (a fixture's temp dir is removed while
+# the build thread still holds a mmap). The RAM index is for real corpora.
+INRAM_BM25_MIN_CHUNKS = 1_000
 from .cjk import cjk_bigrams
 
 SCHEMA = """
@@ -460,11 +543,76 @@ def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+def _image_vec_table(dim: int) -> str:
+    """vec0 table for image vectors of one width (CLIP and the local 228-dim
+    descriptor coexist in the same index)."""
+    return f"vec_images_{int(dim)}"
+
+
+def _image_vec_tables(conn: sqlite3.Connection) -> list[str]:
+    try:
+        return [
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'vec_images_%'"
+            )
+        ]
+    except sqlite3.Error:
+        return []
+
+
+def _image_vec_delete(conn: sqlite3.Connection, image_id: int) -> None:
+    for table in _image_vec_tables(conn):
+        try:
+            conn.execute(f"DELETE FROM {table} WHERE image_id = ?", (int(image_id),))
+        except sqlite3.Error:
+            pass
+
+
+def _image_vec_write(conn: sqlite3.Connection, image_id: int, vector: np.ndarray) -> None:
+    dim = int(vector.shape[0])
+    table = _image_vec_table(dim)
+    conn.execute(
+        f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0("
+        f"image_id INTEGER PRIMARY KEY, embedding FLOAT[{dim}] distance_metric=cosine)"
+    )
+    conn.execute(
+        f"INSERT OR REPLACE INTO {table}(image_id, embedding) VALUES (?, ?)",
+        (int(image_id), vecstore.serialize(vector)),
+    )
+
+
+def _mirror_image_vectors(conn: sqlite3.Connection) -> None:
+    """Mirror the image blobs into vec0, one table per vector width."""
+    try:
+        dims = [int(row[0]) for row in conn.execute(
+            "SELECT DISTINCT dim FROM vectors WHERE owner_type='image'"
+        )]
+    except sqlite3.Error:
+        return
+    for dim in dims:
+        table = _image_vec_table(dim)
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0("
+            f"image_id INTEGER PRIMARY KEY, embedding FLOAT[{dim}] distance_metric=cosine)"
+        )
+        rows = conn.execute(
+            "SELECT owner_id, vec FROM vectors WHERE owner_type='image' AND dim = ?",
+            (dim,),
+        ).fetchall()
+        conn.executemany(
+            f"INSERT OR REPLACE INTO {table}(image_id, embedding) VALUES (?, ?)",
+            [(int(row[0]), vecstore.dequantize_vector(row[1], dim).tobytes()) for row in rows],
+        )
+
+
 def prepare_vectors(conn: sqlite3.Connection, dim: int, writable: bool = True) -> str:
     """Attach sqlite-vec and make its tables match the schema. Returns the backend.
 
     Only used when the caller asked for the `sqlite-vec` backend; the default
-    `pack` backend needs no extension at all.
+    `pack` backend needs no extension at all. Documents still live in
+    `file_vectors` (one row per file, searched in RAM); vec0 mirrors the chunk
+    and image vectors for SQL clients.
     """
     attached = vecstore.load(conn)
     stored = _meta(conn, vecstore.BACKEND_META)
@@ -483,6 +631,7 @@ def prepare_vectors(conn: sqlite3.Connection, dim: int, writable: bool = True) -
     vecstore.create(conn, dim)
     if stored != "sqlite-vec" or vecstore.count(conn) == 0:
         vecstore.migrate_from_blobs(conn, dim)
+    _mirror_image_vectors(conn)
     _set_meta(conn, vecstore.BACKEND_META, "sqlite-vec")
     return "sqlite-vec"
 
@@ -631,17 +780,31 @@ def _data_of(row) -> bytes:
     """`file_texts.data`, unsealed when paranoid mode sealed it.
 
     Sealed rows carry the `AFS1` prefix, so the check costs nothing and both
-    layouts answer through the same call sites."""
+    layouts answer through the same call sites. Decrypted blobs go through the
+    hash-keyed LRU: a warm query that touches the same documents as the last
+    one should not pay for their decryption twice."""
     data = row["data"]
-    if vault_mod.Vault.is_sealed(data):
-        vault = vault_mod.current()
-        if vault is None:
-            raise vault_mod.VaultError(
-                "the index is sealed but the vault key is not loaded; "
-                "run 'autofind seal status' or restore vault.key"
-            )
-        return vault.open_bytes(data)
-    return data
+    if not vault_mod.Vault.is_sealed(data):
+        return data
+    vault = vault_mod.current()
+    if vault is None:
+        raise vault_mod.VaultError(
+            "the index is sealed but the vault key is not loaded; "
+            "run 'autofind seal status' or restore vault.key"
+        )
+    digest = None
+    try:
+        digest = row["hash"]
+    except (IndexError, KeyError):
+        pass
+    if digest:
+        cached = _data_cache_get(digest)
+        if cached is not None:
+            return cached
+        plain = vault.open_bytes(data)
+        _data_cache_put(digest, plain)
+        return plain
+    return vault.open_bytes(data)
 
 
 def _unpack_text(blob: bytes | None) -> str:
@@ -680,13 +843,29 @@ def _row_slice(row: sqlite3.Row, start: int, end: int) -> str:
         return _unpack_text(data)[start:end]
     first = start // block_size
     last = min((end - 1) // block_size, len(table) - 2)
+    digest = None
+    try:
+        digest = row["hash"]
+    except (IndexError, KeyError):
+        pass
     parts: list[str] = []
     for index in range(first, last + 1):
         lo, hi = int(table[index]), int(table[index + 1])
-        try:
-            block = zlib.decompress(data[lo:hi]).decode("utf-8", "replace")
-        except zlib.error:
-            return ""
+        cache_key = (digest, index) if digest else None
+        block = None
+        if cache_key is not None:
+            with _DATA_CACHE_LOCK:
+                block = _BLOCK_CACHE.get(cache_key)
+        if block is None:
+            try:
+                block = zlib.decompress(data[lo:hi]).decode("utf-8", "replace")
+            except zlib.error:
+                return ""
+            if cache_key is not None:
+                with _DATA_CACHE_LOCK:
+                    _BLOCK_CACHE[cache_key] = block
+                    while len(_BLOCK_CACHE) > _BLOCK_CACHE_MAX_ENTRIES:
+                        _BLOCK_CACHE.popitem(last=False)
         base = index * block_size
         a = max(start - base, 0)
         b = min(end - base, len(block))
@@ -1145,12 +1324,19 @@ class Store:
         self.conn.create_function("regexp", 2, _regexp, deterministic=True)
         self._vec_key: tuple | None = None
         self._vec_gen = 0  # bumped by `_invalidate_vectors`, part of that key
+        # The indexer's decide phase already proved these paths absent from the
+        # table. A writer can then skip the "did this file exist?" queries and
+        # the old-chunks cleanup for them — ~5 SQL round-trips per file on a
+        # fresh index, which measured as the largest single wall cost.
+        self._new_paths: set[str] = set()
+        self._dir_ids: dict[str, int] = {}
         self._file_key: tuple[int, int] | None = None
         self._checkout = None  # the pack this Store currently holds from PACKS
         self.dim = dim
         self._fts_delete = True  # contentless FTS supports DELETE FROM
         vecstore.PACKS.ref(self.path)
         self._vec_backend = "filebin"
+        self._image_vec_backend = "blob"
         # Read-heavy tuning, measured against the forums' standard set: mmap
         # lets SQLite read pages without a read() syscall (the FTS index and
         # vector blobs are exactly such cold reads), and a real page cache
@@ -1164,12 +1350,19 @@ class Store:
         # The indexer's write store wants the big hot-vocabulary cache; the
         # server's write store only ever saves recent searches and pins, so
         # the caller may ask for a smaller one.
-        default_cache = -4000 if readonly else -32000
+        default_cache = -2000 if readonly else -32000
         self.conn.execute(f"PRAGMA cache_size={cache_kb or default_cache}")
         self.conn.execute("PRAGMA busy_timeout=5000")
         if not readonly:
             self.conn.execute("PRAGMA journal_mode=WAL")
-            self.conn.execute("PRAGMA synchronous=NORMAL")
+            # A rebuild is a disposable index: fsync per commit buys nothing
+            # when the corpus is being generated. The shipped default keeps
+            # NORMAL so a crash cannot corrupt the user's index.
+            sync = "OFF" if os.environ.get("AUTOFIND_FAST_INDEX") == "1" else "NORMAL"
+            self.conn.execute(f"PRAGMA synchronous={sync}")
+            if sync == "OFF":
+                self.conn.execute("PRAGMA temp_store=MEMORY")
+                self.conn.execute("PRAGMA wal_autocheckpoint=0")
             self.conn.execute("PRAGMA foreign_keys=ON")
             self.conn.executescript(SCHEMA)
             self._migrate()
@@ -1196,9 +1389,18 @@ class Store:
 
         One binary vector per file needs no index and no side file: 14 000 rows
         is a 5 MB matvec, which beats any structure that has to be built,
-        versioned and remapped. The `vector_backend` setting is kept for the
-        image vectors, which still go through `vectors`/`sqlite-vec`.
+        versioned and remapped. `--vector-backend sqlite-vec` additionally
+        attaches vec0 and mirrors the chunk/image vectors; it never changes the
+        document search path, which stays file-level.
         """
+        requested = str(self._requested_backend).strip().lower().replace("_", "-")
+        if requested == "sqlite-vec":
+            try:
+                self._image_vec_backend = prepare_vectors(self.conn, dim, writable)
+            except RuntimeError:
+                # An index written with vec0 but an extension-less process can
+                # still read the authoritative blobs; degrade, do not fail open.
+                self._image_vec_backend = "blob"
         return "filebin"
 
     # ---------------------------------------------------------------- schema
@@ -1313,11 +1515,15 @@ class Store:
             "INSERT INTO recent_searches(q, at) VALUES(?, ?)",
             (clean, _t.time())
         )
+        # `at` is unix seconds, so two searches in the same second tie. Keying
+        # the trim on `at` deleted every row with that timestamp (or kept more
+        # than ten); rowid is the unique tie-breaker.
         self.conn.execute(
-            "DELETE FROM recent_searches WHERE at NOT IN "
-            "(SELECT at FROM recent_searches ORDER BY at DESC LIMIT 10)"
+            "DELETE FROM recent_searches WHERE rowid NOT IN "
+            "(SELECT rowid FROM recent_searches ORDER BY at DESC, rowid DESC LIMIT 10)"
         )
-        self.conn.commit()
+        # The only caller is Handler._write, which commits once for the whole
+        # action. A second commit here moves the WAL for no reason.
 
     def get_meta(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
@@ -1350,6 +1556,17 @@ class Store:
     def file_by_id(self, file_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
 
+    def mark_new(self, path: str) -> None:
+        """Remember a path the caller proved absent, enabling the insert fast
+        path used by a first-time index run."""
+        self._new_paths.add(os.path.normcase(str(path)))
+
+    def is_new(self, path: str) -> bool:
+        return os.path.normcase(str(path)) in self._new_paths
+
+    def end_new(self, path: str) -> None:
+        self._new_paths.discard(os.path.normcase(str(path)))
+
     def upsert_file(
         self, path: str, size: int, mtime: float, sha256: str, kind: str,
         doc_date: str | None = None,
@@ -1357,13 +1574,29 @@ class Store:
         # Writes go straight to dirs+file_rows: SQLite refuses an UPSERT
         # against the `files` view, and this is the one writer that needs it.
         dirpath, name = _split_path(path)
-        self.conn.execute(
-            "INSERT INTO dirs(path) VALUES(?) ON CONFLICT(path) DO NOTHING",
-            (dirpath,),
+        dir_id = self._dir_ids.get(dirpath)
+        if dir_id is None:
+            self.conn.execute(
+                "INSERT INTO dirs(path) VALUES(?) ON CONFLICT(path) DO NOTHING",
+                (dirpath,),
+            )
+            dir_id = int(self.conn.execute(
+                "SELECT dir_id FROM dirs WHERE path = ?", (dirpath,)
+            ).fetchone()[0])
+            self._dir_ids[dirpath] = dir_id
+        values = (
+            dir_id, name, char_mask(name), size, mtime, sha256, kind, doc_date, time.time()
         )
-        dir_id = int(self.conn.execute(
-            "SELECT dir_id FROM dirs WHERE path = ?", (dirpath,)
-        ).fetchone()[0])
+        if self.is_new(path):
+            # Plain INSERT: there is no old row to update, and last_insert_rowid
+            # gives us the id without a second SELECT. The caller clears the
+            # marker after the whole file has been stored.
+            cursor = self.conn.execute(
+                "INSERT INTO file_rows(dir_id, name, char_mask, size, mtime, sha256, "
+                "kind, doc_date, indexed_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                values,
+            )
+            return int(cursor.lastrowid)
         self.conn.execute(
             "INSERT INTO file_rows(dir_id, name, char_mask, size, mtime, sha256, kind, doc_date, indexed_at) "
             "VALUES(?,?,?,?,?,?,?,?,?) "
@@ -1371,7 +1604,7 @@ class Store:
             "size=excluded.size, mtime=excluded.mtime, sha256=excluded.sha256, "
             "kind=excluded.kind, doc_date=COALESCE(excluded.doc_date, doc_date), "
             "indexed_at=excluded.indexed_at",
-            (dir_id, name, char_mask(name), size, mtime, sha256, kind, doc_date, time.time()),
+            values,
         )
         row = self.conn.execute(
             "SELECT id FROM file_rows WHERE dir_id = ? AND name = ?", (dir_id, name)
@@ -1457,6 +1690,7 @@ class Store:
         spans: Sequence[tuple[int, int]] | np.ndarray | None = None,
         vectors: np.ndarray | None = None,
         packed: tuple[str, int, int, bytes, bytes] | None = None,
+        fresh: bool = False,
     ) -> int:
         """Write one document: its text once, its chunk spans, its vector.
 
@@ -1488,7 +1722,8 @@ class Store:
             document = normalize(text)
         if spans is None:
             spans = chunk_spans(document)
-        self._drop_chunks_of(file_id)
+        if not fresh:
+            self._drop_chunks_of(file_id)
         if not document or not spans:
             self.conn.execute("UPDATE files SET text_hash = NULL WHERE id = ?", (int(file_id),))
             self._invalidate_vectors()
@@ -1523,9 +1758,12 @@ class Store:
                 for order, (start, end) in enumerate(spans)
             ],
         )
-        chunk_ids = [int(row["id"]) for row in self.conn.execute(
-            "SELECT id FROM chunks WHERE file_id = ? ORDER BY ord", (int(file_id),)
-        )]
+        # One writer owns this connection, so the rows just inserted occupy the
+        # last `len(spans)` rowids. last_insert_rowid() is O(1); the old
+        # SELECT-by-file_id paid an index lookup for every single document.
+        last_id = int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        count = len(spans)
+        chunk_ids = list(range(last_id - count + 1, last_id + 1))
         if not self.sealed:
             self.conn.executemany(
                 "INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
@@ -1811,11 +2049,15 @@ class Store:
         row = self.conn.execute("SELECT id FROM images WHERE path = ?", (path,)).fetchone()
         image_id = int(row["id"])
         self.conn.execute("DELETE FROM vectors WHERE owner_type='image' AND owner_id = ?", (image_id,))
+        if self._image_vec_backend == "sqlite-vec":
+            _image_vec_delete(self.conn, image_id)
         if vector is not None:
             self.conn.execute(
                 "INSERT INTO vectors(owner_type, owner_id, dim, vec) VALUES('image',?,?,?)",
                 (image_id, int(vector.shape[0]), vecstore.quantize_vector(vector)),
             )
+            if self._image_vec_backend == "sqlite-vec":
+                _image_vec_write(self.conn, image_id, vector)
         self._invalidate_vectors()
         return image_id
 
@@ -1928,28 +2170,32 @@ class Store:
         # always consulted first, and cold CLI pays ~100 ms instead of 4 s.
         if not (self._ram_bm25 or sealed):
             # One-shot CLI: only load an existing sidecar, never kick a build.
-            try:
-                key = (str(self.path), *self._stamps())
-                fp = self._chunks_fingerprint()
-            except sqlite3.Error:
+            # This path shares the module-level `_BM25` with the build branch
+            # below (the API uses both modes on the same process), so the
+            # cache check and its updates need the same lock.
+            with _BM25_LOCK:
+                try:
+                    key = (str(self.path), *self._stamps())
+                    fp = self._chunks_fingerprint()
+                except sqlite3.Error:
+                    return None
+                if _BM25["key"] == key and _BM25["index"] is not None:
+                    return _BM25["index"]
+                side = self._load_sealed_bm25(fp)
+                if side is not None:
+                    _BM25["index"] = side
+                    _BM25["key"] = key
+                    return side
+                # The memmap sidecar serves any size without private-RAM cost:
+                # a corpus past the RAM gate still gets the fast content channel
+                # as long as some earlier server run built its sidecar.
+                side = self._load_bm25_memmap(fp)
+                if side is not None:
+                    _BM25["index"] = side
+                    _BM25["key"] = key
+                    _BM25["fp"] = fp
+                    return side
                 return None
-            if _BM25["key"] == key and _BM25["index"] is not None:
-                return _BM25["index"]
-            side = self._load_sealed_bm25(fp)
-            if side is not None:
-                _BM25["index"] = side
-                _BM25["key"] = key
-                return side
-            # The memmap sidecar serves any size without private-RAM cost:
-            # a corpus past the RAM gate still gets the fast content channel
-            # as long as some earlier server run built its sidecar.
-            side = self._load_bm25_memmap(fp)
-            if side is not None:
-                _BM25["index"] = side
-                _BM25["key"] = key
-                _BM25["fp"] = fp
-                return side
-            return None
         try:
             # The stamps move on any commit — this process's or the indexer's —
             # and cost two stat() calls. `SELECT COUNT(*), MAX(id) FROM chunks`
@@ -1964,6 +2210,10 @@ class Store:
             if _BM25["key"] == key and _BM25["index"] is not None:
                 return _BM25["index"]
             fp = self._chunks_fingerprint()
+            if not sealed and fp[0] < INRAM_BM25_MIN_CHUNKS:
+                # Tiny corpus: FTS5 is already the fast path, and a sidecar
+                # written by a daemon thread outlives short-lived test indexes.
+                return None
             if _BM25.get("fp") == fp and _BM25["index"] is not None:
                 # Same corpus, files were merely touched: keep serving the
                 # index that is already in RAM.
@@ -2020,10 +2270,11 @@ class Store:
                                 index.write_memmap_sidecar(prefix)
                                 np.savez(
                                     str(prefix) + ".meta.npz",
-                                    ids=index.ids, doc_len=index.doc_len,
+                                    ids=bm25mod._narrow(index.ids), doc_len=index.doc_len,
                                     avgdl=np.asarray([index.avgdl]),
                                     vocab_blob=np.frombuffer(index.vocab_blob, dtype=np.uint8),
-                                    vocab_offsets=index.vocab_offsets, indptr=index.indptr,
+                                    vocab_offsets=bm25mod._narrow(index.vocab_offsets),
+                                    indptr=bm25mod._narrow(index.indptr),
                                     build_seconds=np.asarray([index.built_in]),
                                 )
                                 for stale in self.path.parent.glob(
@@ -2085,12 +2336,12 @@ class Store:
             # The small arrays above are placeholders; the real ones ride in
             # the fingerprinted .npz sidecar the build writes beside them.
             meta = np.load(str(prefix) + ".meta.npz", allow_pickle=False)
-            index.ids = meta["ids"]
+            index.ids = bm25mod._narrow(meta["ids"])
             index.doc_len = meta["doc_len"]
             index.avgdl = float(meta["avgdl"][0])
             index.vocab_blob = meta["vocab_blob"].tobytes()
-            index.vocab_offsets = meta["vocab_offsets"]
-            index.indptr = meta["indptr"]
+            index.vocab_offsets = bm25mod._narrow(meta["vocab_offsets"])
+            index.indptr = bm25mod._narrow(meta["indptr"])
             index.fingerprint = fp
             index.built_in = float(meta["build_seconds"][0])
             if int(index.ids.shape[0]) != int(fp[0]):
@@ -2105,27 +2356,42 @@ class Store:
         return _Path(str(self.path) + ".bm25seal")
 
     def _write_sealed_bm25(self, index) -> None:
-        """Serialize the CSR, seal it (paranoid) or save plaintext (normal),
-        write `<db>.bm25seal` so the next cold CLI load is ~100 ms."""
-        bio = io.BytesIO()
-        np.savez(bio, **index.to_arrays())
-        raw = bio.getvalue()
-        if self.sealed:
-            vault = vault_mod.current()
-            if vault is None:
-                raise vault_mod.VaultError(
-                    "the index is sealed but the vault key is not loaded"
-                )
-            raw = vault.seal(raw)
-        self._sealed_bm25_path().write_bytes(raw)
+        """Serialize the CSR and write `<db>.bm25seal`.
+
+        AFS2 segment format: small arrays in one sealed header, postings split
+        into independently sealed segments — a cold CLI decrypts its header and
+        only the segments its terms touch, and a sealed server keeps the
+        ciphertext file-backed instead of the whole index in private RAM.
+        Called after every index run so the next cold load is fast."""
+        from .bm25 import write_sealed_segments
+
+        write_sealed_segments(self._sealed_bm25_path(), index, self._vault_or_raise())
+
+    def _vault_or_raise(self):
+        vault = vault_mod.current()
+        if vault is None:
+            raise vault_mod.VaultError(
+                "the index is sealed but the vault key is not loaded"
+            )
+        return vault
 
     def _load_sealed_bm25(self, fp):
         path = self._sealed_bm25_path()
         if not path.exists():
             return None
+        # AFS2 first: only the sealed header is decrypted at open, and the
+        # postings stay file-backed until a query needs them. Fingerprints
+        # are checked against the live chunk table before anything is served.
+        vault = vault_mod.current()
+        if vault is not None:
+            segmented = bm25mod.SealedSegmentBM25.open(path, vault)
+            if segmented is not None:
+                if segmented.fingerprint is not None and tuple(segmented.fingerprint) != tuple(fp):
+                    segmented.close()
+                    return None
+                return segmented
         raw = path.read_bytes()
         if vault_mod.Vault.is_sealed(raw):
-            vault = vault_mod.current()
             if vault is None:
                 return None
             raw = vault.open_bytes(raw)
@@ -2541,6 +2807,21 @@ class Store:
         return ids, matrix
 
     def knn_images(self, query_vector: np.ndarray, limit: int) -> list[tuple[int, float]]:
+        if self._image_vec_backend == "sqlite-vec":
+            table = _image_vec_table(int(query_vector.shape[0]))
+            try:
+                rows = self.conn.execute(
+                    f"SELECT image_id, distance FROM {table} WHERE embedding MATCH ? AND k = ?",
+                    (vecstore.serialize(query_vector), max(1, int(limit))),
+                ).fetchall()
+            except sqlite3.Error:
+                rows = []
+            if rows:
+                return [
+                    (int(row[0]), 1.0 - float(row[1])) for row in rows
+                ][:limit]
+        # The blob table stays the source of truth and the fallback for readers
+        # opened without the extension (or with a vec table of another width).
         ids, matrix = self.image_index(dim=int(query_vector.shape[0]))
         return _top_k(ids, matrix, query_vector, limit)
 
@@ -2637,6 +2918,8 @@ class Store:
         ballpark as the old full-table scan. It only runs for an explicit `re:`
         query, and the limit bounds the damage.
         """
+        if _regex_is_unsafe(pattern):
+            return []
         try:
             rx = re.compile(pattern)
         except re.error:
@@ -2655,12 +2938,16 @@ class Store:
             )
         )
         out: list[dict] = []
+        scanned = 0
         for _, rows in groupby(cursor, key=lambda row: int(row["file_id"])):
             rows = list(rows)
             stored_row = stored.get(rows[0]["text_hash"] or "")
             text = _row_text(stored_row) if stored_row else ""
             if not text:
                 continue
+            scanned += len(text)
+            if scanned > MAX_REGEX_SCAN_BYTES:
+                break  # a pathological query must not inflate the whole corpus
             starts = [int(row["start"]) for row in rows]
             seen: set[int] = set()
             for match in rx.finditer(text):
@@ -3210,8 +3497,6 @@ class Store:
     def _invalidate_vectors(self) -> None:
         self._vec_gen += 1
         self._vec_key = None
-        self._pack_key = None
-        self._pack = None
 
     def index_stamp(self) -> tuple[int, int]:
         """Cheap token that changes whenever the index file is written."""
@@ -3312,3 +3597,32 @@ def _top_k(ids: np.ndarray, matrix: np.ndarray, query: np.ndarray, limit: int) -
     top = np.argpartition(-scores, take - 1)[:take]
     top = top[np.argsort(-scores[top])]
     return [(int(ids[i]), float(scores[i])) for i in top]
+
+
+def reclassify_kinds(db_path: Path) -> int:
+    """Re-apply the current extension/content rules to files already indexed.
+
+    New extractors and new text extensions should help the existing library,
+    not only files indexed tomorrow. Rows whose kind changes get their stored
+    kind updated here; the next index run fills their text chunks.
+    """
+    from .scanner import kind_for
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    try:
+        rows = conn.execute(
+            "SELECT r.id, d.path || ? || r.name, r.kind FROM file_rows r "
+            "JOIN dirs d ON d.dir_id = r.dir_id",
+            ("\\",),
+        ).fetchall()
+        updates = []
+        for file_id, path, kind in rows:
+            fresh = kind_for(path)
+            if fresh != kind:
+                updates.append((fresh, file_id))
+        if updates:
+            conn.executemany("UPDATE file_rows SET kind = ? WHERE id = ?", updates)
+            conn.commit()
+        return len(updates)
+    finally:
+        conn.close()

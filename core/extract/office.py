@@ -16,6 +16,7 @@ and never surfaces as an error.
 
 from __future__ import annotations
 
+import codecs
 import re
 import zipfile
 from pathlib import Path
@@ -132,8 +133,9 @@ def xml_events(archive: zipfile.ZipFile, name: str, budget: Budget, events=("end
 
 
 # Keep the exception tuple in one place: a dead member must cost a slide or a
-# chapter, never the whole file.
-_DEATHS = (ET.ParseError, BudgetExhausted, zipfile.BadZipFile, KeyError, OSError)
+# chapter, never the whole file. ValueError rides along because a malformed
+# shared-string index (`<v>not-a-number</v>`) raises it from `int()` mid-parse.
+_DEATHS = (ET.ParseError, BudgetExhausted, zipfile.BadZipFile, KeyError, OSError, ValueError)
 
 
 def extract_pptx(path: str | Path) -> str:
@@ -193,11 +195,14 @@ def extract_xlsx(path: str | Path) -> str:
             key=lambda name: int(re.search(r"(\d+)", name.rsplit("/", 1)[-1]).group(1)),
         )
         for name in sheets:
+            # The row cap is per sheet: one 20k-row sheet must not silence every
+            # sheet that follows it in the workbook.
+            rows_on_sheet = 0
             try:
                 for _, row in xml_events(archive, name, budget):
                     if row.tag != S_ROW:
                         continue
-                    if len(lines) >= MAX_SHEET_ROWS:
+                    if rows_on_sheet >= MAX_SHEET_ROWS:
                         break
                     cells: list[str] = []
                     for cell in row.iter(S_C):
@@ -205,13 +210,14 @@ def extract_xlsx(path: str | Path) -> str:
                         value = cell.find(S_V)
                         if kind == "s" and value is not None and value.text:
                             index = int(value.text)
-                            cells.append(shared[index] if index < len(shared) else "")
+                            cells.append(shared[index] if 0 <= index < len(shared) else "")
                         elif kind == "inlineStr":
                             cells.append("".join(node.text or "" for node in cell.iter(S_T)))
                         elif value is not None and value.text:
                             cells.append(value.text)
                     if any(cell.strip() for cell in cells):
                         lines.append(" | ".join(cells))
+                        rows_on_sheet += 1
                     row.clear()  # rows are the bulk of a sheet: drop as we go
             except _DEATHS:
                 continue  # truncated sheet: keep the rows read so far
@@ -263,8 +269,12 @@ def extract_epub(path: str | Path) -> str:
                 # The window caps one chapter; a bomb chapter becomes a
                 # truncated one instead of a decompression stall.
                 parts.append(_strip_markup(bounded_read(archive, name, budget)))
-            except _DEATHS:
+            except BudgetExhausted:
                 break  # the archive budget is spent: no further chapter fits
+            except _DEATHS:
+                # One broken chapter is not the end of the book: the comment
+                # above promises to keep reading the ones after it.
+                continue
     return "\n".join(part.strip() for part in parts if part.strip())
 
 
@@ -299,8 +309,23 @@ def extract_rtf(path: str | Path) -> str:
     gap to close; the scanner's size caps already bound the read.
     """
     raw = Path(path).read_bytes().decode("latin-1", errors="replace")
+    # RTF declares the codepage of \'xx escapes with \ansicpgNNNN. cp1251 stays
+    # the default for files that omit it; an unknown code is ignored rather
+    # than turning the whole document into an exception.
+    codepage = 1251
+    declared = re.search(r"\\ansicpg(\d+)", raw)
+    if declared:
+        candidate = f"cp{declared.group(1)}"
+        try:
+            codecs.lookup(candidate)
+            codepage = int(declared.group(1))
+        except LookupError:
+            pass
+    codec = f"cp{codepage}"
     raw = _RTF_SKIP.sub(" ", raw)
-    raw = _RTF_HEX.sub(lambda m: bytes([int(m.group(1), 16)]).decode("cp1251", errors="replace"), raw)
+    raw = _RTF_HEX.sub(
+        lambda m: bytes([int(m.group(1), 16)]).decode(codec, errors="replace"), raw
+    )
     raw = _RTF_CONTROL.sub(" ", raw)
     raw = raw.replace("\\{", "{").replace("\\}", "}").replace("\\\\", "\\")
     raw = raw.replace("{", " ").replace("}", " ")

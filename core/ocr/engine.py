@@ -24,6 +24,7 @@ import io
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -177,14 +178,24 @@ async def _recognize_bytes(engine, png: bytes) -> tuple[str, list[dict]]:
 
     stream = InMemoryRandomAccessStream()
     writer = DataWriter(stream)
-    writer.write_bytes(png)
-    await writer.store_async()
-    await writer.flush_async()
-    stream.seek(0)
-    decoder = await BitmapDecoder.create_async(stream)
-    bitmap = await decoder.get_software_bitmap_async()
-    result = await engine.recognize_async(bitmap)
-    text = result.text
+    try:
+        writer.write_bytes(png)
+        await writer.store_async()
+        await writer.flush_async()
+        stream.seek(0)
+        decoder = await BitmapDecoder.create_async(stream)
+        bitmap = await decoder.get_software_bitmap_async()
+        result = await engine.recognize_async(bitmap)
+        text = result.text
+    finally:
+        # WinRT stream/writer are COM objects: without an explicit close the
+        # PNG buffer stays pinned until the GC gets around to it, and a folder
+        # of screenshots leaks one buffer per page.
+        for resource in (writer, stream):
+            try:
+                resource.close()
+            except Exception:
+                pass
     boxes = []
     for line in result.lines:
         if not line.words:
@@ -265,20 +276,39 @@ class RapidOcrMulti:
     name = "rapidocr"
     preprocess_mode = "rgb"
 
-    def __init__(self, lang: str = "multi", model_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        lang: str = "multi",
+        model_dir: Path | None = None,
+        require_downloaded: bool = True,
+    ) -> None:
         self.lang = lang
         self.model_dir = model_dir
+        self.require_downloaded = require_downloaded
         self._engine = None
         self._error: str | None = None
+        self._lock = threading.Lock()
 
     @property
     def label(self) -> str:
         return f"{self.name}:{self.lang}"
 
     def available(self) -> bool:
+        # A misspelled `--ocr-lang` used to pass this check and fail only on the
+        # first image, after rapidocr had tried to download a model that does
+        # not exist. Validate the name and require script models to be on disk;
+        # `multi` ships inside the wheel and needs no download.
+        if self.lang not in languages.MODELS:
+            return False
         try:
             import rapidocr  # noqa: F401
         except ImportError:
+            return False
+        if (
+            self.require_downloaded
+            and self.lang != "multi"
+            and self.lang not in downloaded_models()
+        ):
             return False
         return self._error is None
 
@@ -335,11 +365,15 @@ class RapidOcrMulti:
 
     def recognize(self, image: Image.Image) -> OcrResult:
         if self._engine is None:
-            try:
-                self._engine = self._build()
-            except Exception as exc:
-                self._error = str(exc)
-                raise RuntimeError(f"rapidocr:{self.lang} unavailable: {exc}") from exc
+            # The indexer shares one engine across workers; without the lock
+            # two of them build (and warm) a full session at the same time.
+            with self._lock:
+                if self._engine is None:
+                    try:
+                        self._engine = self._build()
+                    except Exception as exc:
+                        self._error = str(exc)
+                        raise RuntimeError(f"rapidocr:{self.lang} unavailable: {exc}") from exc
         import numpy as np
 
         output = self._engine(np.asarray(image.convert("RGB")))
@@ -366,6 +400,7 @@ class RapidOcr:
         self.rec_model = rec_model
         self.rec_keys = rec_keys
         self._engine = None
+        self._lock = threading.Lock()
 
     def available(self) -> bool:
         try:
@@ -389,7 +424,9 @@ class RapidOcr:
 
     def recognize(self, image: Image.Image) -> OcrResult:
         if self._engine is None:
-            self._engine = self._build()
+            with self._lock:
+                if self._engine is None:
+                    self._engine = self._build()
         import numpy as np
 
         result, _ = self._engine(np.asarray(image.convert("RGB")))
@@ -405,15 +442,24 @@ class TesseractCli:
 
     def __init__(self, languages: str = "rus+eng") -> None:
         self.languages = languages
+        self._exe: str | None = None
 
     def available(self) -> bool:
-        return shutil.which("tesseract") is not None
+        # Resolve once and reuse: `which` may find an executable through PATH
+        # that the literal subprocess name would not (a different PATH in a
+        # detached server, or a renamed install).
+        self._exe = shutil.which("tesseract")
+        return self._exe is not None
 
     def recognize(self, image: Image.Image) -> OcrResult:
+        if self._exe is None:
+            self._exe = shutil.which("tesseract")
+        if self._exe is None:
+            raise RuntimeError("tesseract-cli unavailable: tesseract not on PATH")
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         process = subprocess.run(
-            ["tesseract", "stdin", "stdout", "-l", self.languages, "--psm", "3"],
+            [self._exe, "stdin", "stdout", "-l", self.languages, "--psm", "3"],
             input=buffer.getvalue(),
             capture_output=True,
             timeout=120,
@@ -499,11 +545,14 @@ def primary_engines(languages_hint: str = "rus+eng") -> list[OcrEngine]:
     return found
 
 
-def fallback_engines(skip: set[str] | None = None, limit: int = 4) -> list[OcrEngine]:
+def fallback_engines(
+    skip: set[str] | None = None, limit: int = 4, allow_download: bool = False
+) -> list[OcrEngine]:
     """The slow tier: bundled multi model first, then per-script models.
 
-    Models that are not on disk yet are included only when nothing else is left,
-    because including them means a download in the middle of an index run.
+    Models that are not on disk yet are skipped by default: including them means
+    a download in the middle of an index run. An explicit caller can pass
+    ``allow_download=True`` for an on-demand pass; that never happens implicitly.
     """
     skip = skip or set()
     installed = set(downloaded_models())
@@ -521,10 +570,12 @@ def fallback_engines(skip: set[str] | None = None, limit: int = 4) -> list[OcrEn
     except Exception:
         pass
 
-    def add(model: str) -> None:
-        if model in skip or len(found) >= limit or model not in installed:
+    def add(model: str, download: bool = False) -> None:
+        if model in skip or len(found) >= limit:
             return
-        engine = RapidOcrMulti(model)
+        if model not in installed and not download:
+            return
+        engine = RapidOcrMulti(model, require_downloaded=not download)
         if engine.available():
             found.append(engine)
             skip.add(model)
@@ -536,9 +587,13 @@ def fallback_engines(skip: set[str] | None = None, limit: int = 4) -> list[OcrEn
             continue
         if model in installed:
             add(model)
+    if allow_download:
+        # On-demand pass only: an index run must never start a surprise download.
+        for model in languages.MODELS:
+            if model == "multi" or model in covered:
+                continue
+            add(model, download=True)
     if len(found) < 2:
-        # Nothing downloaded: the bundled model is all there is. The script
-        # models are reachable on demand through `--ocr-lang`, not by surprise.
         legacy = RapidOcr()
         if legacy.available():
             found.append(legacy)

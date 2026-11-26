@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — 01 Quiet Native (Kensaku DNA)</title>
+<!-- Style 01: quiet native launcher. Grounded in Kensaku screenshots:
+     near-achromatic light surfaces (#f7f7f9 hero, #17181a inverse), continuous
+     corners, borderless search field, single-column list, calm native feel.
+     Structure: page hero + one-column card list. -->
+<style>
+  :root{
+    --bg:#f2f3f6; --surface:#ffffff; --ink:#1a1b1e; --muted:#7a7d86;
+    --hairline:#e4e4e8; --accent:#3564c4; --accent-ink:#ffffff;
+    --ocr:#8a5a00; --ocr-bg:#fdf3dc;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{background:var(--bg);color:var(--ink);
+       font:15px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{height:100%;display:flex;flex-direction:column;align-items:center;padding:64px 72px 0}
+  .brand{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;letter-spacing:.02em}
+  .mark{width:22px;height:22px;border-radius:7px;background:var(--ink);position:relative}
+  .mark::after{content:"";position:absolute;inset:6px;border-radius:3px;background:var(--bg)}
+  .search{margin-top:34px;width:820px;background:var(--surface);border:1px solid var(--hairline);
+          border-radius:16px;box-shadow:0 18px 40px -22px rgba(20,24,40,.25),0 2px 6px rgba(20,24,40,.05);
+          padding:16px 20px;display:flex;align-items:center;gap:14px}
+  .search svg{flex:none;color:var(--muted)}
+  .q{font-size:20px;letter-spacing:-.01em}
+  .caret{width:2px;height:24px;background:var(--accent);border-radius:1px;margin-left:2px}
+  .kbd{margin-left:auto;display:flex;gap:6px;align-items:center;color:var(--muted);font-size:12px}
+  .kbd b{font:600 11px/1 "Segoe UI",sans-serif;color:var(--ink);background:#f1f2f5;
+         border:1px solid var(--hairline);border-bottom-width:2px;border-radius:5px;padding:4px 6px}
+  .chips{margin-top:18px;display:flex;gap:8px}
+  .chip{font-size:13px;color:var(--muted);padding:7px 14px;border-radius:999px;
+        border:1px solid var(--hairline);background:var(--surface)}
+  .chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .list{margin-top:26px;width:820px;display:flex;flex-direction:column;gap:10px}
+  .row{background:var(--surface);border:1px solid var(--hairline);border-radius:14px;
+       padding:13px 16px;display:flex;gap:14px;align-items:center;
+       box-shadow:0 1px 2px rgba(20,24,40,.04)}
+  .row.sel{border-color:#c6d4f2;box-shadow:0 0 0 2px #dbe6fb,0 8px 24px -14px rgba(53,100,196,.35)}
+  .glyph{flex:none;width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+         font:700 10px/1 "Segoe UI",sans-serif;letter-spacing:.04em;color:#fff}
+  .g-pdf{background:#c94747}.g-doc{background:#3f6fc4}.g-img{background:#3d8f5f}
+  .g-xls{background:#2e7d54}.g-code{background:#54586a}.g-eml{background:#8a63b8}
+  .body{min-width:0;flex:1}
+  .name{font-size:14.5px;font-weight:600;letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .path{font-size:12px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .snip{font-size:12.5px;color:#4b4e57;margin-top:4px;background:#f6f7fa;border-radius:8px;padding:5px 9px;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .snip b{color:var(--accent);font-weight:600}
+  .meta{flex:none;text-align:right;font-size:12px;color:var(--muted);line-height:1.5}
+  .badge{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.03em;color:var(--ocr);
+         background:var(--ocr-bg);border-radius:5px;padding:2px 6px;margin-top:3px}
+  .thumb{flex:none;width:38px;height:38px;border-radius:10px;border:1px solid var(--hairline);
+         background:linear-gradient(160deg,#dfe6f2 0%,#c8d4e8 60%,#b4c4de 100%);position:relative;overflow:hidden}
+  .thumb::before{content:"";position:absolute;left:5px;top:6px;right:5px;height:4px;border-radius:2px;background:rgba(255,255,255,.85)}
+  .thumb::after{content:"";position:absolute;left:5px;top:14px;width:60%;height:12px;border-radius:3px;background:rgba(255,255,255,.6)}
+  .foot{margin-top:auto;padding:18px 0 22px;display:flex;gap:26px;color:var(--muted);font-size:12.5px}
+  .foot b{font:600 11px/1 "Segoe UI",sans-serif;color:var(--ink);background:#fff;border:1px solid var(--hairline);
+          border-bottom-width:2px;border-radius:5px;padding:3px 6px;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="mark"></span><span>AutoFind · локальный поиск</span></div>
+
+  <div class="search">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <span class="q">смета март</span><span class="caret"></span>
+    <span class="kbd"><b>/</b>фокус <b>Space</b>превью <b>Enter</b>открыть</span>
+  </div>
+
+  <div class="chips">
+    <span class="chip on">Все</span><span class="chip">Документы</span><span class="chip">Код</span>
+    <span class="chip">PDF</span><span class="chip">Скриншоты</span><span class="chip">Почта</span><span class="chip">Архивы</span>
+  </div>
+
+  <div class="list">
+    <div class="row sel">
+      <span class="glyph g-pdf">PDF</span>
+      <span class="body">
+        <div class="name">Смета_ремонта_март_2026.pdf</div>
+        <div class="path">D:\Документы\Сметы · 2.4 МБ · изменён 12 ноя</div>
+        <div class="snip">…<b>смета</b> за <b>март</b>: материалы и работы, итог 214 500 ₽…</div>
+      </span>
+      <span class="meta">PDF<br>12 ноя 2026</span>
+    </div>
+    <div class="row">
+      <span class="glyph g-doc">DOC</span>
+      <span class="body"><div class="name">смета за март.docx</div><div class="path">D:\Документы · 184 КБ · изменён 10 ноя</div></span>
+      <span class="meta">DOCX<br>10 ноя 2026</span>
+    </div>
+    <div class="row">
+      <span class="thumb"></span>
+      <span class="body">
+        <div class="name">скриншот 2026-03-28 14-02.png <span class="badge">OCR</span></div>
+        <div class="path">C:\Users\h1ile\Desktop · 1.1 МБ · 28 мар</div>
+        <div class="snip">текст на скриншоте: «<b>Смета</b> за <b>март</b> — итог 214 500 ₽»</div>
+      </span>
+      <span class="meta">PNG<br>28 мар 2026</span>
+    </div>
+    <div class="row">
+      <span class="glyph g-xls">XLS</span>
+      <span class="body"><div class="name">Прайс_Март.xlsx</div><div class="path">D:\Документы\Прайсы · 96 КБ · изменён 8 ноя</div></span>
+      <span class="meta">XLSX<br>8 ноя 2026</span>
+    </div>
+    <div class="row">
+      <span class="glyph g-code">PY</span>
+      <span class="body"><div class="name">budget_march.py</div><div class="path">D:\Код\autofind · 12 КБ · изменён 5 ноя</div></span>
+      <span class="meta">Python<br>5 ноя 2026</span>
+    </div>
+    <div class="row">
+      <span class="glyph g-doc">DOC</span>
+      <span class="body"><div class="name">Смета_март_финал_копия(2).docx</div><div class="path">D:\Документы\Сметы · 176 КБ · изменён 3 ноя</div></span>
+      <span class="meta">DOCX<br>3 ноя 2026</span>
+    </div>
+    <div class="row">
+      <span class="glyph g-eml">EML</span>
+      <span class="body"><div class="name">Март_отчёт.eml</div><div class="path">Архив почты · 42 КБ · 1 ноя</div></span>
+      <span class="meta">Почта<br>1 ноя 2026</span>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span><b>Enter</b>открыть</span><span><b>Space</b>быстрый просмотр</span>
+    <span><b>↑</b><b>↓</b>выбор</span><span><b>Ctrl</b><b>Alt</b><b>Space</b>окно</span>
+    <span style="margin-left:auto">128 430 файлов в индексе · готово · 18 мс</span>
+  </div>
+</div>
+</body>
+</html>

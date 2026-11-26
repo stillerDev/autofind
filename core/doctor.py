@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import json
 import platform
-import shutil
 import sys
 from pathlib import Path
 
+from .__version__ import __version__
 from .config import IndexConfig
 from .embed import get_embedder, get_visual_embedder
 from .ocr import engine_report
@@ -37,11 +37,21 @@ RUNTIME_PARTS = (
 
 
 def _dir_size(path: Path) -> int:
-    if not path.exists():
+    try:
+        if not path.exists():
+            return 0
+        if path.is_file():
+            return path.stat().st_size
+        total = 0
+        for item in path.rglob("*"):
+            try:
+                if item.is_file():
+                    total += item.stat().st_size
+            except OSError:
+                continue  # one unreadable file must not fail the whole doctor
+        return total
+    except OSError:
         return 0
-    if path.is_file():
-        return path.stat().st_size
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
 def _model_files(model_dir: Path) -> dict:
@@ -67,14 +77,29 @@ def estimate_bundle(config: IndexConfig, include_onnx: bool = True) -> dict:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8")).get("models", {})
 
     present = _model_files(config.model_dir)
+    download_mb = 0.0
     for name, meta in manifest.items():
         actual = sum(size for path, size in present.items() if name.split("-")[0] in path.lower())
         mb = round(actual / 1048576, 1) if actual else float(meta.get("size_mb") or 0)
+        # Only weights actually shipped inside the installer belong in the
+        # 150 MB budget. The rest are fetched on first use: adding all four
+        # declared sizes (120+280+22+100) made `fits` permanently False.
+        bundled = bool(meta.get("bundled", False))
+        if bundled:
+            part_mb = mb
+            kind = "present" if actual else "bundle"
+            download = 0.0
+        else:
+            part_mb = 0.0
+            kind = "download (on disk)" if actual else "download on first use"
+            download = mb
+            download_mb = round(download_mb + mb, 1)
         parts.append(
             {
                 "part": f"model:{name}",
-                "mb": mb,
-                "kind": "present" if actual else "download or bundle",
+                "mb": part_mb,
+                "kind": kind,
+                "download_mb": download,
                 "note": meta.get("role", ""),
             }
         )
@@ -83,6 +108,7 @@ def estimate_bundle(config: IndexConfig, include_onnx: bool = True) -> dict:
     return {
         "parts": parts,
         "total_mb": total,
+        "download_mb": download_mb,
         "budget_mb": BUDGET_MB,
         "fits": total <= BUDGET_MB,
         "over_by_mb": round(max(0.0, total - BUDGET_MB), 1),
@@ -116,7 +142,7 @@ def _app_report() -> dict:
     return out
 
 
-def self_test(db_path, sample: int = 20) -> dict:
+def self_test(db_path, sample: int = 20, model_dir: Path | None = None) -> dict:
     """A bounded integrity check, meant to run at startup.
 
     Full verification of every stored text would cost seconds on a 100k-file
@@ -139,7 +165,20 @@ def self_test(db_path, sample: int = 20) -> dict:
     from . import vault as vault_mod
 
     try:
-        store = Store(db_path, "hashing-384", 384, readonly=True, ram_bm25=False)
+        # The embedder name must match the index's, or Store._check_embedder
+        # refuses the open and the check reports a false "cannot open".
+        from .embed import get_embedder as _get_embedder
+        from .config import default_home as _default_home
+
+        # A custom AUTOFIND_HOME/index must open with *its* embedder, not the
+        # one in the default home — otherwise every check reports "cannot open".
+        # db_path normally lives at <home>/index.db, so derive from it when the
+        # caller did not pass an explicit model directory.
+        if model_dir is None:
+            beside = db_path.parent / "models"
+            model_dir = beside if beside.is_dir() else (_default_home() / "models")
+        embedder = _get_embedder("auto", model_dir)
+        store = Store(db_path, embedder.name, embedder.dim, readonly=True, ram_bm25=False)
     except Exception as exc:
         return {"path": str(db_path), "ok": False,
                 "problems": [f"cannot open: {type(exc).__name__}: {exc}"], "checks": {}}
@@ -193,13 +232,13 @@ def self_test(db_path, sample: int = 20) -> dict:
             text = _row_slice(row, 0, int(row["raw_len"]))
             if not text:
                 result["problems"].append(
-                    f"stored text for {row['hash'][:12]}… cannot be inflated"
+                    f"stored text for {bytes(row['hash'])[:12].hex()}… cannot be inflated"
                 )
                 break
             digest = hashlib.sha256(text.encode("utf-8")).digest()
             if digest != row["hash"]:
                 result["problems"].append(
-                    f"stored text no longer matches its hash {row['hash'][:12]}…"
+                    f"stored text no longer matches its hash {bytes(row['hash'])[:12].hex()}…"
                 )
                 break
             verified += 1
@@ -239,7 +278,7 @@ def collect(config: IndexConfig, db_path: Path | None = None) -> dict:
         index["vault_key"] = (config.home / "vault.key").exists()
 
     return {
-        "version": "0.1.0",
+        "version": __version__,
         "python": sys.version.split()[0],
         "platform": f"{platform.system()} {platform.release()}",
         "exe": sys.executable,
@@ -303,11 +342,3 @@ def format_report(data: dict) -> str:
     for part in bundle["parts"]:
         lines.append(f"  {part['part']:<26} {part['mb']:>7.1f} MB   {part['kind']}")
     return "\n".join(lines)
-
-
-def missing_tools() -> list[str]:
-    tools = []
-    for name in ("tesseract", "node", "cargo"):
-        if shutil.which(name) is None:
-            tools.append(name)
-    return tools

@@ -19,6 +19,7 @@ See `script.py` for why the "did it fail" test is measured rather than guessed.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import asdict
 from pathlib import Path
 
@@ -42,6 +43,7 @@ __all__ = [
     "OcrResult",
     "OcrEngine",
     "OcrUnavailable",
+    "WindowsOcr",
     "available_engines",
     "cjk_coverage",
     "coverage",
@@ -50,6 +52,7 @@ __all__ = [
     "ocr_image",
     "reset_fallbacks",
     "result_dict",
+    "script_engine",
     "supported_languages",
 ]
 
@@ -88,13 +91,35 @@ class _Patience:
         return self.limit > 0 and self.misses >= self.limit
 
 
-_patience = _Patience()
+# One counter per worker, not one for the whole process: the indexer runs
+# recognizers in parallel, and a shared miss counter lets N simultaneous
+# unreadable images exhaust GIVE_UP_AFTER N times too early — silently turning
+# the expensive tier off for the rest of the run. Every counter is registered so
+# a reset at the start of a run reaches workers that have not been created yet
+# as well as those that have already exited.
+_patience_local = threading.local()
+_PATIENCES: list[_Patience] = []
+_PATIENCES_LOCK = threading.Lock()
+
+
+def _patience() -> _Patience:
+    """The calling thread's fallback budget, created on first use."""
+    current = getattr(_patience_local, "counter", None)
+    if current is None:
+        current = _Patience()
+        _patience_local.counter = current
+        with _PATIENCES_LOCK:
+            _PATIENCES.append(current)
+    return current
 
 
 def reset_fallbacks() -> None:
     """Called by the indexer at the start of a run, so one bad folder does not
-    silence OCR for the next one."""
-    _patience.reset()
+    silence OCR for the next one. Resets every worker's counter, not just the
+    caller's."""
+    with _PATIENCES_LOCK:
+        for counter in _PATIENCES:
+            counter.reset()
 
 
 def engine_report(languages_hint: str = "rus+eng") -> dict:
@@ -186,25 +211,29 @@ def ocr_page(
         return result
     if not script.looks_unread(result.text, width, height):
         return result
-    if _patience.spent():
+    budget = _patience()
+    if budget.spent():
         return result
 
-    improved = False
-    for engine in _fallback_chain(result.engine, fallbacks, cjk_model, cjk_keys):
+    chain = _fallback_chain(result.engine, fallbacks, cjk_model, cjk_keys)
+    if not chain:
+        # Nothing to try: one miss for this image.
+        budget.note(False)
+        return result
+    for engine in chain:
         second = _run(engine, image, invert_dark)
         if second is None:
-            _patience.note(False)
+            budget.note(False)
             continue
         if script.better(result.text, second.text):
             result = second
-            improved = True
-            _patience.note(True)
+            budget.note(True)
         else:
-            _patience.note(False)
+            budget.note(False)
         if not script.looks_unread(result.text, width, height):
             break
-    if not improved:
-        _patience.note(False)
+    # Every attempt above already noted its own verdict — noting again here
+    # would count the same image twice and halve the give-up budget.
     return result
 
 

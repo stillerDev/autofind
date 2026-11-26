@@ -96,7 +96,16 @@ class OnnxE5:
             feeds = {"input_ids": ids, "attention_mask": mask}
             if "token_type_ids" in self.input_names:
                 feeds["token_type_ids"] = np.zeros_like(ids)
-            hidden = self.session.run(None, feeds)[0]
+            # Output order is an exporter detail, not a contract: pick the
+            # 3-D (batch, tokens, dim) state by shape instead of trusting [0].
+            hidden = None
+            for candidate in self.session.run(None, feeds):
+                array = np.asarray(candidate)
+                if array.ndim == 3:
+                    hidden = array
+                    break
+            if hidden is None:
+                raise RuntimeError("e5 export produced no (batch, tokens, dim) hidden state")
             weights = mask[..., None].astype(np.float32)
             pooled = (hidden * weights).sum(axis=1) / np.clip(weights.sum(axis=1), 1e-6, None)
             norms = np.linalg.norm(pooled, axis=1, keepdims=True)

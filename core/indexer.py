@@ -17,7 +17,12 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import (
+    BrokenExecutor,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+)
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
@@ -164,8 +169,10 @@ def run_index(
     seen_sha: dict[str, str] = {}  # digest -> path dispatched earlier in this run
     for position, entry in enumerate(entries, start=1):
         seen.add(entry.path)
+        was_new = False
         try:
             existing = store.get_file(entry.path)
+            was_new = existing is None
             if (
                 existing
                 and int(existing["size"]) == entry.size
@@ -205,6 +212,10 @@ def run_index(
             stats.failed += 1
             stats.errors.append((entry.path, f"{type(exc).__name__}: {exc}"))
             continue
+        # Marked only here: the duplicate branches above `continue` before
+        # reaching this point, so their upserts keep the normal update path.
+        if was_new:
+            store.mark_new(entry.path)
         todo.append((position, entry))
 
     stats.timings["decide"] = time.perf_counter() - decide_started
@@ -212,10 +223,15 @@ def run_index(
     # while the PDFs and screenshots are still grinding through extraction
     # and OCR. Positions renumber so the progress bar keeps climbing.
     todo.sort(key=lambda item: (item[1].kind in HEAVY_KINDS, item[1].size))
-    todo = [(number, entry) for number, (_, entry) in enumerate(todo)]
+    # 1-based positions feed progress directly in the sequential path; a
+    # 0-based renumber made the bar stop one file short of the total.
+    todo = [(number, entry) for number, (_, entry) in enumerate(todo, start=1)]
     done_count = len(entries) - len(todo)
+    extract_started = time.perf_counter()
     _run_extraction(todo, config, store, embedder, visual, stats, progress, commit_every, workers, done_count)
+    stats.timings["extract_wall"] = time.perf_counter() - extract_started
 
+    finalize_started = time.perf_counter()
     if prune:
         stats.pruned = store.prune(seen)
     store.commit()
@@ -223,12 +239,10 @@ def run_index(
     # re-indexed, so without this the burst detector silently sees no hashes on
     # exactly the screenshots that were there first. Cheap: decode only, no OCR.
     stats.rehashed = backfill_phash(store)
-    store.commit()
     # Same problem, same shape: a code file indexed before the symbols table
     # existed is never re-indexed, so `sym:` would find nothing in exactly the
     # files that were there first. One pass, guarded by a meta flag.
     stats.symbols += backfill_symbols(store)
-    store.commit()
     # Document dates work the same way: files indexed before `doc_date` existed
     # carry NULL until one pass reads their first chunks and tries the regexes.
     stats.doc_dates = backfill_doc_dates(store)
@@ -239,6 +253,7 @@ def run_index(
         # Paranoid mode: FTS was dropped from disk, so the in-RAM BM25 sidecar
         # is the only content index - re-encrypt it with the fresh corpus.
         store.reseal_bm25()
+    stats.timings["finalize"] = time.perf_counter() - finalize_started
     stats.seconds = time.perf_counter() - started
     return stats
 
@@ -282,13 +297,14 @@ def _default_workers(todo: Sequence[tuple[int, object]]) -> int:
     takes the extra cores this machine has.
     """
     heavy = sum(1 for _, entry in todo if entry.kind in HEAVY_KINDS)
-    # A thousand-plus light files keep the pool busy enough to pay for eight
-    # workers; very large runs (tens of thousands of files, mostly stat-only
-    # name entries) take more cores because each job is tiny.
-    if len(todo) >= 5000:
+    # Measurement on a 10k plain-text corpus (native read path): 6 workers was
+    # fastest, 8 and 12 lost to process startup plus memory bandwidth. More
+    # cores still pay off when the queue is genuinely heavy (OCR/PDF), where a
+    # single future takes seconds and overlaps the store writes.
+    if heavy >= 16:
         cap = 12
-    elif heavy >= 16 or len(todo) >= 1000:
-        cap = 8
+    elif len(todo) >= 1000:
+        cap = 6
     else:
         cap = 4
     return min(cap, os.cpu_count() or 2)
@@ -320,7 +336,7 @@ def _run_extraction(
     if workers <= 0:
         workers = _default_workers(todo)
     if workers != 1 and (not auto or _worth_a_pool(todo, getattr(embedder, "semantic", False))):
-        pool = _open_pool(config, workers)
+        pool = _open_pool(config, workers, stats)
     if pool is None:
         for position, entry in todo:
             _store_one(position, entry, config, store, embedder, visual, stats, progress,
@@ -355,10 +371,51 @@ def _run_extraction(
     try:
         for future in as_completed(futures):
             jobs = futures[future]
-            prepared_batch = future.result()
+            try:
+                prepared_batch = future.result()
+            except BrokenExecutor:
+                raise  # handled below: demote the whole run to sequential
+            except Exception as exc:
+                # A parser/embedder exception in a worker used to escape here and
+                # abort the run before the final commit. Charge the files to the
+                # stats and keep the remaining futures moving.
+                for position, entry in jobs:
+                    stats.failed += 1
+                    stats.errors.append((entry.path, f"worker {type(exc).__name__}: {exc}"))
+                    processed.add(id(entry))
+                    store.end_new(entry.path)
+                    done += 1
+                    if progress:
+                        progress(done, done_before + len(todo), "error", entry.path)
+                continue
             if isinstance(prepared_batch, dict):
                 prepared_batch = [prepared_batch]  # single-heavy-file future
-            for (position, entry), prepared in zip(jobs, prepared_batch):
+            pairs = list(zip(jobs, prepared_batch, strict=False))
+            if len(prepared_batch) < len(jobs):
+                # A worker returning a short batch used to silently drop files
+                # while progress still claimed them as done. Re-run the missing
+                # entries here so the corpus stays complete.
+                short = len(jobs) - len(prepared_batch)
+                stats.errors.append((
+                    "", f"extractor returned {len(prepared_batch)} results for {len(jobs)} files; "
+                        f"retrying {short} in-process",
+                ))
+                for position, entry in jobs[len(prepared_batch):]:
+                    try:
+                        if entry.kind == "image":
+                            retry = _extract_image_job(entry, config)
+                        else:
+                            retry = _extract_text_job(entry, config)
+                        if isinstance(retry, dict):
+                            retry = [retry]
+                        if not retry:
+                            raise RuntimeError("retry produced no result")
+                        pairs.append(((position, entry), retry[0]))
+                    except Exception as exc:
+                        stats.failed += 1
+                        stats.errors.append((entry.path, f"retry {type(exc).__name__}: {exc}"))
+                        pairs.append(((position, entry), {"error": str(exc)}))
+            for (position, entry), prepared in pairs:
                 done += 1
                 processed.add(id(entry))
                 try:
@@ -398,7 +455,19 @@ def index_single(store, embedder, path, config) -> int:
     """Re-read one file in this process and rewrite its rows. Returns chunk count."""
     from .scanner import iter_entries
 
-    entries = [entry for entry in iter_entries([Path(path)], config) if entry.path == str(path)]
+    target = os.path.normcase(str(path))
+    entries = [
+        entry
+        for entry in iter_entries(
+            [Path(path)],
+            excluded_dirs=frozenset(),
+            max_bytes=config.max_file_bytes,
+            min_bytes=config.min_file_bytes,
+            privacy=config.privacy and not config.allow_sensitive,
+            categories=config.privacy_categories,
+        )
+        if os.path.normcase(entry.path) == target
+    ]
     if not entries:
         return 0
     entry = entries[0]
@@ -426,6 +495,10 @@ def _store_one(position, entry, config, store, embedder, visual, stats, progress
         stats.failed += 1
         stats.errors.append((entry.path, f"{type(exc).__name__}: {exc}"))
         status = "error"
+    finally:
+        # The sequential path does not pass `fresh` into replace_chunks, but
+        # the marker must not outlive the file (or the next run's path check).
+        store.end_new(entry.path)
     if progress:
         progress(done, done_before + len_todo, status, entry.path)
     if position % commit_every == 0:
@@ -437,6 +510,10 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
     process trusts nothing here except its own store: the same-content skip is
     re-checked against the digest."""
     status = prepared.get("status", "index")
+    # Consume the marker at the top: every early return below (name-only,
+    # undecodable, duplicate, same-content) must leave the writer clean.
+    fresh = store.is_new(entry.path)
+    store.end_new(entry.path)
     if status == "name-only":
         store.upsert_file(entry.path, entry.size, entry.mtime, "", "other")
         stats.indexed += 1
@@ -460,11 +537,12 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
         stats.duplicates += 1
         return "duplicate"
     digest = prepared["digest"]
-    existing = store.get_file(entry.path)
-    if existing and existing["sha256"] == digest:
-        store.upsert_file(entry.path, entry.size, entry.mtime, digest, entry.kind)
-        stats.skipped += 1
-        return "same-content"
+    if not fresh:
+        existing = store.get_file(entry.path)
+        if existing and existing["sha256"] == digest:
+            store.upsert_file(entry.path, entry.size, entry.mtime, digest, entry.kind)
+            stats.skipped += 1
+            return "same-content"
     chunks = prepared.get("text") or ""
     spans = prepared.get("spans") or []
     vector = (
@@ -477,7 +555,7 @@ def _store_prepared(entry, prepared: dict, store: Store, stats: IndexStats) -> s
         doc_date=prepared.get("doc_date"),
     )
     stats.chunks += store.replace_chunks(
-        file_id, chunks, spans, vector, prepared.get("packed")
+        file_id, chunks, spans, vector, prepared.get("packed"), fresh=fresh
     )
     symbols = prepared.get("symbols")
     if symbols:
@@ -537,7 +615,7 @@ def _worker_visual():
     return _WORKER_VISUAL
 
 
-def _open_pool(config: IndexConfig, workers: int | None):
+def _open_pool(config: IndexConfig, workers: int | None, stats: IndexStats | None = None):
     """A process pool, or None when it cannot exist here.
 
     Spawn is the only choice on Windows and the safest one everywhere: the
@@ -548,13 +626,64 @@ def _open_pool(config: IndexConfig, workers: int | None):
         import multiprocessing
 
         count = workers if workers and workers > 0 else min(4, os.cpu_count() or 2)
+        # With the native reader the file read runs without the GIL, so threads
+        # overlap I/O without paying for spawn, pickling or a second copy of
+        # every decoded document. AUTOFIND_NO_THREADS=1 forces processes (the
+        # documented switch); AUTOFIND_THREAD_POOL=1 is the legacy opt-in that
+        # actually turns threads on, and is still honoured.
+        force_processes = os.environ.get("AUTOFIND_NO_THREADS") == "1"
+        want_threads = os.environ.get("AUTOFIND_THREAD_POOL") == "1"
+        if want_threads and not force_processes and _native_text() is not None:
+            return ThreadPoolExecutor(
+                max_workers=count,
+                initializer=_worker_init, initargs=(config,),
+            )
         context = multiprocessing.get_context("spawn")
         return ProcessPoolExecutor(
             max_workers=count, mp_context=context,
             initializer=_worker_init, initargs=(config,),
         )
-    except Exception:
+    except Exception as exc:
+        if stats is not None:
+            stats.errors.append(("", f"pool unavailable: {type(exc).__name__}: {exc}"))
         return None
+
+
+_NATIVE = None
+_NATIVE_READ = None
+
+
+def _native_text():
+    """The optional afnative CPython extension, cached per process.
+
+    Built by `python native/build_native.py`. Missing/old .pyd or
+    AUTOFIND_NO_NATIVE=1 returns None, and the pure-Python read/hash/decode
+    path below stays authoritative (also used for A/B benchmarks).
+
+    On Windows the extension exposes a CreateFileW/ReadFile reader; that is
+    the default when present. AUTOFIND_NATIVE_CRT=1 selects the older CRT
+    reader for A/B measurements.
+    """
+    global _NATIVE, _NATIVE_READ
+    if _NATIVE is None:
+        if os.environ.get("AUTOFIND_NO_NATIVE"):
+            _NATIVE = False
+            return None
+        try:
+            import afnative
+
+            _NATIVE = afnative
+        except Exception:
+            _NATIVE = False
+    if not _NATIVE:
+        return None
+    if _NATIVE_READ is None:
+        win32 = getattr(_NATIVE, "read_text_digest_win32", None)
+        _NATIVE_READ = (
+            win32 if win32 is not None and not os.environ.get("AUTOFIND_NATIVE_CRT")
+            else _NATIVE.read_text_digest
+        )
+    return _NATIVE
 
 
 def _extract_text_job(entry, config: IndexConfig) -> dict:
@@ -578,12 +707,20 @@ def _extract_text_job(entry, config: IndexConfig) -> dict:
         # 200-byte file costs more than the file does. Only oversized files
         # trigger the second read.
         cap = config.max_file_bytes
-        with open(entry.path, "rb") as handle:
-            data = handle.read(min(cap, 1 << 20))
-            if len(data) == min(cap, 1 << 20) and cap > (1 << 20):
-                data += handle.read(cap - len(data))
-        digest = hashlib.sha256(data).digest()  # covers the indexed prefix
-        text = extract_plain_bytes(data)
+        native = _native_text()
+        if native is not None:
+            # One C call: wide-path CRT read, SHA-256 and the same encoding
+            # ladder as extract_plain_bytes, without Python reader/encoder
+            # object churn.
+            text, digest = _NATIVE_READ(entry.path, cap)
+            text = text or ""
+        else:
+            with open(entry.path, "rb") as handle:
+                data = handle.read(min(cap, 1 << 20))
+                if len(data) == min(cap, 1 << 20) and cap > (1 << 20):
+                    data += handle.read(cap - len(data))
+            digest = hashlib.sha256(data).digest()  # covers the indexed prefix
+            text = extract_plain_bytes(data)
         timing["read"] = time.perf_counter() - mark
         mark = time.perf_counter()
     else:
@@ -595,8 +732,11 @@ def _extract_text_job(entry, config: IndexConfig) -> dict:
     if not text.strip():
         return {"digest": digest, "status": "no-text", "timing": timing}
     mark = time.perf_counter()
-    spans = chunk_spans(text, config.chunk_chars, config.chunk_overlap)
-    chunks = [text[start:end] for start, end in spans]
+    # chunk_spans() normalises internally; slice the same normalised copy so
+    # CRLF/leading space cannot shift a span away from its text.
+    norm = normalize(text)
+    spans = chunk_spans(norm, config.chunk_chars, config.chunk_overlap)
+    chunks = [norm[start:end] for start, end in spans]
     timing["chunk"] = time.perf_counter() - mark
     mark = time.perf_counter()
     vectors = _worker_embedder().encode_passages(chunks)
@@ -605,24 +745,24 @@ def _extract_text_job(entry, config: IndexConfig) -> dict:
     # Compressing the text and hashing it is CPU work the worker can do while
     # the main process is still writing an earlier file. Only the compressed
     # blocks cross the pipe, too, so the transfer shrinks.
-    packed = _pack_text(normalize(text))
+    packed = _pack_text(norm)
     timing["pack"] = time.perf_counter() - mark
     prepared = {
         "digest": digest,
         # The document text travels once and the spans point into it, instead
         # of shipping a list of overlapping chunk strings that the writer then
         # has to store a second time.
-        "text": text,
+        "text": norm,
         "spans": spans,
         "vector": (
             filevec.mean_pool(vectors).astype(np.float32).tobytes() if vectors is not None else None
         ),
         "packed": packed,
-        "doc_date": find_doc_date(text),
+        "doc_date": find_doc_date(norm),
         "timing": timing,
     }
     if entry.kind == "code":
-        prepared["symbols"] = [s.as_tuple() for s in extract_for(entry.path, text)]
+        prepared["symbols"] = [s.as_tuple() for s in extract_for(entry.path, norm)]
     return prepared
 
 
@@ -646,7 +786,10 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
     # differing by a line of text), so the decoded frames are compared
     # before any OCR is skipped.
     mark = time.perf_counter()
-    twin = _worker_twin_image(_WORKER_CONFIG.db_path, digest, phash)
+    # The worker config is the argument passed into this job; _WORKER_CONFIG is
+    # only initialised inside worker processes, so reading it here gave the
+    # main process (sequential/retry path) a None db_path and always "no twin".
+    twin = _worker_twin_image(config.db_path, digest, phash)
     timing["twin"] = time.perf_counter() - mark
     if twin is not None:
         if twin == entry.path:
@@ -682,8 +825,9 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
         timing["ocr"] = time.perf_counter() - mark
 
     mark = time.perf_counter()
-    spans = chunk_spans(ocr_text, config.chunk_chars, config.chunk_overlap) if ocr_text.strip() else []
-    chunks = [ocr_text[start:end] for start, end in spans]
+    norm = normalize(ocr_text)
+    spans = chunk_spans(norm, config.chunk_chars, config.chunk_overlap) if norm.strip() else []
+    chunks = [norm[start:end] for start, end in spans]
     vectors = _worker_embedder().encode_passages(chunks) if chunks else None
     timing["embed"] = time.perf_counter() - mark
     mark = time.perf_counter()
@@ -692,7 +836,7 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
     timing["visual"] = time.perf_counter() - mark
     return {
         "digest": digest,
-        "text": ocr_text,
+        "text": norm,
         "spans": spans,
         "vector": (
             filevec.mean_pool(vectors).astype(np.float32).tobytes() if vectors is not None else None
@@ -705,7 +849,7 @@ def _extract_image_job(entry, config: IndexConfig) -> dict:
         "thumb": thumbnail_bytes(image, config.thumb_size),
         "phash": phash,
         "visual": np.asarray(vector, dtype=np.float32).tobytes() if vector is not None else None,
-        "doc_date": find_doc_date(ocr_text),
+        "doc_date": find_doc_date(norm),
         "timing": timing,
     }
 
@@ -829,30 +973,51 @@ def _index_one(entry, config: IndexConfig, store: Store, embedder, visual, stats
         stats.indexed += 1
         return "name-only"
 
-    digest = sha256_file(entry.path)
+    # Sequential indexing used to read every plain file twice: once for the
+    # digest and once for the text. Use the same one-read native path as the
+    # pool workers, so --workers 1 (and a dead pool) gets the same win.
+    text = None
+    if entry.kind in PLAIN_KINDS and not str(entry.path).lower().endswith((".csv", ".tsv")):
+        cap = config.max_file_bytes
+        native = _native_text()
+        if native is not None:
+            text, digest = _NATIVE_READ(entry.path, cap)
+            text = text or ""
+        else:
+            with open(entry.path, "rb") as handle:
+                data = handle.read(min(cap, 1 << 20))
+                if len(data) == min(cap, 1 << 20) and cap > (1 << 20):
+                    data += handle.read(cap - len(data))
+            digest = hashlib.sha256(data).digest()
+            text = extract_plain_bytes(data)
+    else:
+        digest = sha256_file(entry.path)
+
     existing = store.get_file(entry.path)
     if existing and existing["sha256"] == digest:
         store.upsert_file(entry.path, entry.size, entry.mtime, digest, entry.kind)
         stats.skipped += 1
         return "same-content"
 
-    text = extract_text(entry.path, entry.kind, config.max_file_bytes, ocr=config.ocr_enabled)
+    if text is None:
+        text = extract_text(entry.path, entry.kind, config.max_file_bytes, ocr=config.ocr_enabled)
     if not text.strip():
         stats.skipped += 1
         return "no-text"
 
-    spans = chunk_spans(text, config.chunk_chars, config.chunk_overlap)
-    chunks = [text[start:end] for start, end in spans]
+    norm = normalize(text)
+    spans = chunk_spans(norm, config.chunk_chars, config.chunk_overlap)
+    chunks = [norm[start:end] for start, end in spans]
     vectors = embedder.encode_passages(chunks)
     file_id = store.upsert_file(
         entry.path, entry.size, entry.mtime, digest, entry.kind,
-        doc_date=find_doc_date(text),
+        doc_date=find_doc_date(norm),
     )
-    stats.chunks += store.replace_chunks(file_id, text, spans, vectors)
+    stats.chunks += store.replace_chunks(file_id, norm, spans, vectors)
     if entry.kind == "code":
         # Definitions come from the text that was just extracted, so this costs
         # one regex pass over a file that has already been read and chunked.
-        stats.symbols += store.replace_symbols(file_id, [s.as_tuple() for s in extract_for(entry.path, text)])
+        stats.symbols += store.replace_symbols(file_id, [s.as_tuple() for s in extract_for(entry.path, norm)])
     stats.indexed += 1
     return "index"
 
@@ -866,6 +1031,9 @@ def _index_image(entry, config: IndexConfig, store: Store, embedder, visual, sta
     digest = sha256_file(entry.path)
     duplicate = store.image_by_sha(digest)
     if duplicate is not None and duplicate["path"] != entry.path:
+        # Keep the copy's file row so name search and the duplicates report
+        # still see it — the twin carries the OCR and the image row.
+        store.upsert_file(entry.path, entry.size, entry.mtime, digest, "image")
         stats.duplicates += 1
         stats.skipped += 1
         return "duplicate"
@@ -890,11 +1058,12 @@ def _index_image(entry, config: IndexConfig, store: Store, embedder, visual, sta
     if not ocr_text.strip():
         stats.ocr_empty += 1
 
-    spans = chunk_spans(ocr_text, config.chunk_chars, config.chunk_overlap) if ocr_text.strip() else []
-    chunks = [ocr_text[start:end] for start, end in spans]
+    norm = normalize(ocr_text)
+    spans = chunk_spans(norm, config.chunk_chars, config.chunk_overlap) if norm.strip() else []
+    chunks = [norm[start:end] for start, end in spans]
     vectors = embedder.encode_passages(chunks) if chunks else None
-    stats.chunks += store.replace_chunks(file_id, ocr_text, spans, vectors)
-    doc = find_doc_date(ocr_text) if ocr_text.strip() else None
+    stats.chunks += store.replace_chunks(file_id, norm, spans, vectors)
+    doc = find_doc_date(norm) if norm.strip() else None
     if doc:
         store.set_doc_date(file_id, doc)
 

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — 02 Command Overlay</title>
+<!-- Style 02: floating command palette over the desktop. Structure differs from
+     every other comp: no page at all, a centered overlay panel over dimmed
+     wallpaper, compact 46px rows, footer key rail. Palette: technical/dark
+     seed 3 (tastemaker) tuned to overlay translucency. -->
+<style>
+  :root{
+    --panel:#151d1bee; --panel-line:#202827; --ink:#e6f6f2; --mut:#8fa6a0;
+    --pri:#1d8373; --acc:#da7e9c;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{font:14px/1.4 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;color:var(--ink);
+       background:#0b1412;position:relative}
+  /* the desktop behind the overlay */
+  .desk{position:absolute;inset:0;
+    background:
+      radial-gradient(680px 420px at 78% 24%, rgba(29,131,115,.32), transparent 62%),
+      radial-gradient(560px 380px at 18% 78%, rgba(218,126,156,.16), transparent 60%),
+      radial-gradient(900px 600px at 50% 50%, #12211d 0%, #0b1412 68%);
+  }
+  .desk .icons{position:absolute;top:24px;left:28px;display:flex;flex-direction:column;gap:22px;
+    color:#c8d8d3;font-size:11.5px;text-align:center;filter:brightness(.9)}
+  .desk .icons .ic{width:46px;height:46px;border-radius:12px;background:#ffffff14;border:1px solid #ffffff1f;
+    display:flex;align-items:center;justify-content:center;margin:0 auto 6px;font-weight:700;color:#e6f6f2}
+  .taskbar{position:absolute;left:0;right:0;bottom:0;height:52px;background:#0d1715cc;
+    border-top:1px solid #ffffff14;display:flex;align-items:center;gap:14px;padding:0 16px;color:#9fb5af;font-size:12px}
+  .taskbar .tb{width:38px;height:38px;border-radius:9px;background:#ffffff12;border:1px solid #ffffff1c;
+    display:flex;align-items:center;justify-content:center;font-weight:700;color:#dfeee9}
+
+  .scrim{position:absolute;inset:0;background:#060b0a66;backdrop-filter:blur(2px)}
+  .pal{position:absolute;left:50%;top:170px;transform:translateX(-50%);width:680px;
+       background:var(--panel);border:1px solid #2b3a36;border-radius:14px;overflow:hidden;
+       box-shadow:0 40px 90px -30px rgba(0,0,0,.75),0 0 0 1px #00000055}
+  .head{display:flex;align-items:center;gap:13px;padding:16px 18px;border-bottom:1px solid var(--panel-line)}
+  .head .caret{width:2px;height:20px;background:var(--pri);border-radius:1px}
+  .q{font-size:17px}
+  .esc{margin-left:auto;font-size:11px;color:var(--mut);border:1px solid var(--panel-line);border-radius:6px;padding:4px 8px}
+  .tabs{display:flex;gap:4px;padding:10px 14px 0;font-size:12.5px;color:var(--mut)}
+  .tabs span{padding:5px 11px;border-radius:8px}
+  .tabs .on{background:#1d83731f;color:var(--ink);box-shadow:inset 0 0 0 1px #1d837348}
+  .rows{padding:8px 8px 10px;display:flex;flex-direction:column}
+  .r{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:9px}
+  .r.sel{background:#1d837326;box-shadow:inset 2px 0 0 var(--pri)}
+  .ic{flex:none;width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+      font:700 9.5px/1 "Segoe UI",sans-serif;color:#fff;letter-spacing:.03em}
+  .nm{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .nm b{color:var(--pri);font-weight:600}
+  .pth{font-size:11.5px;color:var(--mut);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mt{margin-left:auto;font-size:11.5px;color:var(--mut);flex:none;text-align:right}
+  .ocr{font-size:10px;color:var(--acc);border:1px solid #da7e9c55;border-radius:5px;padding:1.5px 5px;margin-left:8px}
+  .foot{display:flex;align-items:center;gap:16px;padding:11px 16px;border-top:1px solid var(--panel-line);
+        color:var(--mut);font-size:11.5px;background:#10191780}
+  .k{font:600 10.5px/1 "Segoe UI",sans-serif;color:var(--ink);background:#ffffff14;
+     border:1px solid #ffffff22;border-radius:5px;padding:3px 6px;margin-right:5px}
+  .foot .cnt{margin-left:auto;color:var(--pri)}
+</style>
+</head>
+<body>
+<div class="desk">
+  <div class="icons">
+    <div><div class="ic">AF</div>AutoFind</div>
+    <div><div class="ic">D:</div>Документы</div>
+    <div><div class="ic">≈</div>Проекты</div>
+  </div>
+  <div class="taskbar"><span class="tb">AF</span><span>смета март — AutoFind</span>
+    <span style="margin-left:auto">RU · 21:42 · 22.11.2026</span></div>
+</div>
+<div class="scrim"></div>
+
+<div class="pal">
+  <div class="head">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8fa6a0" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <span class="q">смета март</span><span class="caret"></span><span class="esc">esc</span>
+  </div>
+  <div class="tabs"><span class="on">Всё</span><span>Файлы</span><span>Скриншоты</span><span>Почта</span><span>Действия</span></div>
+  <div class="rows">
+    <div class="r sel">
+      <span class="ic" style="background:#b04141">PDF</span>
+      <span style="min-width:0"><div class="nm"><b>Смета</b>_ремонта_<b>март</b>_2026.pdf</div>
+      <div class="pth">D:\Документы\Сметы · «смета за март: материалы и работы, итог 214 500 ₽»</div></span>
+      <span class="mt">2.4 МБ<br>12 ноя</span>
+    </div>
+    <div class="r">
+      <span class="ic" style="background:#3f6fc4">DOC</span>
+      <span style="min-width:0"><div class="nm"><b>смета</b> за <b>март</b>.docx</div><div class="pth">D:\Документы</div></span>
+      <span class="mt">184 КБ<br>10 ноя</span>
+    </div>
+    <div class="r">
+      <span class="ic" style="background:#3d8f5f">PNG</span>
+      <span style="min-width:0"><div class="nm">скриншот 2026-03-28 14-02.png<span class="ocr">OCR</span></div>
+      <div class="pth">Desktop · «Смета за март — итог 214 500 ₽»</div></span>
+      <span class="mt">1.1 МБ<br>28 мар</span>
+    </div>
+    <div class="r">
+      <span class="ic" style="background:#2e7d54">XLS</span>
+      <span style="min-width:0"><div class="nm">Прайс_<b>Март</b>.xlsx</div><div class="pth">D:\Документы\Прайсы</div></span>
+      <span class="mt">96 КБ<br>8 ноя</span>
+    </div>
+    <div class="r">
+      <span class="ic" style="background:#54586a">PY</span>
+      <span style="min-width:0"><div class="nm">budget_<b>march</b>.py</div><div class="pth">D:\Код\autofind</div></span>
+      <span class="mt">12 КБ<br>5 ноя</span>
+    </div>
+    <div class="r">
+      <span class="ic" style="background:#8a63b8">EML</span>
+      <span style="min-width:0"><div class="nm">Март_отчёт.eml</div><div class="pth">Архив почты</div></span>
+      <span class="mt">42 КБ<br>1 ноя</span>
+    </div>
+  </div>
+  <div class="foot">
+    <span><span class="k">↑↓</span>выбор</span><span><span class="k">↵</span>открыть</span>
+    <span><span class="k">⇥</span>папка</span><span><span class="k">Space</span>превью</span>
+    <span class="cnt">6 результатов · 18 мс</span>
+  </div>
+</div>
+</body>
+</html>

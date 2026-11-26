@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from .archive import extract_archive
@@ -17,6 +18,7 @@ from .office import (
 )
 from .pdf import extract_pdf
 from .plain import extract_plain
+
 
 def _extract_email_dispatch(path, max_bytes=20*1024*1024):
     """Route email extraction: .eml via email.py, .msg via msgoutlook.py."""
@@ -37,6 +39,9 @@ EXTRACTORS = {
     "rtf": extract_rtf,
     "archive": extract_archive,
     "email": _extract_email_dispatch,
+    # `kind="msg"` is part of BUDGET_KINDS: route it through the same dispatcher
+    # instead of silently returning '' for a missing key.
+    "msg": _extract_email_dispatch,
 }
 
 PLAIN_KINDS = ("text", "code")
@@ -52,6 +57,16 @@ def extract_text(
 ) -> str:
     extractor = EXTRACTORS.get(kind)
     if extractor is None:
+        # Unknown extension: show real text when there is text to show. The
+        # binary check in core/scanner.py already kept dll/exe/media out.
+        if kind in ("other", ""):
+            from pathlib import Path as _Path
+
+            from ..scanner import MEDIA_EXT
+            if _Path(path).suffix.lower() in MEDIA_EXT:
+                return ""
+            from .plain import extract_plain
+            return extract_plain(path, max_bytes)
         return ""
     try:
         if kind == "pdf":
@@ -71,25 +86,28 @@ def extract_text(
         if kind in BUDGET_KINDS:
             return extractor(path, max_bytes)  # type: ignore[call-arg]
         return extractor(path)
-    except (OSError, ValueError, KeyError):
-        return ""
-    except Exception:
-        # A malformed package must never abort a whole indexing run.
+    except Exception as exc:
+        # A malformed package must never abort a whole indexing run. One handler
+        # covers every parser failure; the debug line keeps programming errors
+        # visible without turning a bad file into a failed run.
+        logging.getLogger(__name__).debug(
+            "extract %s (%s) failed: %s: %s", path, kind, type(exc).__name__, exc
+        )
         return ""
 
 
 __all__ = [
-    "extract_text",
     "EXTRACTORS",
     "extract_archive",
     "extract_docx",
     "extract_email",
     "extract_epub",
+    "extract_msgoutlook",
     "extract_opendocument",
     "extract_pdf",
     "extract_plain",
     "extract_pptx",
     "extract_rtf",
+    "extract_text",
     "extract_xlsx",
-    "extract_msgoutlook",
 ]

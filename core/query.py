@@ -158,6 +158,9 @@ CHIP_TEMPLATES: dict[str, str] = {
     "exclude": "without “{value}”",
     "tag": "tag: {value}",
     "collection": "collection: {value}",
+    "ocr": "ocr: {value}",
+    "from": "from: {value}",
+    "subject": "subject: {value}",
 }
 
 WEEKDAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -229,6 +232,15 @@ class ParsedQuery:
     names: list[str] = field(default_factory=list)
     contents: list[str] = field(default_factory=list)
     regexes: list[str] = field(default_factory=list)
+    # Negated filters are exclusions, not positive filters with a stray `-`.
+    # They are separate fields so a `-type:pdf` rejects kind=pdf instead of
+    # *selecting* it, and `-re:` never becomes a candidate-producing regex.
+    not_kinds: set[str] = field(default_factory=set)
+    not_exts: set[str] = field(default_factory=set)
+    not_in_paths: list[str] = field(default_factory=list)
+    not_names: list[str] = field(default_factory=list)
+    not_contents: list[str] = field(default_factory=list)
+    not_regexes: list[str] = field(default_factory=list)
     # `sym:name` — a definition, not a mention. Served by the symbols table.
     symbols: list[str] = field(default_factory=list)
     # The user's own labels. Tags are AND; collections are a union (a file can
@@ -265,6 +277,8 @@ class ParsedQuery:
         return bool(
             self.kinds or self.exts or self.masks or self.in_paths or self.not_paths
             or self.names or self.contents or self.regexes or self.symbols
+            or self.not_kinds or self.not_exts or self.not_in_paths or self.not_names
+            or self.not_contents or self.not_regexes
             or self.tags or self.collections
             or self.ocr_terms or self.email_from or self.email_subject
             or self.modified or self.size
@@ -282,11 +296,15 @@ class ParsedQuery:
         lowered = path.lower()
         if self.kinds and kind not in self.kinds:
             return False
-        if self.exts:
-            dot = lowered.rfind(".")
-            slash = max(lowered.rfind("\\"), lowered.rfind("/"))
-            if dot <= slash or lowered[dot:] not in self.exts:
-                return False
+        if self.not_kinds and kind in self.not_kinds:
+            return False
+        dot = lowered.rfind(".")
+        slash = max(lowered.rfind("\\"), lowered.rfind("/"))
+        ext = lowered[dot:] if dot > slash else ""
+        if self.exts and ext not in self.exts:
+            return False
+        if self.not_exts and ext in self.not_exts:
+            return False
         if self.masks:
             base = _basename(lowered)
             if not any(fnmatchcase(base, mask) for mask in self.masks):
@@ -301,9 +319,27 @@ class ParsedQuery:
                     or lowered.startswith(prefix)
                     and lowered[len(prefix)] in "\\/"):
                 return False
+        for prefix in self.not_in_paths:
+            prefix = prefix.lower().rstrip("\\/")
+            if prefix and (
+                lowered == prefix
+                or lowered.startswith(prefix) and lowered[len(prefix)] in "\\/"
+            ):
+                return False
         for fragment in self.not_paths:
             if fragment.lower() in lowered:
                 return False
+        for fragment in self.not_names:
+            if fragment.lower() in _basename(lowered):
+                return False
+        for pattern in self.not_regexes:
+            if len(pattern) > 256:
+                continue  # same cap the SQL regex scanner applies
+            try:
+                if re.search(pattern, path, re.IGNORECASE):
+                    return False
+            except re.error:
+                continue  # an invalid exclusion cannot reject everything
         # `skip_modified` serves the document-date mode: the caller has already
         # accepted this row on the strength of its claimed date instead of its
         # mtime, so the mtime range must not veto it a second time.
@@ -472,8 +508,12 @@ def parse(raw: str, now: float | None = None) -> ParsedQuery:
             query.not_paths.append(token.text)
             query.chips.append(Chip("exclude", token.text, f'-"{token.text}"', token.text))
         elif token.kind == "regex":
-            query.regexes.append(token.text)
-            query.chips.append(Chip("filter", token.text, f're:"{token.text}"', token.text))
+            if token.negated:
+                query.not_regexes.append(token.text)
+                query.chips.append(Chip("exclude", token.text, f'-re:"{token.text}"', token.text))
+            else:
+                query.regexes.append(token.text)
+                query.chips.append(Chip("filter", token.text, f're:"{token.text}"', token.text))
         elif token.kind == "key":
             _apply_key(query, token, now)
     return query
@@ -484,6 +524,43 @@ def _apply_key(query: ParsedQuery, token: Token, now: float | None) -> None:
     value = token.text
     negated = token.negated
     literal = f'-{token.key}:{value}' if negated else f"{token.key}:{value}"
+
+    if negated:
+        # A negated key is an exclusion. Resolve the value the same way the
+        # positive branch would, but store it on the exclusion side so matches()
+        # rejects those rows instead of selecting them.
+        if key == "lang":
+            exts = LANG_EXT.get(value.lower())
+            if exts is None:
+                query.hints.append(Hint("unknown_lang", value))
+                query.not_paths.append(value)
+            else:
+                query.not_exts |= exts
+        elif key == "ext":
+            query.not_exts.add("." + value.lower().lstrip("."))
+        elif key in ("type", "is"):
+            word = value.lower().lstrip(".")
+            if word in TYPE_KINDS:
+                query.not_kinds |= TYPE_KINDS[word]
+            elif word in TYPE_EXTS:
+                query.not_exts |= TYPE_EXTS[word]
+            else:
+                query.not_exts.add("." + word)
+        elif key == "in":
+            query.not_in_paths.append(value)
+        elif key == "path":
+            query.not_paths.append(value)
+        elif key == "name":
+            query.not_names.append(value)
+        elif key == "content":
+            query.not_contents.append(value.lower())
+        else:
+            # No typed predicate for tags, dates and the like: keep the value
+            # as a path exclusion rather than silently turning it into a
+            # positive filter.
+            query.not_paths.append(value)
+        query.chips.append(Chip("exclude", value, literal, literal))
+        return
 
     if key in ("type", "ext", "is", "lang"):
         if key == "lang":
@@ -765,6 +842,7 @@ def compile_intent(raw: str, now: float | None = None) -> tuple[str, list[Chip]]
             work = work[:match.start()] + " " + work[match.end():]
             appends.append(spec)
             chips.append(Chip(kind, "", spec, match.group(0).strip()))
+            break  # one time window per query, like the sort rules
 
     for pattern, sign, kind in _SIZE_RULES:
         match = re.search(pattern, work, re.IGNORECASE)
@@ -803,6 +881,8 @@ def compile_intent(raw: str, now: float | None = None) -> tuple[str, list[Chip]]
 
 def _has_explicit_filter(raw: str) -> bool:
     for token in tokenize(raw):
+        # Negated keys keep the "key"/"regex" kind with token.negated set, so
+        # `-type:pdf` and `-re:` suppress intent compilation too.
         if token.kind == "key" or token.kind == "regex":
             return True
     return False

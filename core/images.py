@@ -11,18 +11,24 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
 
+from .config import IndexConfig
+
 try:  # Pillow >= 9.1
     RESAMPLE = Image.Resampling.LANCZOS
 except AttributeError:  # pragma: no cover - old Pillow
     RESAMPLE = Image.LANCZOS
 
-THUMB_SIZE = 320
+# One source of truth for the default: IndexConfig.thumb_size. Callers that
+# have a config instance pass it explicitly (the indexer does); this constant
+# is the fallback for direct callers.
+THUMB_SIZE = IndexConfig.__dataclass_fields__["thumb_size"].default
 DARK_THRESHOLD = 118
 SMALL_TEXT_WIDTH = 1100
 MAX_PIXELS = 20_000_000
@@ -35,7 +41,7 @@ class ImageInfo:
     height: int
     size: int
     mtime: float
-    sha256: str
+    sha256: bytes  # the raw 32-byte digest, as stored in the index
 
 
 def default_image_roots() -> list[Path]:
@@ -51,7 +57,7 @@ def default_image_roots() -> list[Path]:
             home / "Desktop",
             pictures,
         ]
-    elif os.sys.platform == "darwin":
+    elif sys.platform == "darwin":
         candidates += [home / "Desktop", home / "Pictures"]
     else:
         candidates += [home / "Pictures", home / "Изображения", home / "Desktop"]
@@ -67,7 +73,7 @@ def load_image(path: str | Path) -> Image.Image | None:
         return None
 
 
-def sha256_bytes(data: bytes) -> str:
+def sha256_bytes(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
 
 
@@ -121,7 +127,9 @@ def preprocess_for_ocr(
     return ImageOps.autocontrast(gray, cutoff=1).convert("RGB")
 
 
-def thumbnail_bytes(image: Image.Image, size: int = THUMB_SIZE, quality: int = 82) -> bytes:
+def thumbnail_bytes(image: Image.Image, size: int | None = None, quality: int = 82) -> bytes:
+    if size is None:
+        size = IndexConfig().thumb_size  # honours a changed config default
     thumb = image.copy()
     thumb.thumbnail((size, size), RESAMPLE)
     buffer = io.BytesIO()

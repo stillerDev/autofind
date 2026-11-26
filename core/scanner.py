@@ -13,14 +13,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from .ignore import IgnoreSet
+from .ignore import IGNORE_FILES, IgnoreSet
 from .privacy import match_reason, sensitive_dirs
 
 TEXT_EXT = {
     ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json",
+    ".jsonl", ".ndjson", ".jsonc",
     ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".tex",
     ".xml", ".svg", ".plist", ".diff", ".patch", ".nfo", ".org", ".adoc",
     ".asciidoc", ".textile", ".rmd", ".ipynb", ".properties",
+    # Config/manifest/build files that are text but used to land in "other".
+    ".bat", ".cmd", ".sln", ".vcxproj", ".filters", ".props", ".targets",
+    ".recipe", ".manifest", ".editorconfig", ".gitignore", ".gitattributes",
+    ".dockerfile", ".nix", ".hcl", ".tfstate", ".lock", ".sum", ".mod",
+    ".typed", ".tex-json", ".vdf", ".usda", ".usdc", ".mtlx", ".osl", ".oso",
+    ".dat", ".f90", ".f95", ".for", ".inl", ".glslfx", ".hlsli", ".fx",
+    ".rpy", ".qss", ".tslint", ".prettierrc", ".babelrc", ".env",
+    # Templates, schemas and dotfiles: all plain text despite the odd suffix.
+    ".json5", ".jsonc", ".cjs", ".mjs", ".cts", ".mts", ".hbs", ".ejs",
+    ".jade", ".pug", ".haml", ".slim", ".erb", ".liquid", ".mustache",
+    ".njk", ".twig", ".xsd", ".xsl", ".xslt", ".dtd", ".rdf", ".owl",
+    ".n3", ".ttl", ".sparql", ".rq", ".avsc", ".avdl", ".thrift",
+    ".capnp", ".tfvars", ".nomad", ".eslintrc", ".stylelintrc",
+    ".flake8", ".pylintrc", ".coveragerc", ".dockerignore", ".npmignore",
+    ".gitmodules", ".mailmap", ".bashrc", ".zshrc", ".profile", ".vimrc",
+    ".inputrc", ".htaccess", ".properties", ".srt", ".vtt", ".ass", ".ssa",
 }
 CODE_EXT = {
     ".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt",
@@ -34,6 +51,8 @@ CODE_EXT = {
     ".gd", ".glsl", ".hlsl", ".frag", ".vert", ".comp", ".geom", ".tesc",
     ".tese", ".metal", ".wgsl", ".cu", ".cuh", ".cmake", ".mk", ".gradle",
     ".proto", ".graphql", ".tf", ".hcl", ".shader",
+    ".f", ".f90", ".f95", ".for", ".inl", ".glslfx", ".hlsli", ".fx",
+    ".usda", ".rpy", ".qml", ".gradle", ".mk",
 }
 DOC_EXT = {".pdf", ".docx", ".pptx", ".xlsx", ".epub", ".odt", ".ods", ".odp", ".rtf"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
@@ -43,6 +62,19 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 # is read through the optional `extract-msg` package (see core/extract/msgoutlook).
 ARCHIVE_EXT = {".zip", ".tar", ".tgz", ".tbz2", ".txz", ".gz", ".bz2", ".xz"}
 EMAIL_EXT = {".eml", ".mbox", ".msg"}
+# Sound (and video) have no useful text body. They are the one family we do
+# NOT sniff: an mp3/wav can contain ASCII metadata, but treating that as a
+# document produces garbage results.
+AUDIO_EXT = {
+    ".mp3", ".wav", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac",
+    ".wma", ".aiff", ".aif", ".alac", ".mid", ".midi", ".amr", ".ape",
+    ".mp2", ".mka", ".m4b", ".caf", ".au", ".snd", ".voc", ".8svx",
+}
+VIDEO_EXT = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v",
+    ".mpg", ".mpeg", ".3gp", ".ts", ".m2ts", ".vob", ".ogv", ".mk3d",
+}
+MEDIA_EXT = AUDIO_EXT | VIDEO_EXT
 
 KIND_BY_EXT = {
     **{ext: "text" for ext in TEXT_EXT},
@@ -76,12 +108,46 @@ class FileEntry:
     kind: str
 
 
+def _is_probably_text(path: str | Path) -> bool:
+    """Last-resort classification for unknown extensions and extensionless files.
+
+    Reading 4 KiB is cheap compared with never indexing the contents. A NUL in
+    the first block or a high control-character ratio means a real binary
+    (dll/exe/pyc/media), which stays 'other' instead of filling the index with
+    mojibake.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return False
+    if not head or b"\x00" in head:
+        return False
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return True
+    from .extract.plain import extract_plain_bytes
+
+    text = extract_plain_bytes(head)
+    if not text:
+        return False
+    sample = text[:1024]
+    control = sum(1 for ch in sample if ord(ch) < 32 and ch not in "\n\r\t")
+    return control / len(sample) < 0.04
+
+
 def kind_for(path: str | Path) -> str:
     ext = Path(path).suffix.lower()
-    return KIND_BY_EXT.get(ext, "other")
+    # Known kinds come first: `.ts` is both TypeScript and an MPEG transport
+    # stream, and the source-code meaning is the one the index has always used.
+    known = KIND_BY_EXT.get(ext)
+    if known is not None:
+        return known
+    if ext in MEDIA_EXT:
+        return "other"  # audio/video: the one family we never text-sniff
+    return "text" if _is_probably_text(path) else "other"
 
 
-def sha256_file(path: str | Path, chunk: int = 1 << 20) -> str:
+def sha256_file(path: str | Path, chunk: int = 1 << 20) -> bytes:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         while True:
@@ -179,7 +245,10 @@ def iter_entries(
             dir_resolved: str | None = None  # resolved once per directory
             for entry in listing:
                 name = entry.name
-                if name.startswith("."):
+                # Dotfiles such as .env, .bashrc and .dockerignore are text and
+                # indexed by design; only the ignore manifests themselves are
+                # skipped here (their rules are applied by IgnoreSet above).
+                if name in IGNORE_FILES:
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     if name in excluded_dirs:
@@ -196,12 +265,10 @@ def iter_entries(
                 path = os.path.join(dirpath, name)
                 if respect_ignore and ignore.is_ignored(path, False):
                     continue
-                suffix = os.path.splitext(name)[1].lower()
-                kind = KIND_BY_EXT.get(suffix)
-                if kind is None or kind not in SUPPORTED_KINDS:
-                    # Unknown or binary format: still record the name so it is
-                    # findable by filename. No text is read for these.
-                    kind = "other"
+                # Same classification as the single-file path: an unknown
+                # extension is sniffed here too, instead of being labelled
+                # "other" by the walk and "text" when passed in directly.
+                kind = kind_for(path)
                 try:
                     stat = entry.stat()
                 except OSError:

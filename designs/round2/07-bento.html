@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — 07 Bento Grid</title>
+<!-- Style 07: bento dashboard. Structure: 4-column tile mosaic where search,
+     results, preview, stats and actions are all equal citizens of one grid.
+     Palette: playful/light seed 9 (tastemaker). -->
+<style>
+  :root{
+    --bg:#f6fcff; --tile:#e9f3f7; --line:#d8e3e6; --ink:#111d20; --mut:#5f7b85;
+    --pri:#0b7e9a; --sec:#b5e7f9; --acc:#c64763; --white:#ffffff;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{background:var(--bg);color:var(--ink);font:15px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+  .grid{height:100%;display:grid;gap:16px;padding:24px;
+        grid-template-columns:repeat(4,1fr);grid-template-rows:96px 210px 250px 1fr 44px}
+  .tile{background:var(--tile);border:1px solid var(--line);border-radius:20px;padding:16px 18px;overflow:hidden;position:relative}
+  .t-white{background:var(--white)}
+  .t-pri{background:var(--pri);color:#fff;border-color:var(--pri)}
+  .t-sec{background:var(--sec);border-color:#9ed6ea}
+  .t-dark{background:#12242b;color:#dff3f9;border-color:#12242b}
+  /* brand strip */
+  .brand{grid-column:1/3;display:flex;align-items:center;gap:12px}
+  .mark{width:30px;height:30px;border-radius:10px;background:var(--pri);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px}
+  .brand b{font-size:19px;letter-spacing:-.01em}
+  .brand span{color:var(--mut);font-size:12.5px;margin-left:4px}
+  .stats{grid-column:3/5;display:flex;gap:10px;align-items:stretch}
+  .pill{flex:1;background:var(--white);border:1px solid var(--line);border-radius:14px;display:flex;
+        flex-direction:column;justify-content:center;padding:0 16px}
+  .pill b{font-size:20px;letter-spacing:-.01em}
+  .pill span{font-size:11.5px;color:var(--mut)}
+  .pill .ok{color:#159a63;font-size:11px;margin-left:auto;align-self:center}
+  /* search tile */
+  .search{grid-column:1/5;display:flex;align-items:center;gap:16px}
+  .sfield{flex:1;background:var(--white);border:1.5px solid var(--line);border-radius:16px;height:62px;
+          display:flex;align-items:center;gap:14px;padding:0 20px;box-shadow:0 10px 24px -16px rgba(11,126,154,.45)}
+  .sfield .q{font-size:23px;font-weight:600;letter-spacing:-.01em}
+  .caret{width:2.5px;height:26px;background:var(--pri);border-radius:2px}
+  .btn{background:var(--pri);color:#fff;font-weight:700;font-size:15px;border-radius:14px;
+       padding:15px 26px;box-shadow:0 8px 18px -8px rgba(11,126,154,.6)}
+  /* results column */
+  .results{grid-column:1/3;grid-row:3/6;display:flex;flex-direction:column;gap:10px}
+  .rhead{display:flex;align-items:center;font-size:12px;color:var(--mut);letter-spacing:.06em;font-weight:700}
+  .rhead .n{margin-left:auto}
+  .rrow{background:var(--white);border:1px solid var(--line);border-radius:14px;padding:11px 14px;
+        display:flex;gap:12px;align-items:center}
+  .rrow.sel{border:2px solid var(--pri);box-shadow:0 8px 20px -12px rgba(11,126,154,.5)}
+  .glyph{flex:none;width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+         font:800 10px/1 "Segoe UI",sans-serif;color:#fff}
+  .g-pdf{background:#c94747}.g-doc{background:#3f6fc4}.g-xls{background:#2e7d54}.g-code{background:#54586a}.g-eml{background:#8a63b8}
+  .rt{min-width:0;flex:1}
+  .rn{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rp{font-size:11.5px;color:var(--mut);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rm{flex:none;font-size:11px;color:var(--mut);text-align:right}
+  .ocr{display:inline-block;background:var(--sec);color:#075a70;font-size:9.5px;font-weight:800;
+       letter-spacing:.06em;border-radius:6px;padding:2px 7px;margin-left:7px;vertical-align:2px}
+  /* preview tile */
+  .preview{grid-column:3/5;grid-row:3/4;display:flex;flex-direction:column}
+  .pv-top{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700}
+  .pv-top .x{margin-left:auto;color:var(--mut);font-size:14px}
+  .pv-doc{flex:1;margin-top:12px;background:var(--white);border:1px solid var(--line);border-radius:12px;padding:14px 16px;
+          font-size:11.5px;color:#42555e;line-height:1.55;overflow:hidden;position:relative}
+  .pv-doc h5{font-size:13px;color:var(--ink);margin-bottom:8px}
+  .pv-doc .hl{background:#fff3b8;border-radius:3px;color:var(--ink)}
+  .pv-doc .fade{position:absolute;left:0;right:0;bottom:0;height:34px;background:linear-gradient(transparent,var(--white))}
+  /* actions + hint tiles */
+  .actions{grid-column:3/5;grid-row:4/5;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .act{border-radius:14px;display:flex;align-items:center;gap:10px;padding:0 16px;font-weight:700;font-size:13.5px}
+  .act .ic{width:26px;height:26px;border-radius:8px;background:#ffffff55;display:flex;align-items:center;justify-content:center;font-size:13px}
+  .act.ghost{background:var(--white);border:1px solid var(--line);color:var(--ink)}
+  .act.acc{background:var(--acc);color:#fff;border-color:var(--acc)}
+  .hint{grid-column:3/5;grid-row:5/6;display:flex;align-items:center;gap:18px;color:var(--mut);font-size:12px}
+  .hint b{font-weight:600;color:var(--ink);background:var(--white);border:1px solid var(--line);
+          border-bottom-width:2.5px;border-radius:6px;padding:3px 7px;font-size:11px}
+  .thumbrow{display:flex;gap:8px;margin-top:8px}
+  .th{width:64px;height:44px;border-radius:8px;background:linear-gradient(140deg,#274b58,#16303a);position:relative;overflow:hidden}
+  .th::before{content:"";position:absolute;left:6px;top:6px;width:55%;height:5px;border-radius:3px;background:#b5e7f9}
+  .th::after{content:"";position:absolute;left:6px;top:16px;width:80%;height:4px;border-radius:2px;background:#ffffff33;
+             box-shadow:0 8px 0 #ffffff26}
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="tile brand"><span class="mark">AF</span><b>AutoFind</b><span>локальный поиск · файлы · скриншоты · OCR</span></div>
+  <div class="tile stats" style="padding:0;border:none;background:none">
+    <span class="pill"><b>128 430</b><span>файлов</span></span>
+    <span class="pill"><b>18 мс</b><span>поиск</span></span>
+    <span class="pill"><b>7</b><span>нашлось</span><span class="ok">● готово</span></span>
+  </div>
+
+  <div class="tile search">
+    <span class="sfield">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5f7b85" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <span class="q">смета март</span><span class="caret"></span>
+    </span>
+    <span class="btn">Найти</span>
+  </div>
+
+  <div class="tile results">
+    <div class="rhead">РЕЗУЛЬТАТЫ <span class="n">все типы</span></div>
+    <div class="rrow sel">
+      <span class="glyph g-pdf">PDF</span>
+      <span class="rt"><div class="rn">Смета_ремонта_март_2026.pdf</div>
+      <div class="rp">D:\Документы\Сметы · «итог 214 500 ₽»</div></span>
+      <span class="rm">2.4 МБ<br>12 ноя</span>
+    </div>
+    <div class="rrow">
+      <span class="glyph g-doc">DOC</span>
+      <span class="rt"><div class="rn">смета за март.docx</div><div class="rp">D:\Документы</div></span>
+      <span class="rm">184 КБ<br>10 ноя</span>
+    </div>
+    <div class="rrow">
+      <span class="glyph" style="background:#3d8f5f">PNG</span>
+      <span class="rt"><div class="rn">скриншот 2026-03-28…<span class="ocr">OCR</span></div>
+      <div class="rp">Desktop · «Смета за март — итог…»</div></span>
+      <span class="rm">1.1 МБ<br>28 мар</span>
+    </div>
+    <div class="rrow">
+      <span class="glyph g-xls">XLS</span>
+      <span class="rt"><div class="rn">Прайс_Март.xlsx</div><div class="rp">D:\Документы\Прайсы</div></span>
+      <span class="rm">96 КБ<br>8 ноя</span>
+    </div>
+    <div class="rrow">
+      <span class="glyph g-code">PY</span>
+      <span class="rt"><div class="rn">budget_march.py</div><div class="rp">D:\Код\autofind</div></span>
+      <span class="rm">12 КБ<br>5 ноя</span>
+    </div>
+    <div class="thumbrow">
+      <span class="th"></span><span class="th" style="background:linear-gradient(140deg,#3c5568,#22333f)"></span>
+      <span class="th" style="background:linear-gradient(140deg,#4a3c58,#2b2233)"></span>
+      <span class="th" style="background:linear-gradient(140deg,#58453a,#31261f)"></span>
+    </div>
+  </div>
+
+  <div class="tile t-white preview">
+    <div class="pv-top"><span style="color:var(--pri)">●</span> Смета_ремонта_март_2026.pdf <span class="x">✕</span></div>
+    <div class="pv-doc">
+      <h5>Смета на ремонт помещения, март 2026</h5>
+      1. Материалы: штукатурка, грунтовка, краска — <span class="hl">96 400 ₽</span><br>
+      2. Работы: демонтаж, выравнивание, покраска — 118 100 ₽<br>
+      3. Итого по смете за март: <span class="hl">214 500 ₽</span>, срок до 30.03.2026<br>
+      <br>
+      Подписи сторон, приложение № 1 — ведомость объёмов…
+      <span class="fade"></span>
+    </div>
+  </div>
+
+  <div class="tile actions" style="padding:0;border:none;background:none">
+    <span class="act t-pri"><span class="ic">↗</span> Открыть файл</span>
+    <span class="act ghost"><span class="ic">▤</span> Показать в папке</span>
+    <span class="act ghost"><span class="ic">⧉</span> Найти похожие</span>
+    <span class="act acc"><span class="ic">★</span> Закрепить</span>
+  </div>
+
+  <div class="tile hint" style="display:flex">
+    <span><b>Enter</b> открыть</span><span><b>Space</b> превью</span><span><b>↑↓</b> выбор</span>
+    <span><b>Ctrl+K</b> фильтр</span>
+    <span style="margin-left:auto">всё локально · без облака</span>
+  </div>
+</div>
+</body>
+</html>

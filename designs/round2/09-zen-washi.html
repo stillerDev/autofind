@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — 09 Zen Washi</title>
+<!-- Style 09: zen paper. Structure: one narrow centered column, enormous
+     whitespace, hairline rules, vertical brand column on the right, red seal
+     mark. Palette: warm/light seed 4 (tastemaker). Type: serif light. -->
+<style>
+  :root{
+    --paper:#fff5f3; --ink:#221815; --mut:#a08d84; --hair:#e5dad8;
+    --clay:#a75748; --leaf:#34804e;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{background:var(--paper);color:var(--ink);font:300 16px/1.6 "Segoe UI Light","Segoe UI",Georgia,serif}
+  .page{height:100%;display:flex}
+  .col{flex:1;display:flex;flex-direction:column;align-items:center;padding:76px 0 0}
+  .inner{width:660px;display:flex;flex-direction:column;height:100%}
+  /* brand row */
+  .top{display:flex;align-items:center;gap:14px}
+  .seal{width:40px;height:40px;background:var(--clay);color:#fff;display:flex;align-items:center;justify-content:center;
+        font-size:15px;letter-spacing:.05em;border-radius:4px;box-shadow:0 6px 14px -6px rgba(167,87,72,.55)}
+  .brand{font-size:14px;letter-spacing:.5em;text-transform:uppercase;color:var(--mut)}
+  .brand b{color:var(--ink);font-weight:400}
+  /* query */
+  .q{margin-top:74px;font-size:44px;font-weight:300;letter-spacing:.02em;display:flex;align-items:baseline;gap:16px}
+  .q .em{color:var(--clay)}
+  .caret{width:2px;height:36px;background:var(--clay);opacity:.7;transform:translateY(2px)}
+  .rule{margin-top:26px;height:1px;background:var(--hair);position:relative}
+  .rule::before{content:"";position:absolute;left:0;top:-1px;width:120px;height:3px;background:var(--clay)}
+  .meta-row{margin-top:18px;display:flex;gap:26px;font-size:12.5px;color:var(--mut);letter-spacing:.08em}
+  .meta-row span b{color:var(--ink);font-weight:400}
+  .meta-row .live{color:var(--leaf)}
+  /* results */
+  .list{margin-top:44px;flex:1;overflow:hidden}
+  .item{display:flex;align-items:baseline;gap:18px;padding:19px 2px;border-bottom:1px solid var(--hair)}
+  .item:first-child{border-top:1px solid var(--hair)}
+  .num{font-size:12px;color:var(--clay);width:24px;flex:none;letter-spacing:.1em}
+  .t{min-width:0;flex:1}
+  .n{font-size:19px;font-weight:400;letter-spacing:.01em}
+  .n .hl{color:var(--clay)}
+  .p{font-size:12.5px;color:var(--mut);margin-top:3px;letter-spacing:.04em}
+  .ocr{display:inline-block;font-size:10px;letter-spacing:.22em;color:var(--paper);background:var(--leaf);
+       border-radius:2px;padding:2px 8px;margin-left:10px;vertical-align:3px}
+  .snip{font-size:13.5px;color:#8a6a5f;margin-top:6px;font-style:italic}
+  .dots{flex:1;border-bottom:1px dotted #d9c8c0;transform:translateY(-6px);min-width:36px}
+  .m{flex:none;text-align:right;font-size:12px;color:var(--mut);line-height:1.6;letter-spacing:.06em}
+  /* footer */
+  .foot{padding:20px 0 26px;display:flex;justify-content:space-between;align-items:baseline;
+        font-size:12px;color:var(--mut);letter-spacing:.08em}
+  .foot .keys span{margin-right:20px}
+  .foot .keys b{font-weight:400;color:var(--ink);border:1px solid var(--hair);border-radius:3px;
+                padding:1px 7px;background:#fff;font-size:11px;margin-right:6px}
+  /* vertical side column */
+  .side{width:88px;flex:none;border-left:1px solid var(--hair);display:flex;flex-direction:column;
+        align-items:center;padding:56px 0 40px;gap:26px}
+  .side .vtext{writing-mode:vertical-rl;font-size:13px;letter-spacing:.6em;color:var(--mut)}
+  .side .stamp{margin-top:auto;writing-mode:vertical-rl;background:var(--clay);color:#fff;font-size:12px;
+               letter-spacing:.3em;padding:14px 8px;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="col"><div class="inner">
+    <div class="top">
+      <span class="seal">検</span>
+      <span class="brand">Auto<b>Find</b> · тихий локальный поиск</span>
+    </div>
+
+    <div class="q"><span class="em">смета</span>&nbsp;март<span class="caret"></span></div>
+    <div class="rule"></div>
+    <div class="meta-row">
+      <span><b>7</b> находок</span><span>за <b>18 мс</b></span>
+      <span>индекс <b>128 430</b> файлов</span>
+      <span class="live">● всё локально</span>
+    </div>
+
+    <div class="list">
+      <div class="item">
+        <span class="num">01</span>
+        <span class="t">
+          <div class="n"><span class="hl">смета</span>_ремонта_<span class="hl">март</span>_2026.pdf</div>
+          <div class="p">Документы\Сметы · 2.4 МБ</div>
+          <div class="snip">«…итог 214 500 ₽, срок до 30 марта…»</div>
+        </span>
+        <span class="dots"></span><span class="m">12.11<br>2026</span>
+      </div>
+      <div class="item">
+        <span class="num">02</span>
+        <span class="t"><div class="n"><span class="hl">смета</span> за <span class="hl">март</span>.docx</div>
+        <div class="p">Документы · 184 КБ</div></span>
+        <span class="dots"></span><span class="m">10.11<br>2026</span>
+      </div>
+      <div class="item">
+        <span class="num">03</span>
+        <span class="t">
+          <div class="n">скриншот 2026-03-28 14-02.png<span class="ocr">OCR</span></div>
+          <div class="p">Рабочий стол · 1.1 МБ</div>
+          <div class="snip">на скриншоте: «Смета за март — итог 214 500 ₽»</div>
+        </span>
+        <span class="dots"></span><span class="m">28.03<br>2026</span>
+      </div>
+      <div class="item">
+        <span class="num">04</span>
+        <span class="t"><div class="n">Прайс_<span class="hl">Март</span>.xlsx</div>
+        <div class="p">Документы\Прайсы · 96 КБ</div></span>
+        <span class="dots"></span><span class="m">08.11<br>2026</span>
+      </div>
+      <div class="item">
+        <span class="num">05</span>
+        <span class="t"><div class="n">budget_<span class="hl">march</span>.py</div>
+        <div class="p">Код\autofind · 12 КБ</div></span>
+        <span class="dots"></span><span class="m">05.11<br>2026</span>
+      </div>
+      <div class="item">
+        <span class="num">06</span>
+        <span class="t"><div class="n">Март_отчёт.eml</div>
+        <div class="p">Архив почты · 42 КБ</div></span>
+        <span class="dots"></span><span class="m">01.11<br>2026</span>
+      </div>
+    </div>
+
+    <div class="foot">
+      <span class="keys">
+        <span><b>Enter</b>открыть</span><span><b>Space</b>превью</span><span><b>↑↓</b>выбор</span>
+      </span>
+      <span>тишина и порядок</span>
+    </div>
+  </div></div>
+
+  <div class="side">
+    <div class="vtext">ФАЙЛЫ · СКРИНШОТЫ · ПОЧТА · КОД</div>
+    <div class="stamp">検索 · 2026</div>
+  </div>
+</div>
+</body>
+</html>

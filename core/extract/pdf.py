@@ -19,6 +19,7 @@ is retried by the watcher — a cap too high would retry forever.
 
 from __future__ import annotations
 
+import logging
 import re
 import zlib
 from pathlib import Path
@@ -44,6 +45,10 @@ MAX_PAGE_PIXELS = 50_000_000
 SCANNED_MARKER = "[Scanned PDF: image only]"
 
 _TRUNCATION_NOTE = "\n... [content truncated at limit]"
+
+# The regex fallback scans raw bytes; a hostile 10 GB PDF must not be loaded
+# whole just to look for a handful of text operators.
+MAX_PDF_FALLBACK_BYTES = 8 * 1024 * 1024
 
 # OCR pages per document, by the engine that will actually read them: a warm
 # Windows pack costs ~10 ms a page, Indra ~1 s, rapidocr/tesseract ~1 s. The
@@ -100,30 +105,27 @@ def _ocr_scanned(document, max_bytes: int) -> tuple[str, bool]:
     unavailable = False
     cap = _ocr_page_cap()
     rendered = 0
-    try:
-        for page in document:
-            if rendered >= cap or size >= max_bytes or unavailable:
-                break
-            try:
-                image = _render_page(page, 3.0)  # ~216 dpi before the cap
-            except Exception:
-                continue  # one undecodable page is not a dead document
-            rendered += 1
-            try:
-                from ..ocr import OcrUnavailable, ocr_page
+    for page in document:
+        if rendered >= cap or size >= max_bytes or unavailable:
+            break
+        try:
+            image = _render_page(page, 3.0)  # ~216 dpi before the cap
+        except Exception:
+            continue  # one undecodable page is not a dead document
+        rendered += 1
+        try:
+            from ..ocr import OcrUnavailable, ocr_page
 
-                result = ocr_page(image)
-            except OcrUnavailable:
-                unavailable = True
-                break
-            except Exception:
-                continue
-            text = result.text.strip()
-            if text:
-                collected.append(text)
-                size += len(text) + 2
-    finally:
-        pass
+            result = ocr_page(image)
+        except OcrUnavailable:
+            unavailable = True
+            break
+        except Exception:
+            continue
+        text = result.text.strip()
+        if text:
+            collected.append(text)
+            size += len(text) + 2
     if unavailable:
         return "", True
     return "\n\n".join(collected), False
@@ -135,6 +137,7 @@ def extract_pdf(path: str | Path, max_bytes: int = 20 * 1024 * 1024, ocr: bool =
     except ImportError:
         pymupdf = None
 
+    partial = ""
     if pymupdf is not None:
         try:
             with pymupdf.open(str(path)) as document:
@@ -145,26 +148,35 @@ def extract_pdf(path: str | Path, max_bytes: int = 20 * 1024 * 1024, ocr: bool =
                     if text and text.strip():
                         pages.append(text.strip())
                 full_text = "\n".join(pages)
+                partial = full_text
 
                 scanned = page_count > 0 and len(full_text.strip()) < SCANNED_TEXT_CHARS
-                if scanned and ocr:
-                    ocr_text, unavailable = _ocr_scanned(document, max_bytes)
-                    if unavailable:
-                        return SCANNED_MARKER if not full_text.strip() else full_text
-                    if ocr_text:
-                        full_text = (
-                            ocr_text if not full_text.strip()
-                            else f"{full_text}\n\n{ocr_text}"
-                        )
-                    elif not full_text.strip():
+                try:
+                    if scanned and ocr:
+                        ocr_text, unavailable = _ocr_scanned(document, max_bytes)
+                        if unavailable:
+                            full_text = SCANNED_MARKER if not full_text.strip() else full_text
+                        elif ocr_text:
+                            full_text = (
+                                ocr_text if not full_text.strip()
+                                else f"{full_text}\n\n{ocr_text}"
+                            )
+                        elif not full_text.strip():
+                            full_text = SCANNED_MARKER
+                    elif scanned and not full_text.strip():
+                        # OCR is off: keep the file indexed with an honest marker
+                        # instead of dropping it as "no text".
                         full_text = SCANNED_MARKER
-                elif scanned and not full_text.strip():
-                    # OCR is off: keep the file indexed with an honest marker
-                    # instead of dropping it as "no text".
-                    full_text = SCANNED_MARKER
-
+                except Exception as exc:
+                    # A late OCR failure must not throw away the text layer (or
+                    # the scanned marker) that was already assembled.
+                    logging.getLogger(__name__).debug(
+                        "scanned-page OCR failed: %s: %s", type(exc).__name__, exc
+                    )
+                partial = full_text
                 if len(full_text) > max_bytes:
                     full_text = full_text[:max_bytes] + _TRUNCATION_NOTE
+                partial = full_text
                 if full_text.strip():
                     return full_text
         except Exception:
@@ -184,7 +196,19 @@ def extract_pdf(path: str | Path, max_bytes: int = 20 * 1024 * 1024, ocr: bool =
         except Exception:
             pass
 
-    return _minimal_text(Path(path).read_bytes())
+    # PyMuPDF may have built text (including the scanned marker) before a late
+    # error: keep it instead of silently dropping the file's search surface.
+    if partial.strip():
+        return partial
+
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(min(int(max_bytes), MAX_PDF_FALLBACK_BYTES))
+    except OSError:
+        return ""
+    return _minimal_text(data)
+
+
 def _minimal_text(data: bytes) -> str:
     blocks: list[str] = []
     for match in STREAM_RE.finditer(data):

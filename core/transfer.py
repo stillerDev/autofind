@@ -70,7 +70,10 @@ def _sha256(path: Path) -> str:
 
 def _snapshot(db_path: str | Path, dest: Path) -> dict:
     """A consistent copy of the database plus what the index contains."""
-    src = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True)
+    # as_uri() percent-encodes '#', '?' and spaces; a raw f-string truncates the
+    # path at those characters and silently opens the wrong (or no) database.
+    db = Path(db_path)
+    src = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         dst = sqlite3.connect(str(dest))
         try:

@@ -22,6 +22,15 @@ def extract_plain_bytes(data: bytes) -> str:
     paying two open/read round-trips per file."""
     if not data:
         return ""
+    # UTF-16 has NUL bytes in ASCII text; handle the BOM before the binary test.
+    if data.startswith(b"\xff\xfe"):
+        return data.decode("utf-16-le", errors="replace")
+    if data.startswith(b"\xfe\xff"):
+        return data.decode("utf-16-be", errors="replace")
+    # JPEG/PDF/OPC (and a leading NUL) are binaries even when every byte decodes
+    # cleanly as latin-1 — the marker table existed for exactly this case.
+    if data.startswith(BINARY_MARKERS):
+        return ""
     if b"\x00" in data[:4096]:
         return ""
     for encoding in ENCODINGS:

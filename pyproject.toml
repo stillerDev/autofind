@@ -4,12 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autofind"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Local search over files and screenshots. Nothing leaves the machine."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = ["numpy>=1.26", "pillow>=10.0", "cryptography>=42"]
+dependencies = [
+  "numpy>=1.26",
+  "pillow>=10.0",
+  "cryptography>=42",
+  "pywin32>=306; sys_platform == 'win32'",
+]
 
 [project.optional-dependencies]
 ocr-windows = [
@@ -22,7 +27,7 @@ ocr-windows = [
   "winrt-Windows.Graphics.Imaging",
   "winrt-Windows.Media.Ocr",
 ]
-pdf = ["pypdf>=4.0"]
+pdf = ["pypdf>=4.0", "pymupdf>=1.24"]
 docx = ["python-docx>=1.1"]
 onnx = ["onnxruntime>=1.18", "tokenizers>=0.15"]
 watch = ["watchdog>=4.0"]
@@ -33,3 +38,7 @@ autofind = "core.cli:main"
 
 [tool.setuptools]
 packages = ["core", "core.extract", "core.embed", "core.ocr"]
+
+[tool.setuptools.dynamic]
+# core/__version__.py is the one version literal in the tree.
+version = {attr = "core.__version__.__version__"}

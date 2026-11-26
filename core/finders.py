@@ -95,22 +95,20 @@ def most_opened(conn: sqlite3.Connection, limit: int = 50) -> list[Found]:
 
 
 def prune_dead(store, found: list[Found]) -> int:
-    """Drop dead paths and their chunks/images from the index."""
+    """Drop dead paths and everything attached to them from the index.
+
+    The removal goes through `Store.drop_file` on purpose: it also unindexes
+    the FTS postings, drops the file vector, releases the shared text row and
+    clears the image row — a bare `DELETE FROM chunks/files` here used to leave
+    every one of those behind, and the content channel kept answering with
+    files that no longer existed.
+    """
     removed = 0
     for item in found:
-        from .store import _split_path
-        dirpath, name = _split_path(item.path)
-        row = store.conn.execute(
-            "SELECT r.id FROM file_rows r JOIN dirs d ON d.dir_id = r.dir_id "
-            "WHERE d.path = ? AND r.name = ?",
-            (dirpath, name),
-        ).fetchone()
+        row = store.get_file(item.path)
         if row is None:
             continue
-        file_id = int(row[0])
-        store.conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
-        store.conn.execute("DELETE FROM images WHERE file_id = ?", (file_id,))
-        store.conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        store.drop_file(int(row["id"]))
         removed += 1
-    store.conn.commit()
+    store.commit()
     return removed

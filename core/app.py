@@ -15,13 +15,14 @@ Nothing here is required by the CLI or by MCP. If pywebview is missing,
 from __future__ import annotations
 
 import json
-import os
 import sys
 import threading
 import time
 from pathlib import Path
 
+from . import DEFAULT_PORT
 from .config import mark_onboarding_done, onboarding_done
+from .hotkeys import read_hotkeys as _read_hotkeys
 from . import vault as _vault_mod
 
 APP_TITLE = "AutoFind"
@@ -39,7 +40,8 @@ FIRST_RUN_MIN = (700, 600)
 # The split setup screen stops growing here: past ~1120 px the two columns turn
 # into empty margins, and the window is supposed to move aside, not take over.
 SPLIT_SIZE = (1120, 780)
-DEFAULT_HOTKEY = "ctrl+alt+space"
+DEFAULT_HOTKEY = "ctrl+alt+space"  # fallback only; the live binding is hotkeys.json:focus
+_HOTKEY_UNSET = object()          # distinguishes "not specified" from "disabled" (None)
 GEOMETRY_FILE = "window.json"
 LOCK_FILE = "app.lock"
 PORT_FILE = "app.port"
@@ -582,6 +584,10 @@ class _App:
     def show(self) -> None:
         if self.window is None:
             return
+        # A --hidden first launch never showed the welcome screen: recalculate
+        # on the first *visible* show instead of trusting the constructor value.
+        if not self.first_run and not onboarding_done(self.home):
+            self.first_run = True
         try:
             self.window.show()
             if not self.borderless:
@@ -660,7 +666,9 @@ class _App:
         if self.borderless:
             area = work_area()
             if area is not None:
-                self._animate_window(area, duration=0.6)
+                # 0.18 s: three-plus times faster than the old 0.6 s grow, but
+                # still enough frames for the eye to read it as one motion.
+                self._animate_window(area, duration=0.18)
 
     def reopen_onboarding(self) -> None:
         """Shrink back to the welcome card; the page reloads into it next."""
@@ -791,8 +799,8 @@ class _App:
 def run_app(
     db_path: Path,
     config,
-    port: int = 8765,
-    hotkey: str | None = DEFAULT_HOTKEY,
+    port: int = DEFAULT_PORT,
+    hotkey: str | None | object = _HOTKEY_UNSET,
     tray: bool = True,
     start_hidden: bool = False,
     borderless: bool = True,
@@ -807,6 +815,12 @@ def run_app(
 
     from .api import Handler, prewarm, start_server
 
+    if hotkey is _HOTKEY_UNSET:
+        # The show/hide chord is a user preference (hotkeys.json:focus), not a
+        # source-code literal. An explicit None still means "no global key".
+        combos = _read_hotkeys(config.home).get("focus") or []
+        hotkey = combos[0] if combos else DEFAULT_HOTKEY
+
     lock = acquire_instance_lock(config.home)
     if lock is None:
         # Already running. A second double-click should raise the window the
@@ -818,47 +832,55 @@ def run_app(
         return 0
 
     set_app_user_model_id()
-    server, url = start_server(db_path, config, port=port)
-    threading.Thread(
-        target=server.serve_forever, name="autofind-http", daemon=True
-    ).start()
-    prewarm(db_path, config)
-    write_port(config.home, server.server_address[1])
-
-    app = _App(url, config.home, tray=tray or start_hidden, hotkey=hotkey,
-               start_hidden=start_hidden, debug=debug, borderless=borderless)
-    window = app.build()
-    Handler.focus_hook = app.show
-    if tray or start_hidden:
-        app.start_tray()
-    app.start_hotkey()
-
-    icon = icon_path()
-    start_args: dict = {
-        "debug": debug,
-        "private_mode": False,
-        "storage_path": str(config.home / "webview"),
-    }
-    if icon is not None:
-        start_args["icon"] = str(icon)
+    app = None
+    window = None
+    server = None
     try:
-        webview.start(**start_args)
-    except TypeError:
-        # Older pywebview without `icon=`; the window still opens.
-        start_args.pop("icon", None)
-        webview.start(**start_args)
+        server, url = start_server(db_path, config, port=port)
+        threading.Thread(
+            target=server.serve_forever, name="autofind-http", daemon=True
+        ).start()
+        prewarm(db_path, config)
+        write_port(config.home, server.server_address[1])
+
+        app = _App(url, config.home, tray=tray or start_hidden, hotkey=hotkey,
+                   start_hidden=start_hidden, debug=debug, borderless=borderless)
+        window = app.build()
+        Handler.focus_hook = app.show
+        if tray or start_hidden:
+            app.start_tray()
+        app.start_hotkey()
+
+        icon = icon_path()
+        start_args: dict = {
+            "debug": debug,
+            "private_mode": False,
+            "storage_path": str(config.home / "webview"),
+        }
+        if icon is not None:
+            start_args["icon"] = str(icon)
+        try:
+            webview.start(**start_args)
+        except TypeError:
+            # Older pywebview without `icon=`; the window still opens.
+            start_args.pop("icon", None)
+            webview.start(**start_args)
     finally:
-        app.quitting = True
+        # Everything after acquire_instance_lock must live under this finally:
+        # a failure in start_server / build() otherwise leaked the lock + port.
+        if app is not None:
+            app.quitting = True
         Handler.focus_hook = None
-        if not borderless:
+        if not borderless and window is not None:
             geometry = window_geometry(window)
             if geometry:
                 save_geometry(config.home, geometry)
-        try:
-            server.shutdown()
-            server.server_close()
-        except Exception:
-            pass
+        if server is not None:
+            try:
+                server.shutdown()
+                server.server_close()
+            except Exception:
+                pass
         # The MCP handler holds a read-only Store for the whole session. On
         # Windows that handle blocks deleting or replacing the index, so the
         # window must let go of it on the way out.
@@ -891,7 +913,7 @@ def open_app(**kwargs) -> int:
 
     serve(
         db_path, config,
-        port=kwargs.get("port", 8765),
+        port=kwargs.get("port", DEFAULT_PORT),
         open_browser=True,
     )
     return 0

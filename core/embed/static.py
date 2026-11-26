@@ -60,8 +60,16 @@ class StaticEmbedder:
                 "the static pack needs the `tokenizers` package: pip install 'autofind[onnx]'"
             ) from exc
 
-        raw = table_path.read_bytes()[: HEADER.size]
-        magic, dim, vocab = HEADER.unpack(raw)
+        # A 96 MB table must not be read into RAM just to get its 16-byte
+        # header — that would throw away the whole point of the mmap below.
+        with open(table_path, "rb") as handle:
+            raw = handle.read(HEADER.size)
+        if len(raw) != HEADER.size:
+            raise StaticUnavailable(f"{table_path} is truncated")
+        try:
+            magic, dim, vocab = HEADER.unpack(raw)
+        except struct.error as exc:
+            raise StaticUnavailable(f"{table_path} has a bad header") from exc
         if magic != MAGIC:
             raise StaticUnavailable(f"{table_path} is not a static embedding table")
         expected = HEADER.size + vocab * 4 + vocab * dim

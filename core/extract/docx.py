@@ -26,8 +26,33 @@ W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 # event stream to charge).
 MAX_DOCX_LINES = 100_000
 
+# A package past either threshold goes straight to the bounded zip reader.
+# python-docx materialises the whole OPC tree (and every paragraph) before our
+# line cap applies, so a compressed bomb would spend the process first.
+MAX_DOCX_XML_BYTES = 8 * 1024 * 1024
+MAX_DOCX_ENTRIES = 500
+
+
+def _needs_bounded_path(path: str | Path) -> bool:
+    """Cheap zip-directory check: is this package too big for python-docx?"""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            infos = archive.infolist()
+            if len(infos) > MAX_DOCX_ENTRIES:
+                return True
+            for info in infos:
+                if info.filename == "word/document.xml":
+                    return info.file_size > MAX_DOCX_XML_BYTES
+    except (zipfile.BadZipFile, OSError):
+        # Not a readable OPC package: python-docx gets its chance and falls
+        # through to the zip reader itself when it cannot open the file.
+        return False
+    return False
+
 
 def extract_docx(path: str | Path) -> str:
+    if _needs_bounded_path(path):
+        return _extract_via_zip(path)
     try:
         import docx  # type: ignore
     except ImportError:

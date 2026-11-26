@@ -1,0 +1,753 @@
+{
+ "date": "2026-11-25 18:20:48",
+ "queries": 30,
+ "repeat": 5,
+ "ground_truth": "unique filename token; target present in both indexes",
+ "autofind": {
+  "recall@1": 1.0,
+  "recall@5": 1.0,
+  "recall@10": 1.0,
+  "mrr@10": 1.0,
+  "mean_rank_when_found": 1
+ },
+ "kensaku": {
+  "recall@1": 1.0,
+  "recall@5": 1.0,
+  "recall@10": 1.0,
+  "mrr@10": 1.0,
+  "mean_rank_when_found": 1
+ },
+ "median_latency_ms": {
+  "autofind": 0.3021500015165657,
+  "kensaku": 794.5002999986173
+ },
+ "p95_latency_ms": {
+  "autofind": 0.4507999910856597,
+  "kensaku": 919.6271000037086
+ },
+ "overlap5_mean": 0.13749999999999998,
+ "rows": [
+  {
+   "query": "get_blendfile_summary_of_linked_libraries_toolcode",
+   "target": "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_of_linked_libraries_toolcode.py",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.37209999572951347,
+   "ks_ms": 781.6855999990366,
+   "af_p95": 0.6104999920353293,
+   "ks_p95": 920.2540999976918,
+   "overlap5": 0.14285714285714285,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_of_linked_libraries_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\GL\\gl3w.h",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\search\\functions_7.js",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\search\\all_7.js",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\functions_func_g.html"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_of_linked_libraries_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\SOURCES.txt",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_of_linked_libraries.py"
+   ]
+  },
+  {
+   "query": "template_deferred_tool_check_for_file_output",
+   "target": "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\_template_deferred_tool_check_for_file_output.py",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.23659999715164304,
+   "ks_ms": 788.1848999968497,
+   "af_p95": 0.4271000070730224,
+   "ks_p95": 811.7043999955058,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\_template_deferred_tool_check_for_file_output.py",
+    "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\src\\bitboard.h",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\Код\\rust_game_build25903346_[unknowncheats.me]_.h",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\modules\\_bl_i18n_utils\\utils_spell_check.py"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\_template_deferred_tool_check_for_file_output.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\render_viewport_to_path_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\render_thumbnail_to_path_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\SOURCES.txt",
+    "C:\\Users\\h1ile\\Downloads\\Тексты\\SKILL (1).md"
+   ]
+  },
+  {
+   "query": "get_blendfile_summary_missing_files_toolcode",
+   "target": "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_missing_files_toolcode.py",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.48770000285003334,
+   "ks_ms": 745.7272000028752,
+   "af_p95": 0.6094999989727512,
+   "ks_p95": 891.010000006645,
+   "overlap5": 0.14285714285714285,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_missing_files_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\GL\\gl3w.h",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\search\\functions_7.js",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\search\\all_7.js",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\functions_g.html"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_missing_files_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_missing_files.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\SOURCES.txt"
+   ]
+  },
+  {
+   "query": "jump_to_view3d_object_data_by_name_toolcode",
+   "target": "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\jump_to_view3d_object_data_by_name_toolcode.py",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.23580000561196357,
+   "ks_ms": 922.3740000015823,
+   "af_p95": 0.3530999965732917,
+   "ks_p95": 960.0826999958372,
+   "overlap5": 0.3333333333333333,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\jump_to_view3d_object_data_by_name_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\GL\\gl3w.h",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\data\\api\\bpy.types.bpy_struct.rst",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\SOURCES.txt"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\jump_to_view3d_object_data_by_name_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\jump_to_view3d_object_data_by_name.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\SOURCES.txt"
+   ]
+  },
+  {
+   "query": "note_colon__this_changes_render_resolution",
+   "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\presets\\ffmpeg\\DVD_(note_colon__this_changes_render_resolution).py",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.4861000052187592,
+   "ks_ms": 367.2549000038998,
+   "af_p95": 0.7584999984828755,
+   "ks_p95": 410.50990000076126,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\presets\\ffmpeg\\DVD_(note_colon__this_changes_render_resolution).py",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\note-app\\script.js",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\note-app.zip",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\imgui\\imgui_draw.cpp"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\presets\\ffmpeg\\DVD_(note_colon__this_changes_render_resolution).py",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\startup\\bl_operators\\render.py",
+    "C:\\Users\\h1ile\\Downloads\\AGENTS (1).md",
+    "C:\\Users\\h1ile\\Downloads\\opencode-deepseek.txt",
+    "C:\\Users\\h1ile\\Downloads\\openWallpaper\\bin\\steamcmd\\siteserverui\\js\\2711.js"
+   ]
+  },
+  {
+   "query": "get_blendfile_summary_usage_guess_toolcode",
+   "target": "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_usage_guess_toolcode.py",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.5189999938011169,
+   "ks_ms": 795.8027999993647,
+   "af_p95": 0.5572000081883743,
+   "ks_p95": 929.206200002227,
+   "overlap5": 0.14285714285714285,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_usage_guess_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\GL\\gl3w.h",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\search\\functions_7.js",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\search\\all_7.js",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\functions_func_g.html"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_usage_guess_toolcode.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\tools\\get_blendfile_summary_usage_guess.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\SOURCES.txt"
+   ]
+  },
+  {
+   "query": "spv-amd-shader-explicit-vertex-parameter",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\extinst.spv-amd-shader-explicit-vertex-parameter.grammar.json",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.2882999979192391,
+   "ks_ms": 906.952800010913,
+   "af_p95": 0.37480000173673034,
+   "ks_p95": 1169.3742999923415,
+   "overlap5": 0.25,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\extinst.spv-amd-shader-explicit-vertex-parameter.grammar.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\1.1\\spirv.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\1.2\\spirv.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\1.0\\spirv.h",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\data\\api\\bpy.types.ShaderNode.rst"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\extinst.spv-amd-shader-explicit-vertex-parameter.grammar.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\spirv.core.grammar.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\vk.xml",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\AMD_shader_explicit_vertex_parameter.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\1.2\\spirv.h"
+   ]
+  },
+  {
+   "query": "amd_shader_explicit_vertex_parameter",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\AMD_shader_explicit_vertex_parameter.h",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.29009999707341194,
+   "ks_ms": 400.4004000016721,
+   "af_p95": 0.35820000630337745,
+   "ks_p95": 676.5440999879502,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\AMD_shader_explicit_vertex_parameter.h",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\data\\api\\bpy.types.ShaderNode.rst",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\SOURCES.txt",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\GL\\gl3w.h",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\data\\api\\bpy.types.NodeInternalSocketTemplate.rst"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\AMD_shader_explicit_vertex_parameter.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\extinst.spv-amd-shader-explicit-vertex-parameter.grammar.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_core.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\vk.xml",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\spirv.core.grammar.json"
+   ]
+  },
+  {
+   "query": "vulkan_video_codec_h264std_decode",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h264std_decode.h",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.2291000128025189,
+   "ks_ms": 925.4208000056678,
+   "af_p95": 0.32139998802449554,
+   "ks_p95": 933.4628000069642,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h264std_decode.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_handles.hpp",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\addons_core\\io_scene_gltf2\\blender\\imp\\draco_compression_extension.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_enums.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\fpng\\src\\wuffs-v0.3.c"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h264std_decode.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\genvk.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_beta.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\vk.xml",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h264std.h"
+   ]
+  },
+  {
+   "query": "vulkan_video_codec_h264std_encode",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h264std_encode.h",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.5010000022593886,
+   "ks_ms": 907.64649999619,
+   "af_p95": 0.6520999886561185,
+   "ks_p95": 1277.799400006188,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h264std_encode.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_handles.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_enums.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\d3d12\\directx\\d3d12video.h"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h264std_encode.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_beta.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\genvk.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\vk.xml",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h264std.h"
+   ]
+  },
+  {
+   "query": "vulkan_video_codec_h265std_decode",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h265std_decode.h",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.6575000006705523,
+   "ks_ms": 793.1977999978699,
+   "af_p95": 0.8816999907139689,
+   "ks_p95": 864.9391000071773,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h265std_decode.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_handles.hpp",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\addons_core\\io_scene_gltf2\\blender\\imp\\draco_compression_extension.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_enums.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\fpng\\src\\wuffs-v0.3.c"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h265std_decode.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\genvk.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_beta.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\vk.xml",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\encodings\\shift_jis_2004.py"
+   ]
+  },
+  {
+   "query": "vulkan_video_codec_h265std_encode",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h265std_encode.h",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.40410000656265765,
+   "ks_ms": 842.7565000019968,
+   "af_p95": 0.7451999990735203,
+   "ks_p95": 1265.4422000050545,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h265std_encode.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_handles.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_enums.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\d3d12\\directx\\d3d12video.h"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vk_video\\vulkan_video_codec_h265std_encode.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_beta.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\genvk.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\vk.xml",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\encodings\\utf_8.py"
+   ]
+  },
+  {
+   "query": "test_results_2026-08-27_22-27-50",
+   "target": "C:\\Users\\h1ile\\Downloads\\zapret-discord-youtube-1.10.2\\utils\\test results\\test_results_2026-08-27_22-27-50.txt",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.2879999956348911,
+   "ks_ms": 74.72180000331718,
+   "af_p95": 0.45789999421685934,
+   "ks_p95": 84.9848999932874,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\zapret-discord-youtube-1.10.2\\utils\\test results\\test_results_2026-08-27_22-27-50.txt",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\aq_updated (2).zip",
+    "C:\\Users\\h1ile\\Downloads\\uqau\\saves\\train.csv",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\uqau.zip",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\aq.zip"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\zapret-discord-youtube-1.10.2\\utils\\test results\\test_results_2026-08-27_22-27-50.txt",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\mesonbuild\\mtest.py",
+    "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\CHANGELOG.md",
+    "C:\\Users\\h1ile\\Downloads\\kensaku-src\\CHANGELOG.md",
+    "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\src\\dev\\mockTauri.ts"
+   ]
+  },
+  {
+   "query": "test_results_2026-08-28_13-11-50",
+   "target": "C:\\Users\\h1ile\\Downloads\\zapret-discord-youtube-1.10.2\\utils\\test results\\test_results_2026-08-28_13-11-50.txt",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.30130000959616154,
+   "ks_ms": 67.69480000366457,
+   "af_p95": 0.5781999934697524,
+   "ks_p95": 71.42259999818634,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\zapret-discord-youtube-1.10.2\\utils\\test results\\test_results_2026-08-28_13-11-50.txt",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\socket.py",
+    "C:\\Users\\h1ile\\Downloads\\diploma-Tkachenko-ED\\src\\saves\\continued_2.5M.csv",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\aq_updated (1).zip",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\uqau.zip"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\zapret-discord-youtube-1.10.2\\utils\\test results\\test_results_2026-08-28_13-11-50.txt",
+    "C:\\Users\\h1ile\\Downloads\\oracul\\oracul\\main_window.py",
+    "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\CHANGELOG.md",
+    "C:\\Users\\h1ile\\Downloads\\kensaku-src\\CHANGELOG.md",
+    "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\src\\dev\\mockTauri.ts"
+   ]
+  },
+  {
+   "query": "governance-and-responsibilities",
+   "target": "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\wiki\\Governance-and-responsibilities.md",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.29660000291187316,
+   "ks_ms": 891.2356000073487,
+   "af_p95": 0.35709999792743474,
+   "ks_p95": 1012.3634000046877,
+   "overlap5": 0.14285714285714285,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\wiki\\Governance-and-responsibilities.md",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\pip-26.0.1.dist-info\\licenses\\AUTHORS.txt",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_hash.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan.hpp"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\wiki\\Governance-and-responsibilities.md",
+    "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\wiki\\Home.md",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_win32.h"
+   ]
+  },
+  {
+   "query": "generate_umath_validation_data",
+   "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\numpy\\_core\\tests\\data\\generate_umath_validation_data.cpp",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.3029999934369698,
+   "ks_ms": 605.0557999988087,
+   "af_p95": 0.4714999959105626,
+   "ks_p95": 726.9372000009753,
+   "overlap5": 0.125,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\numpy\\_core\\tests\\data\\generate_umath_validation_data.cpp",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\pxr\\Usd\\usdGenSchema.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vma\\src\\Tests.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\d3d12\\dxguids\\dxguids.h"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\numpy\\_core\\tests\\data\\generate_umath_validation_data.cpp",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\numpy\\random\\tests\\test_direct.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\addons_core\\bl_pkg\\bl_extension_utils.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\attr\\_next_gen.py"
+   ]
+  },
+  {
+   "query": "ses_e3793979affd0npiv3n3usb073",
+   "target": "C:\\Users\\h1ile\\Downloads\\ses_e3793979affd0NPIv3N3UsB073.json",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.32469999860040843,
+   "ks_ms": 362.83430000185035,
+   "af_p95": 0.39230000402312726,
+   "ks_p95": 371.3235000032,
+   "overlap5": 0.16666666666666666,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\ses_e3793979affd0NPIv3N3UsB073.json",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\zz\\bin\\steamcmd\\siteserverui\\js\\4792.js",
+    "C:\\Users\\h1ile\\Downloads\\openWallpaper\\bin\\steamcmd\\siteserverui\\js\\7700.js",
+    "C:\\Users\\h1ile\\Downloads\\zz\\bin\\steamcmd\\siteserverui\\js\\2711.js"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\ses_e3793979affd0NPIv3N3UsB073.json",
+    "C:\\Users\\h1ile\\Downloads\\ses_e3716dae9ffe5w7cehpszifdqf.json"
+   ]
+  },
+  {
+   "query": "spv-amd-shader-trinary-minmax",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\extinst.spv-amd-shader-trinary-minmax.grammar.json",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.34079999022651464,
+   "ks_ms": 964.616199999,
+   "af_p95": 0.38359999598469585,
+   "ks_p95": 1043.013599992264,
+   "overlap5": 0.14285714285714285,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\extinst.spv-amd-shader-trinary-minmax.grammar.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\1.0\\spirv.h",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\1.2\\spirv.h",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\SOURCES.txt",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\1.1\\spirv.h"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\extinst.spv-amd-shader-trinary-minmax.grammar.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\vk.xml",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\spirv\\include\\spirv\\unified1\\AMD_shader_trinary_minmax.h"
+   ]
+  },
+  {
+   "query": "affine_transform_sparse_input",
+   "target": "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\src\\nnue\\layers\\affine_transform_sparse_input.h",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.3919000009773299,
+   "ks_ms": 924.8593999946024,
+   "af_p95": 0.6736000068485737,
+   "ks_p95": 982.0127000130014,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\src\\nnue\\layers\\affine_transform_sparse_input.h",
+    "C:\\Users\\h1ile\\Downloads\\Crosshair.X.Build.15439565\\LICENSES.chromium.html",
+    "C:\\Users\\h1ile\\Downloads\\ffmpeg\\doc\\ffprobe-all.html",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\pxr\\Sdr\\shaderParserTestUtils.py",
+    "C:\\Users\\h1ile\\Downloads\\ffmpeg\\doc\\ffmpeg-all.html"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\src\\nnue\\layers\\affine_transform_sparse_input.h",
+    "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\src\\nnue\\nnue_architecture.h",
+    "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\src\\Makefile",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\include\\glm\\gtx\\transform.hpp",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json"
+   ]
+  },
+  {
+   "query": "solid_instance_model_b5d59996",
+   "target": "C:\\Users\\h1ile\\Downloads\\zz\\projects\\myprojects\\3326873240\\models\\workshop\\3219510589\\solid_instance_model_b5d59996.json",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.2806999982567504,
+   "ks_ms": 896.3427999988198,
+   "af_p95": 0.35149999894201756,
+   "ks_p95": 1106.7426999943564,
+   "overlap5": 0.16666666666666666,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\zz\\projects\\myprojects\\3326873240\\models\\workshop\\3219510589\\solid_instance_model_b5d59996.json",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\stb\\tests\\caveview\\glext.h",
+    "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\src\\components\\SetupModal.tsx",
+    "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\src\\types.ts"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\zz\\projects\\myprojects\\3326873240\\models\\workshop\\3219510589\\solid_instance_model_b5d59996.json",
+    "C:\\Users\\h1ile\\Downloads\\zz\\projects\\myprojects\\3326873240\\scene.json"
+   ]
+  },
+  {
+   "query": "system_info_20260113_205026",
+   "target": "C:\\Users\\h1ile\\Desktop\\System_Info_20260113_205026.txt",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.3693999897222966,
+   "ks_ms": 1021.1188999965088,
+   "af_p95": 0.7790999952703714,
+   "ks_p95": 1069.6252000052482,
+   "overlap5": 0.14285714285714285,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Desktop\\System_Info_20260113_205026.txt",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\modules\\_rna_info.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\pip\\_vendor\\pygments\\lexers\\_mapping.py",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\bycmd_updated.zip"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Desktop\\System_Info_20260113_205026.txt",
+    "C:\\Users\\h1ile\\Downloads\\ses_e3793979affd0NPIv3N3UsB073.json",
+    "C:\\Users\\h1ile\\Downloads\\Crosshair.X.Build.15439565\\debug.log"
+   ]
+  },
+  {
+   "query": "system_info_20260116_190224",
+   "target": "C:\\Users\\h1ile\\Desktop\\System_Info_20260116_190224.txt",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.29399999766610563,
+   "ks_ms": 966.8307999963872,
+   "af_p95": 0.5082999996375293,
+   "ks_p95": 1003.9607000071555,
+   "overlap5": 0.125,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Desktop\\System_Info_20260116_190224.txt",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\modules\\_rna_info.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\pip\\_vendor\\pygments\\lexers\\_mapping.py",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\bycmd_updated.zip"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Desktop\\System_Info_20260116_190224.txt",
+    "C:\\Users\\h1ile\\Downloads\\ses_e3793979affd0NPIv3N3UsB073.json",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\startup\\bl_ui\\space_userpref.py",
+    "C:\\Users\\h1ile\\Downloads\\stockfish-17\\stockfish\\wiki\\Regression-Tests.md"
+   ]
+  },
+  {
+   "query": "system_info_20260116_190528",
+   "target": "C:\\Users\\h1ile\\Desktop\\System_Info_20260116_190528.txt",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.23489999875891954,
+   "ks_ms": 1092.1234000124969,
+   "af_p95": 0.4743999888887629,
+   "ks_p95": 1236.1853000038536,
+   "overlap5": 0.14285714285714285,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Desktop\\System_Info_20260116_190528.txt",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\modules\\_rna_info.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\pip\\_vendor\\pygments\\lexers\\_mapping.py",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\bycmd_updated.zip"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Desktop\\System_Info_20260116_190528.txt",
+    "C:\\Users\\h1ile\\Downloads\\ses_e3793979affd0NPIv3N3UsB073.json",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\xml\\sax\\xmlreader.py"
+   ]
+  },
+  {
+   "query": "umath-validation-set-readme",
+   "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\numpy\\_core\\tests\\data\\umath-validation-set-README.txt",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.2789999998640269,
+   "ks_ms": 659.2761999927461,
+   "af_p95": 0.44260000868234783,
+   "ks_p95": 684.7887000039918,
+   "overlap5": 0.125,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\numpy\\_core\\tests\\data\\umath-validation-set-README.txt",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\search\\functions_12.js",
+    "C:\\Users\\h1ile\\Downloads\\The Binding of Isaac Rebirth (2011-2014)\\The Binding of Isaac Rebirth\\tools\\LuaDocs\\search\\all_13.js",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_structs.hpp"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\numpy\\_core\\tests\\data\\umath-validation-set-README.txt",
+    "C:\\Users\\h1ile\\Downloads\\ses_e3793979affd0NPIv3N3UsB073.json",
+    "C:\\Users\\h1ile\\Downloads\\ses_e3716dae9ffe5w7cehpszifdqf.json",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\config\\_validate_pyproject\\__init__.py"
+   ]
+  },
+  {
+   "query": "stb_voxel_render_interview",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\stb\\docs\\stb_voxel_render_interview.md",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.4020000051241368,
+   "ks_ms": 1010.4375000082655,
+   "af_p95": 0.5454000056488439,
+   "ks_p95": 1032.380100004957,
+   "overlap5": 0.16666666666666666,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\stb\\docs\\stb_voxel_render_interview.md",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\arhive\\note-app.zip",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\stb\\tests\\caveview\\stb_glprog.h",
+    "C:\\Users\\h1ile\\Downloads\\note-app\\script.js"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\stb\\docs\\stb_voxel_render_interview.md",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\stb\\tests\\test_voxel.c"
+   ]
+  },
+  {
+   "query": "chapter_iii_the_small_copy",
+   "target": "C:\\Users\\h1ile\\Downloads\\volume2\\chapters\\chapter_iii_the_small_copy.md",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.29149999318178743,
+   "ks_ms": 183.30669999704696,
+   "af_p95": 0.4054000019095838,
+   "ks_p95": 189.54390000726562,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\volume2\\chapters\\chapter_iii_the_small_copy.md",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\startup\\bl_ui\\space_userpref.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blmcp\\data\\api\\bpy.types.bpy_struct.rst",
+    "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\scripts\\addons_core\\rigify\\__init__.py",
+    "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\SOURCES.txt"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\volume2\\chapters\\chapter_iii_the_small_copy.md",
+    "C:\\Users\\h1ile\\Downloads\\hello_0x00\\maker\\tome2\\build_tome2.py",
+    "C:\\Users\\h1ile\\Downloads\\openWallpaper\\bin\\steamcmd\\siteserverui\\js\\2589.js",
+    "C:\\Users\\h1ile\\Downloads\\zz\\bin\\steamcmd\\siteserverui\\js\\2589.js",
+    "C:\\Users\\h1ile\\Downloads\\openWallpaper\\bin\\steamcmd\\siteserverui\\js\\5040.js"
+   ]
+  },
+  {
+   "query": "opengl_impl_command_queue",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\opengl\\opengl_impl_command_queue.cpp",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.2182000025641173,
+   "ks_ms": 807.630600000266,
+   "af_p95": 0.41760000749491155,
+   "ks_p95": 919.0001000097254,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\opengl\\opengl_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\d3d12\\feature_check_test.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vma\\src\\VulkanSample.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_structs.hpp"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\opengl\\opengl_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d12\\d3d12_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\dll_main_test_app.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\openvr\\openvr.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\openvr\\openvr_impl_swapchain.cpp"
+   ]
+  },
+  {
+   "query": "d3d10_impl_command_queue",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d10\\d3d10_impl_command_queue.cpp",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.3995000006398186,
+   "ks_ms": 34.06109999923501,
+   "af_p95": 0.4415000003064051,
+   "ks_p95": 36.200099988491274,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d10\\d3d10_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\d3d12\\test\\feature_check_test.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vma\\src\\VulkanSample.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_structs.hpp"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d10\\d3d10_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d12\\d3d12_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\dxgi\\dxgi_swapchain.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\openvr\\openvr.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\include\\reshade_events.hpp"
+   ]
+  },
+  {
+   "query": "d3d11_impl_command_queue",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d11\\d3d11_impl_command_queue.cpp",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.30559999868273735,
+   "ks_ms": 32.45030000107363,
+   "af_p95": 0.4436999879544601,
+   "ks_p95": 37.19669999554753,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d11\\d3d11_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\d3d12\\feature_check_test.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vma\\src\\VulkanSample.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_structs.hpp"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d11\\d3d11_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d12\\d3d12_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d12\\d3d12_impl_command_queue.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d10\\d3d10_impl_command_queue.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d12\\d3d12_impl_command_list_immediate.hpp"
+   ]
+  },
+  {
+   "query": "opengl_impl_command_list",
+   "target": "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\opengl\\opengl_impl_command_list.cpp",
+   "af_rank": 1,
+   "ks_rank": 1,
+   "af_ms": 0.26679999427869916,
+   "ks_ms": 387.9081000050064,
+   "af_p95": 0.3674000035971403,
+   "ks_p95": 389.5814999996219,
+   "overlap5": 0.1111111111111111,
+   "af_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\opengl\\opengl_impl_command_list.cpp",
+    "C:\\Users\\h1ile\\Downloads\\BERDA_reverse\\scripts\\funcmap.json",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\d3d12\\test\\feature_check_test.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\registry\\reg.py",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\deps\\vulkan\\include\\vulkan\\vulkan_enums.hpp"
+   ],
+   "ks_top5": [
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\opengl\\opengl_impl_command_list.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\d3d12\\d3d12_impl_command_list_immediate.hpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\dll_main_test_app.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\openvr\\openvr_impl_swapchain.cpp",
+    "C:\\Users\\h1ile\\Downloads\\dll-source\\dll\\source\\opengl\\opengl_impl_command_queue.cpp"
+   ]
+  }
+ ]
+}

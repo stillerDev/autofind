@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — 03 Terminal TUI</title>
+<!-- Style 03: full-terminal TUI. Structure: three-pane ncurses layout
+     (status header / results pane + details pane / function-key bar).
+     Canonical amber-on-charcoal palette is the style's identity, stated as a
+     constraint instead of a generated mood. -->
+<style>
+  :root{--bg:#0d0a04;--ink:#ffb000;--dim:#8a6a1c;--dark:#5c440c;--hi:#1d1608;
+        --green:#37d17a;--sel:#ffb000}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{background:var(--bg);color:var(--ink);font:15px/1.35 "Cascadia Mono",Consolas,"Courier New",monospace}
+  .scr{height:100%;display:flex;flex-direction:column;padding:18px 22px;gap:12px}
+  .top{display:flex;align-items:center;gap:10px;font-size:14px}
+  .top .cmd{color:var(--green)}
+  .top .cur{display:inline-block;width:9px;height:17px;background:var(--sel);vertical-align:-3px;animation:bl 1s steps(2) infinite}
+  @keyframes bl{50%{opacity:0}}
+  .box{border:1px solid var(--dark);position:relative;flex:1;min-height:0}
+  .box>.t{position:absolute;top:-9px;left:14px;background:var(--bg);padding:0 8px;color:var(--dim);font-size:13px}
+  .main{display:flex;gap:12px;flex:1;min-height:0}
+  .res{flex:1.7;display:flex;flex-direction:column}
+  .row{display:flex;gap:10px;padding:7px 12px;font-size:13.5px;white-space:nowrap;overflow:hidden}
+  .row.head{color:var(--dim);border-bottom:1px solid var(--dark)}
+  .row.sel{background:var(--hi);box-shadow:inset 3px 0 0 var(--sel);color:#ffd566}
+  .row .n{color:var(--dim);width:26px;flex:none}
+  .ty{flex:none;width:44px;color:var(--dim)}
+  .row.sel .ty{color:var(--sel)}
+  .nm{flex:1;overflow:hidden;text-overflow:ellipsis}
+  .nm em{font-style:normal;color:var(--sel);background:var(--hi)}
+  .sz{width:64px;text-align:right;color:var(--dim);flex:none}
+  .dt{width:56px;text-align:right;color:var(--dim);flex:none}
+  .det{flex:1;display:flex;flex-direction:column}
+  .det .sec{padding:10px 14px;border-bottom:1px dashed var(--dark)}
+  .det .lbl{color:var(--dim);font-size:12px}
+  .det .val{font-size:13px;margin-top:3px}
+  .det .snip{font-size:12.5px;color:#e0a83c;line-height:1.5}
+  .det .snip em{font-style:normal;color:var(--sel)}
+  .det .flexgrow{flex:1}
+  .det .keys{padding:10px 14px;color:var(--dim);font-size:12px}
+  .det .keys b{color:var(--ink);font-weight:400}
+  .bar{display:flex;gap:0;border:1px solid var(--dark);height:40px}
+  .bar .fk{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;font-size:13px;color:var(--dim);
+           border-right:1px solid var(--dark)}
+  .bar .fk:last-child{border-right:none}
+  .bar .fk b{background:var(--dark);color:var(--bg);font-weight:400;padding:1px 7px;border-radius:2px}
+  .bar .fk.hot{color:var(--ink)}
+  .stat{color:var(--dim);font-size:12.5px;display:flex;gap:24px}
+  .stat b{color:var(--green);font-weight:400}
+</style>
+</head>
+<body>
+<div class="scr">
+  <div class="top">
+    <span style="color:var(--dim)">C:\Users\h1ile&gt;</span><span class="cmd">autofind</span>
+    <span>"смета март"</span><span class="cur"></span>
+    <span style="margin-left:auto" class="stat"><span>индекс <b>128 430</b></span><span>готово · <b>18 мс</b></span></span>
+  </div>
+
+  <div class="main">
+    <div class="box res">
+      <span class="t">результаты ─ 6</span>
+      <div style="padding-top:10px">
+        <div class="row head"><span class="n">#</span><span class="ty">ТИП</span><span class="nm">ИМЯ / ПУТЬ</span><span class="sz">РАЗМЕР</span><span class="dt">ДАТА</span></div>
+        <div class="row sel"><span class="n"> 1</span><span class="ty">[PDF]</span><span class="nm"><em>Смета</em>_ремонта_<em>март</em>_2026.pdf  D:\Документы\Сметы</span><span class="sz">2.4 МБ</span><span class="dt">12 ноя</span></div>
+        <div class="row"><span class="n"> 2</span><span class="ty">[DOC]</span><span class="nm"><em>смета</em> за <em>март</em>.docx  D:\Документы</span><span class="sz">184 КБ</span><span class="dt">10 ноя</span></div>
+        <div class="row"><span class="n"> 3</span><span class="ty">[PNG]</span><span class="nm">скриншот 2026-03-28 14-02.png *OCR* Desktop</span><span class="sz">1.1 МБ</span><span class="dt">28 мар</span></div>
+        <div class="row"><span class="n"> 4</span><span class="ty">[XLS]</span><span class="nm">Прайс_<em>Март</em>.xlsx  D:\Документы\Прайсы</span><span class="sz"> 96 КБ</span><span class="dt"> 8 ноя</span></div>
+        <div class="row"><span class="n"> 5</span><span class="ty">[PY ]</span><span class="nm">budget_<em>march</em>.py  D:\Код\autofind</span><span class="sz"> 12 КБ</span><span class="dt"> 5 ноя</span></div>
+        <div class="row"><span class="n"> 6</span><span class="ty">[DOC]</span><span class="nm"><em>Смета</em>_<em>март</em>_финал_копия(2).docx  D:\Документы\Сметы</span><span class="sz">176 КБ</span><span class="dt"> 3 ноя</span></div>
+        <div class="row"><span class="n"> 7</span><span class="ty">[EML]</span><span class="nm">Март_отчёт.eml  Архив почты</span><span class="sz"> 42 КБ</span><span class="dt"> 1 ноя</span></div>
+        <div class="row"><span class="n"> 8</span><span class="ty">[PDF]</span><span class="nm"><em>смета</em>-<em>март</em>.pdf  D:\Архив\2025</span><span class="sz">2.2 МБ</span><span class="dt"> 2 апр</span></div>
+      </div>
+    </div>
+
+    <div class="box det">
+      <span class="t">детали</span>
+      <div class="sec">
+        <div class="lbl">ФАЙЛ</div>
+        <div class="val">Смета_ремонта_март_2026.pdf</div>
+      </div>
+      <div class="sec">
+        <div class="lbl">ПУТЬ</div>
+        <div class="val">D:\Документы\Сметы\</div>
+        <div class="lbl" style="margin-top:8px">ИЗМЕНЁН</div>
+        <div class="val">12.11.2026 09:41</div>
+        <div class="lbl" style="margin-top:8px">РАЗМЕР · СТРАНИЦ</div>
+        <div class="val">2.4 МБ · 14 стр.</div>
+      </div>
+      <div class="sec">
+        <div class="lbl">ФРАГМЕНТ ТЕКСТА</div>
+        <div class="snip">…<em>смета</em> за <em>март</em>: материалы и работы,<br>итог 214 500 ₽, срок сдачи до 30.03…</div>
+      </div>
+      <div class="flexgrow"></div>
+      <div class="keys"><b>Enter</b> открыть · <b>Space</b> просмотр · <b>Ctrl+C</b> путь · <b>d</b> похожие</div>
+    </div>
+  </div>
+
+  <div class="bar">
+    <span class="fk hot"><b>F1</b>справка</span><span class="fk"><b>F2</b>индекс</span>
+    <span class="fk"><b>F3</b>фильтр</span><span class="fk"><b>F4</b>скриншоты</span>
+    <span class="fk"><b>F5</b>обновить</span><span class="fk"><b>F6</b>сохр.поиск</span>
+    <span class="fk"><b>F10</b>выход</span>
+  </div>
+</div>
+</body>
+</html>

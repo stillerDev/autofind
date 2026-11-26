@@ -91,7 +91,10 @@ def extract_tar(path: str | Path, max_bytes: int = MAX_TOTAL_BYTES) -> str:
             if handle is None:
                 continue
             try:
-                data = handle.read(MAX_ENTRY_BYTES)
+                # A tar holds up to MAX_ENTRIES members; an unclosed extractfile
+                # handle per member leaks until the archive object is collected.
+                with handle:
+                    data = handle.read(MAX_ENTRY_BYTES)
             except OSError:
                 continue
             _append(parts, info.name, _decode(data), budget)

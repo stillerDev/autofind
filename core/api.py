@@ -25,23 +25,31 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from dataclasses import replace
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
 
-from . import autostart, migrate
+from . import autostart, migrate, transfer
 from .config import (
     IndexConfig,
     mark_onboarding_done,
+    normalise_patterns,
     onboarding_done,
+    portable_status,
+    read_index_rules,
     reset_onboarding,
+    save_index_rules,
     save_privacy_prefs,
 )
 from .connect import token as mcp_token
 from .custom_types import coerce_types, find_type, read_types, save_types
 from .embed import get_embedder, get_visual_embedder
+from .filevec import from_bits
 from .hotkeys import (
     DEFAULTS as HOTKEY_DEFAULTS,
     coerce_hotkeys,
@@ -72,6 +80,25 @@ from .watch import Watcher
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+# One port constant for the CLI/UI defaults. bind may fall back to a nearby
+# free port; callers must use server.server_address[1], never this default.
+DEFAULT_PORT = 8765
+MCP_LOCK = threading.Lock()
+# index.html needs one inline boot script (the wallpaper must be set before the
+# first paint). Its hash is the only script allowed inline; everything else must
+# come from the same origin. Inline styles stay allowed: the UI sets CSS custom
+# properties and positions OCR boxes through style attributes.
+CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'sha256-EBAKEmcFyIZ+Zr0CjGibsJ5/CpYnCYUUm2GSRQQe1Js='; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; font-src 'self' data:; "
+    "connect-src 'self'; object-src 'none'; base-uri 'none'; "
+    "form-action 'self'; frame-ancestors 'none'"
+)
+# A wallpaper data URL is ~1.4x the decoded size; 32 MB still bounds a hostile
+# body while leaving the 12 MB image cap enforced by the handler itself.
+MAX_POST_BYTES = 32 * 1024 * 1024
 KIND_MAP = {
     "docs": ("text", "code", "pdf", "docx", "pptx", "xlsx", "epub", "odt", "rtf"),
     "text": ("text",),
@@ -97,6 +124,9 @@ BACKGROUND_TYPES = {
     "image/avif": ".avif",
 }
 BACKGROUND_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif")
+# Last backup written through the UI, so /api/backup can report a destination
+# outside the home/Desktop even though the server never scans arbitrary drives.
+BACKUP_LAST_FILE = "backup-last.json"
 
 
 class IndexJob:
@@ -174,6 +204,10 @@ class IndexJob:
         finally:
             if store is not None:
                 store.close()
+            # SEARCH_CACHE is keyed by the query string only. Without this the
+            # same query keeps returning pre-index hits until some unrelated
+            # write happens to clear it.
+            clear_search_cache()
             self.running = False
             self.finished_at = time.time()
 
@@ -191,6 +225,44 @@ DUP_CACHE: dict[tuple, list[dict]] = {}
 DUP_LOCK = threading.Lock()
 DUP_CACHE_SIZE = 16
 
+# Identical queries are common while a user refines a search (typing, paging,
+# window reopen). The ranking is deterministic for a given query and index
+# generation, so keep the rendered payload briefly. Every write and eviction
+# clears it, so a pin/tag/index change is visible on the next request.
+# The cache holds the serialized JSON bytes, not dicts: a cached hit skips
+# re-serialization, and the byte total — snippets are the fat part — is what
+# actually bounds RSS. 48 entries alone meant up to ~15 MB of rendered text.
+SEARCH_CACHE: dict[str, bytes] = {}
+SEARCH_LOCK = threading.Lock()
+SEARCH_CACHE_LIMIT = 48
+SEARCH_CACHE_MAX_BYTES = 4 * 1024 * 1024
+
+
+def clear_search_cache() -> None:
+    """Single place that drops the query cache on writes and eviction.
+
+    `prune_search_cache` iterates the same dict under SEARCH_LOCK, so a bare
+    clear() from a write thread can raise "dictionary changed size during
+    iteration" in a concurrent search.
+    """
+    with SEARCH_LOCK:
+        SEARCH_CACHE.clear()
+
+
+def prune_search_cache(cache: dict[str, bytes] | None = None) -> None:
+    """Evict oldest entries until count and serialized-byte budgets both fit.
+
+    Caller holds `SEARCH_LOCK`. Values are JSON bytes: unpacking them as
+    ``_, evicted = ...`` raised "too many values to unpack" at the first
+    eviction, turning every later search into HTTP 500.
+    """
+    cache = SEARCH_CACHE if cache is None else cache
+    total = sum(len(value) for value in cache.values())
+    while len(cache) >= SEARCH_CACHE_LIMIT or total > SEARCH_CACHE_MAX_BYTES:
+        if not cache:
+            break
+        total -= len(cache.pop(next(iter(cache))))
+
 
 class _ReadStores:
     """Reuse read-only Stores across requests.
@@ -201,29 +273,47 @@ class _ReadStores:
     in WAL mode a connection sees every committed write, so holding it is safe:
     `VectorCache` and the name index key themselves on the file stamps, and an
     indexer run is visible on the next SELECT. Four connections is plenty for
-    one desktop; the rest are closed as before.
+    one desktop; further callers wait for a loan instead of opening another.
     """
 
     def __init__(self, limit: int = 4) -> None:
-        self._lock = threading.Lock()
+        self._cond = threading.Condition()
         self._free: list[Store] = []
-        self._limit = limit
+        self._in_use = 0
+        self._limit = max(1, limit)
 
     def acquire(self, factory) -> Store:
-        with self._lock:
+        """Lend at most `_limit` Stores; extra callers wait for a release.
+
+        The old version popped from `_free` or called `factory()` unconditionally,
+        so 100 concurrent searches opened 100 connections/mmaps despite the
+        "Four connections is plenty" comment. The budget counts live loans,
+        whether the Store came from the pool or was just created.
+        """
+        with self._cond:
+            while self._in_use >= self._limit:
+                self._cond.wait()
             if self._free:
-                return self._free.pop()
-        return factory()
+                store = self._free.pop()
+            else:
+                # Created under the lock so a failed factory cannot hand out a
+                # permit or push the live count past the limit.
+                store = factory()
+            self._in_use += 1
+            return store
 
     def release(self, store: Store) -> None:
-        with self._lock:
-            if len(self._free) < self._limit:
+        with self._cond:
+            self._in_use -= 1
+            keep = len(self._free) < self._limit
+            if keep:
                 self._free.append(store)
-                return
-        store.close()
+            self._cond.notify()
+        if not keep:
+            store.close()
 
     def close_all(self) -> None:
-        with self._lock:
+        with self._cond:
             stores, self._free = self._free, []
         for store in stores:
             store.close()
@@ -263,11 +353,115 @@ def evict_caches(reason: str) -> None:
     """Drop every rebuildable cache. Costs seconds on the next query, frees MB now."""
     CACHE.clear()
     NAME_CACHE.clear()
+    clear_search_cache()
     with DUP_LOCK:
         DUP_CACHE.clear()
     READ_STORES.close_all()
     close_write_store()
     SOFT_LIMIT.mark_evicted(reason)
+
+
+def _json_text(value) -> str:
+    """OCR text as JSON-safe str: rows written by older builds hold BLOBs,
+    which would kill json.dumps with "Object of type bytes is not JSON
+    serializable" the moment a screenshot preview opened."""
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def _csv_cell(value) -> str:
+    """Prefix spreadsheet formula markers in text that came from disk names."""
+    text = str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+def _int_param(query: dict, name: str, default: int, lo: int | None = None,
+               hi: int | None = None) -> int:
+    """One query value as int; bad input falls back instead of raising 500.
+
+    SQLite treats LIMIT -1 as "no limit", so clients must never be able to
+    smuggle a negative value into a page size through `?limit=-1`.
+    """
+    try:
+        value = int((query.get(name) or [str(default)])[0])
+    except (TypeError, ValueError, IndexError):
+        return default
+    if lo is not None:
+        value = max(lo, value)
+    if hi is not None:
+        value = min(hi, value)
+    return value
+
+
+TAIL_MAX_LINE_CHARS = 4096
+
+
+def _tail_lines(path: Path, lines: int, max_bytes: int = 256 * 1024) -> list[str]:
+    """Last `lines` of a text file, reading at most `max_bytes` from the end.
+
+    `Logger.tail` calls readlines() on the whole file — harmless for a 2 MB
+    rotated log, but an unbounded read if someone pointed the home at a huge
+    file. Seeking from EOF keeps the viewer bounded no matter what landed there.
+    A partial first line is discarded so the tail never starts mid-character.
+    """
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - max_bytes)
+            handle.seek(start)
+            chunk = handle.read(size - start)
+    except OSError:
+        return []
+    text = chunk.decode("utf-8", "replace")
+    parts = text.splitlines()
+    if start and len(parts) > 1:
+        parts = parts[1:]
+    if lines <= 0:
+        return []
+    # A log line with no newline for hundreds of KB would otherwise return one
+    # enormous string. Keep the tail of that line, not the whole blob.
+    return [
+        line[-TAIL_MAX_LINE_CHARS:] if len(line) > TAIL_MAX_LINE_CHARS else line
+        for line in parts[-lines:]
+    ]
+
+
+def _table_count(store, table: str) -> int:
+    """True COUNT(*) for an audit table, zero when an older index lacks it."""
+    try:
+        return int(store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    except sqlite3.Error:
+        return 0
+
+
+_VAULT_TRIED = False
+
+
+def _ensure_vault(config) -> None:
+    """Load the vault key once per process when it can be done silently.
+
+    A long-running window started before the key existed (or before sealing)
+    would answer every sealed-blob read with VaultError. DPAPI keys unwrap
+    without a human, so a silent retry at the first store request fixes that;
+    passphrase keys are left for `try_autoload`'s env-var path, and a request
+    that still needs one fails with the normal seal-status instructions.
+    """
+    global _VAULT_TRIED
+    if _VAULT_TRIED or vault_mod.current() is not None:
+        return
+    _VAULT_TRIED = True
+    if not vault_mod.is_enabled(config.home):
+        return
+    if vault_mod.key_mode(config.home) == "passphrase":
+        return
+    try:
+        vault_mod.load(config.home)
+    except vault_mod.VaultError:
+        pass
 
 
 def _maybe_evict() -> None:
@@ -346,11 +540,11 @@ def _trash_path(path: Path) -> None:
 
 
 # In-RAM BM25 for the long-lived server: a multi-word query costs a few ms of
-# numpy gathers instead of ~100 ms of FTS5 prefix expansion. The postings only
-# fit comfortably when the chunk table is small; on the 298k-chunk real index
-# the build measured 35 s and ~1.5 GB, so there the FTS5 path stays.
-_RAM_BM25_LIMIT = 200_000
-_RAM_BM25_OK: dict[str, bool] = {}
+# numpy gathers instead of ~100 ms of FTS5 prefix expansion. The old 200k-chunk
+# RAM gate is moot since the build lands in a fingerprinted mmap sidecar — any
+# size pays one build, then serves file-backed postings with no private-memory
+# cost — so the server always allows it (`Store.inram_bm25` still consults
+# AUTOFIND_RAM_BM25=0 for a global opt-out).
 
 
 def store_sealed(db_path) -> bool:
@@ -364,27 +558,6 @@ def store_sealed(db_path) -> bool:
     except sqlite3.Error:
         return False
     return bool(row) and row[0] == "1"
-
-
-def _ram_bm25_for(db_path) -> bool:
-    cached = _RAM_BM25_OK.get(str(db_path))
-    if cached is not None:
-        return cached
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        try:
-            count = int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        count = 0
-    ok = 0 < count <= _RAM_BM25_LIMIT
-    if count > 0:
-        # Only a non-empty verdict is cached: an empty index cached False
-        # would keep the in-RAM BM25 off forever after the first indexing,
-        # and a verdict cached on a tiny index would not track the limit.
-        _RAM_BM25_OK[str(db_path)] = ok
-    return ok
 
 
 def _window_handles() -> set[int] | None:
@@ -508,7 +681,12 @@ def _raise_opened_window(
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AutoFind/0.1"
+    # One version everywhere (health/status/openapi read the same constant).
+    server_version = f"AutoFind/{_APP_VERSION}"
+    # Keep-alive: without it every keystroke reopens a loopback connection,
+    # which intermittently costs ~15 ms on Windows and wrecks p95 even when
+    # the cached search itself takes under a millisecond.
+    protocol_version = "HTTP/1.1"
     config: IndexConfig
     db_path: Path
     # Set by the desktop app so a second launch can raise the existing window
@@ -518,56 +696,84 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------- plumbing
 
     def log_message(self, fmt: str, *args) -> None:  # quieter console
-        if os.environ.get("SEMFIND_VERBOSE"):
+        if os.environ.get("AUTOFIND_VERBOSE"):
             super().log_message(fmt, *args)
 
     def _host_ok(self) -> bool:
-        host = (self.headers.get("Host") or "").split(":")[0]
+        # urlparse handles [::1]:port; a plain split(":")[0] turned that into
+        # "[" and rejected the IPv6 loopback the allow-list lists explicitly.
+        raw_host = (self.headers.get("Host") or "").strip()
+        parsed_host = urlparse(f"//{raw_host}")
+        host = parsed_host.hostname or ""
         if host not in ALLOWED_HOSTS:
             return False
+        try:
+            host_port = parsed_host.port
+        except ValueError:  # malformed "host:port"
+            return False
+        # A Host pointing at a different port is DNS rebinding even when the
+        # hostname is loopback: the browser can reach a server we did not bind.
+        server = getattr(self, "server", None)
+        if server is not None and host_port is not None:
+            if host_port != server.server_address[1]:
+                return False
         # A browser sends Origin on every cross-site request - including the
         # text/plain form posts a hostile page can aim at these endpoints.
-        # Any Origin that is not this server means the request came from
-        # somewhere else, and CSRF is exactly that.
+        # Comparing only the hostname let http://localhost:8080 impersonate a
+        # server on 8765, so the full http://Host (scheme + port) must match.
         origin = self.headers.get("Origin")
         if origin:
-            origin_host = urlparse(origin).hostname or ""
-            if origin_host not in ALLOWED_HOSTS:
+            parsed_origin = urlparse(origin)
+            expected = f"http://{raw_host}"
+            if origin.rstrip("/") != expected and (
+                parsed_origin.scheme != "http"
+                or parsed_origin.netloc.lower() != raw_host.lower()
+            ):
                 return False
         return True
 
-    def _send(self, status: int, body: bytes, content_type: str = "application/json; charset=utf-8") -> None:
+    def _send(self, status: int, body: bytes, content_type: str = "application/json; charset=utf-8",
+              extra_headers: dict[str, str] | None = None) -> None:
+        # Marks the response as sent so a late exception cannot start a second
+        # response on the same keep-alive connection.
+        self._replied = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         try:
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def _json(self, payload, status: int = 200) -> None:
+    def _json(self, payload, status: int = 200, extra_headers: dict[str, str] | None = None) -> None:
         # Compact separators: the search payload is tens of KB of JSON and
         # the browser never re-formats it anyway.
-        self._send(status, json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        self._send(status, json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+                   extra_headers=extra_headers)
 
     def _error(self, message: str, status: int = 400) -> None:
         self._json({"error": message}, status)
 
     def _store(self, readonly: bool = True) -> Store:
+        _ensure_vault(self.config)
         embedder = get_embedder("auto", self.config.model_dir)
-        # The BM25 build lands in the fingerprinted mmap sidecar, so the old
-        # 200k-chunk RAM gate is moot: any size pays one build, then serves
-        # file-backed postings with no private-memory cost.
-        ram = _ram_bm25_for(self.db_path) or store_sealed(self.db_path) or True
         return Store(self.db_path, embedder.name, embedder.dim, readonly=readonly, cache=CACHE,
-                     vector_backend=self.config.vector_backend, ram_bm25=ram)
+                     vector_backend=self.config.vector_backend, ram_bm25=True)
 
     # ------------------------------------------------------------------ GET
 
     def do_GET(self) -> None:  # noqa: N802
         _maybe_evict()
+        # One handler instance serves several keep-alive requests; reset the
+        # "response sent" flag so the error path cannot double-send.
+        self._replied = False
         if not self._host_ok():
             self._error("bad host", 403)
             return
@@ -578,18 +784,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if route == "/mcp":
                 # The MCP transport is POST-only; a GET here is usually a client
-                # probing for the legacy SSE endpoint.
+                # probing for the legacy SSE endpoint. RFC 9110 requires Allow
+                # on a 405 so clients can discover the real verb.
                 self._json({
                     "error": "use POST for JSON-RPC",
                     "transport": "streamable-http",
                     "endpoint": "/mcp",
-                }, 405)
+                }, 405, {"Allow": "POST"})
             elif route.startswith("/api/"):
                 self._api_get(route, query)
             else:
                 self._static(route)
         except Exception as exc:
-            self._error(f"{type(exc).__name__}: {exc}", 500)
+            LOG.write(f"GET {self.path} failed: {type(exc).__name__}: {exc}", level="error")
+            if not self._replied:
+                self._error(f"{type(exc).__name__}: {exc}", 500)
 
     def _api_get(self, route: str, query: dict) -> None:
         if route == "/api/search":
@@ -612,11 +821,8 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/api/log":
             # The event log, for reading inside the UI: last N lines of
             # ~/.autofind/autofind.log (index runs, watcher errors, boot).
-            try:
-                lines = max(1, min(int(query.get("lines", ["200"])[0]), 1000))
-            except ValueError:
-                lines = 200
-            self._json({"lines": LOG.tail(lines)})
+            lines = _int_param(query, "lines", 200, 1, 1000)
+            self._json({"lines": _tail_lines(LOG.path, lines)})
         elif route == "/api/onboarding":
             self._onboarding()
         elif route == "/api/import/kensaku":
@@ -677,6 +883,26 @@ class Handler(BaseHTTPRequestHandler):
             self._duplicates(query)
         elif route == "/api/duplicates/stream":
             self._duplicates_stream(query)
+        # Read-only status views the settings sheet polls. All of them share
+        # _host_ok above; none of them writes to the index.
+        elif route in ("/api/vault", "/api/vault/status"):
+            self._vault_status()
+        elif route == "/api/autostart":
+            self._json(autostart.status())
+        elif route in ("/api/rules", "/api/index-rules"):
+            self._json(read_index_rules(self.config.home))
+        elif route in ("/api/backup", "/api/backup/status"):
+            self._backup_status()
+        elif route == "/api/portable":
+            self._json(portable_status(self.config.home))
+        elif route == "/api/similar-files":
+            self._similar_files(query)
+        elif route in ("/api/history", "/api/query-history"):
+            self._history(query)
+        elif route in ("/api/exclusions", "/api/ignore"):
+            self._exclusions()
+        elif route == "/api/privacy/categories":
+            self._privacy_categories()
         else:
             self._error("unknown route", 404)
 
@@ -732,6 +958,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         mode = ((query or {}).get("mode") or ["images"])[0]
         mode = "docs" if mode == "docs" else "images"
+        self._replied = True
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -777,16 +1004,39 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
 
     def _notes(self, query: dict) -> None:
-        """Notes on the hits of a page, so the UI can show them inline."""
+        """Notes on the hits of a page, or every note when no ids are given.
+
+        The original shape (`{"notes": {id: text}}`) stays untouched for
+        `?ids=...` callers. Without ids the drawer gets a bounded, most-recent
+        list with the file attached — the read side of notes CRUD.
+        """
         raw = query.get("ids") or []
-        try:
-            ids = sorted({int(item) for item in raw})
-        except (TypeError, ValueError):
-            self._error("ids must be integers")
-            return
+        limit = _int_param(query, "limit", 100, 1, 500)
         store = self._store()
         try:
-            self._json({"notes": store.notes_for(ids)})
+            if raw:
+                try:
+                    ids = sorted({int(item) for item in raw})
+                except (TypeError, ValueError):
+                    self._error("ids must be integers")
+                    return
+                self._json({"notes": store.notes_for(ids)})
+                return
+            rows = store.conn.execute(
+                "SELECT n.file_id, n.text, n.added_at, f.path, f.name "
+                "FROM notes n LEFT JOIN files f ON f.id = n.file_id "
+                "ORDER BY n.added_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+            self._json({"notes": [
+                {
+                    "file_id": int(row["file_id"]),
+                    "text": _json_text(row["text"]),
+                    "added_at": float(row["added_at"] or 0.0),
+                    "path": row["path"] or "",
+                    "name": row["name"] or "",
+                }
+                for row in rows
+            ]})
         finally:
             store.close()
 
@@ -814,6 +1064,32 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             store.close()
         self._json({"id": file_id, "chunks": count, "ok": True})
+
+    def _index_screenshot(self, payload: dict) -> None:
+        """Index a screenshot saved by the shell's Ctrl+Alt+S hotkey."""
+        raw = payload.get("path")
+        if not isinstance(raw, str) or not raw.strip():
+            self._error("path required")
+            return
+        try:
+            path = Path(raw).resolve()
+            shots = (self.config.home / "screenshots").resolve()
+            path.relative_to(shots)  # never index an arbitrary path from a POST
+            size = path.stat().st_size
+        except (OSError, ValueError):
+            self._error("path must be a file inside the screenshots folder")
+            return
+        if size > 20 * 1024 * 1024:
+            self._error("screenshot is too large", 413)
+            return
+        if JOB.running:
+            self._error("indexing is already running", 409)
+            return
+        embedder = get_embedder("auto", self.config.model_dir)
+        from .indexer import index_single
+
+        count = self._write(lambda store: index_single(store, embedder, path, self.config))
+        self._json({"path": str(path), "chunks": count, "ok": True})
 
     def _set_note(self, payload: dict) -> None:
         try:
@@ -955,6 +1231,7 @@ class Handler(BaseHTTPRequestHandler):
             document(self.server.server_address[1]),
             ensure_ascii=False, indent=2,
         ).encode("utf-8")
+        self._replied = True
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -974,19 +1251,27 @@ class Handler(BaseHTTPRequestHandler):
         store = self._store()
         try:
             stats = store.stats()
-            tags = store.all_tags(limit=1000)
-            collections = store.collections()
+            # These are counts, not samples: all_tags(1000) and
+            # indexed_sensitive(10000) used to cap the report and undercount a
+            # real index. Tags are counted per distinct lowercased name, the
+            # same grouping all_tags() uses.
+            try:
+                tag_count = int(store.conn.execute(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM tags GROUP BY lower(tag))"
+                ).fetchone()[0])
+            except sqlite3.Error:
+                tag_count = 0
             oldest = store.conn.execute("SELECT MIN(mtime) AS v FROM files").fetchone()
             newest = store.conn.execute("SELECT MAX(mtime) AS v FROM files").fetchone()
-            sensitive = indexed_sensitive(
-                store, limit=10000, categories=self.config.privacy_categories
-            )
+            sensitive_count = len(indexed_sensitive(
+                store, categories=self.config.privacy_categories
+            ))
             personal = {
-                "pins": len(store.pinned_ids()),
-                "saved": len(store.saved_searches(limit=10000)),
-                "aliases": len(store.aliases()),
-                "tags": len(tags),
-                "collections": len(collections),
+                "pins": _table_count(store, "pins"),
+                "saved": _table_count(store, "saved"),
+                "aliases": _table_count(store, "aliases"),
+                "tags": tag_count,
+                "collections": _table_count(store, "collections"),
             }
         finally:
             store.close()
@@ -1010,7 +1295,7 @@ class Handler(BaseHTTPRequestHandler):
             "newest": float(newest["v"] or 0.0) if newest else 0.0,
             "personal": personal,
             "sensitive": {
-                "count": len(sensitive),
+                "count": sensitive_count,
                 "categories": sorted(self.config.privacy_categories),
                 "enabled": bool(self.config.privacy),
             },
@@ -1033,8 +1318,8 @@ class Handler(BaseHTTPRequestHandler):
         text = (query.get("q") or [""])[0].strip()
         if not text:
             return {"text": "", "page": None, "images": [], "tags": {}, "elapsed": 0.0}
-        page_limit = limit if limit is not None else min(int((query.get("limit") or ["12"])[0]), 50)
-        offset = max(int((query.get("offset") or ["0"])[0]), 0)
+        page_limit = limit if limit is not None else _int_param(query, "limit", 12, 1, 50)
+        offset = _int_param(query, "offset", 0, 0)
         kind_key = (query.get("kind") or [""])[0]
         folder = (query.get("folder") or [""])[0] or None
         since = (query.get("since") or [""])[0]
@@ -1062,6 +1347,7 @@ class Handler(BaseHTTPRequestHandler):
         embedder = get_embedder("auto", self.config.model_dir)
         store = READ_STORES.acquire(self._store)
         started = time.perf_counter()
+        suggestion = None
         try:
             # The dictionary is expanded before parsing, so `cv` reaches the
             # parser as `резюме` and every filter the UI added stays intact.
@@ -1079,7 +1365,7 @@ class Handler(BaseHTTPRequestHandler):
             page = search_page(
                 store, embedder, expanded, limit=page_limit, offset=offset, sort=sort,
                 parsed=parsed, usage=store.usage_map(), applied=applied,
-                doc_dates=docdate,
+                doc_dates=docdate, fuzzy_fast=True,
             )
             tags = store.tags_for(hit.file_id for hit in page.hits)
             # Visual text search only makes sense when the query still has free
@@ -1094,15 +1380,28 @@ class Handler(BaseHTTPRequestHandler):
                     if getattr(visual_embedder, "supports_text", False)
                     else []
                 )
+            if page.total == 0 and parsed.text:
+                # Must run before the store goes back to the pool: a lent Store
+                # belongs to one request at a time, and using it after release
+                # would race the next request that acquires it.
+                try:
+                    suggestion = store.did_you_mean(parsed.text)
+                except Exception:
+                    suggestion = None  # a broken suggestion must not fail the query
         finally:
             READ_STORES.release(store)
         elapsed = (time.perf_counter() - started) * 1000
-        suggestion = None
-        if page.total == 0 and parsed.text:
-            try:
-                suggestion = store.did_you_mean(parsed.text)
-            except Exception:
-                suggestion = None  # a broken suggestion must not fail the query
+        # "Was the query translated?" has one honest answer on this stack: the
+        # personal dictionary rewrote it before the embedder saw it. No core
+        # embedder translates languages, so never claim one did. An embedder
+        # that gains a translation pass can opt in through `query_translated`.
+        embedder_translated = bool(getattr(embedder, "query_translated", False))
+        translation = {
+            "translated": bool(applied) or embedder_translated,
+            "by": "personal" if applied else ("embedder" if embedder_translated else None),
+            "original": text,
+            "rewritten": expanded if applied else text,
+        }
         return {
             "text": text,
             "page": page,
@@ -1110,26 +1409,36 @@ class Handler(BaseHTTPRequestHandler):
             "tags": tags,
             "elapsed": elapsed,
             "suggestion": suggestion,
+            "translation": translation,
         }
 
     def _search(self, query: dict) -> None:
+        cache_key = json.dumps(query, sort_keys=True, default=str)
+        with SEARCH_LOCK:
+            cached = SEARCH_CACHE.get(cache_key)
+        if cached is not None:
+            self._send(200, cached)
+            return
         text = (query.get("q") or [""])[0].strip()
         if text and len(text) > 2:
             try:
                 # recent searches are a write; on a read-only connection the
                 # table would silently stay empty forever
-                self._write(lambda store: store.save_search_query(text))
+                self._write(lambda store: store.save_search_query(text), invalidate=False)
             except Exception:
                 pass
         result = self._run_search(query)
         text = result["text"]
         if not text:
-            self._json({"query": "", "ms": 0, "hits": [], "images": []})
+            self._json({
+                "query": "", "ms": 0, "hits": [], "images": [],
+                "translated": False,
+                "translation": {"translated": False, "by": None, "original": "", "rewritten": ""},
+            })
             return
         page = result["page"]
         tags = result["tags"]
-        self._json(
-            {
+        payload = {
                 "query": text,
                 "ms": round(result["elapsed"], 1),
                 "total": page.total,
@@ -1141,6 +1450,8 @@ class Handler(BaseHTTPRequestHandler):
                 "chips": page.chips,
                 "hints": page.hints,
                 "suggestion": result.get("suggestion"),
+                "translated": bool(result["translation"]["translated"]),
+                "translation": result["translation"],
                 "facets": page.facets,
                 "groups": page.groups,
                 "collapsed": page.collapsed,
@@ -1180,8 +1491,12 @@ class Handler(BaseHTTPRequestHandler):
                     }
                     for image in result["images"]
                 ],
-            }
-        )
+        }
+        with SEARCH_LOCK:
+            blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            SEARCH_CACHE[cache_key] = blob
+            prune_search_cache()
+        self._send(200, blob)
 
     def _export(self, query: dict) -> None:
         """The current result page as a portable file.
@@ -1242,14 +1557,14 @@ class Handler(BaseHTTPRequestHandler):
             )
             for hit in rows:
                 writer.writerow([
-                    hit.name,
-                    hit.path,
+                    _csv_cell(hit.name),
+                    _csv_cell(hit.path),
                     hit.kind,
                     hit.size,
                     time.strftime("%Y-%m-%d %H:%M", time.localtime(hit.mtime)),
                     round(float(hit.score), 6),
                     hit.opens,
-                    "; ".join(tags.get(hit.file_id, [])),
+                    _csv_cell("; ".join(tags.get(hit.file_id, []))),
                 ])
             # The BOM is what makes Excel open a UTF-8 CSV as UTF-8 instead of
             # mangling every Cyrillic file name.
@@ -1257,6 +1572,7 @@ class Handler(BaseHTTPRequestHandler):
             content_type = "text/csv; charset=utf-8"
             filename = "autofind-export.csv"
 
+        self._replied = True
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -1289,6 +1605,7 @@ class Handler(BaseHTTPRequestHandler):
                 "watching": bool(WATCHER and WATCHER.state.running),
                 "db": str(self.db_path),
                 "default_roots": _default_roots(),
+                "portable": portable_status(self.config.home)["portable"],
                 "version": _APP_VERSION,
             }
         )
@@ -1532,7 +1849,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _symbols(self, query: dict) -> None:
         needle = (query.get("q") or [""])[0].strip()
-        limit = min(int((query.get("limit") or ["40"])[0]), 200)
+        limit = _int_param(query, "limit", 40, 1, 200)
         store = self._store()
         try:
             rows = store.find_symbols(needle, limit) if needle else []
@@ -1555,7 +1872,7 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
-    def _write(self, action):
+    def _write(self, action, invalidate: bool = True):
         """Run one write against the index and commit it.
 
         Pins, saved searches and dictionary entries are the user's own data, so
@@ -1573,10 +1890,14 @@ class Handler(BaseHTTPRequestHandler):
                 _WRITE_STORE = Store(
                     self.db_path, embedder.name, embedder.dim, readonly=False,
                     vector_backend=self.config.vector_backend, ram_bm25=False,
-                    cache_kb=-8000,
+                    # Serving recent searches and pins never touches the hot
+                    # vocabulary; the indexer keeps its own big-cache store.
+                    cache_kb=-4000,
                 )
             result = action(_WRITE_STORE)
             _WRITE_STORE.commit()
+            if invalidate:
+                clear_search_cache()
             return result
 
     def _pin(self, payload: dict) -> None:
@@ -1627,7 +1948,10 @@ class Handler(BaseHTTPRequestHandler):
     def _drop_search(self, payload: dict) -> None:
         from .personal import drop
 
-        saved_id = int(payload.get("id") or 0)
+        try:
+            saved_id = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            saved_id = 0
         if not saved_id:
             self._error("id required")
             return
@@ -1666,16 +1990,16 @@ class Handler(BaseHTTPRequestHandler):
         """Return OCR bounding boxes that match the search term for a given
         screenshot. The frontend overlays these as highlight boxes on the
         thumbnail image — the same visual kensaku gives."""
-        image_id = query.get("id")
-        q = (query.get("q") or [""])[0].lower()
+        image_id = _int_param(query, "id", 0, 1)
         if not image_id:
             self._error("id required")
             return
+        q = (query.get("q") or [""])[0].lower()
         store = self._store()
         try:
             row = store.conn.execute(
                 "SELECT i.ocr_boxes, i.width, i.height FROM images i WHERE i.id = ?",
-                (int(image_id),)
+                (image_id,)
             ).fetchone()
         finally:
             store.close()
@@ -1699,7 +2023,7 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _thumb(self, query: dict) -> None:
-        file_id = int((query.get("id") or ["0"])[0])
+        file_id = _int_param(query, "id", 0, 0)
         store = self._store()
         try:
             data = store.thumb(file_id)
@@ -1711,8 +2035,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, data, "image/jpeg")
 
     def _images(self, query: dict) -> None:
-        limit = min(int((query.get("limit") or ["60"])[0]), 200)
-        offset = int((query.get("offset") or ["0"])[0])
+        limit = _int_param(query, "limit", 60, 1, 200)
+        offset = _int_param(query, "offset", 0, 0)
         store = self._store()
         try:
             rows = store.image_rows(limit, offset)
@@ -1728,7 +2052,7 @@ class Handler(BaseHTTPRequestHandler):
                         "width": row["width"],
                         "height": row["height"],
                         "thumb": f"/api/thumb?id={row['file_id']}",
-                        "ocr": (row["ocr_text"] or "")[:180],
+                        "ocr": _json_text(row["ocr_text"])[:180],
                     }
                     for row in rows
                     if row["file_id"] is not None
@@ -1737,7 +2061,7 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _similar(self, query: dict) -> None:
-        file_id = int((query.get("id") or ["0"])[0])
+        file_id = _int_param(query, "id", 0, 0)
         visual = get_visual_embedder(self.config.model_dir)
         store = self._store()
         try:
@@ -1788,15 +2112,19 @@ class Handler(BaseHTTPRequestHandler):
     def _seal_status(self) -> None:
         """Paranoid-mode state plus live progress of a running (un)seal."""
         vault_ok = vault_mod.is_enabled(self.config.home)
+        # The worker updates _SEAL under this lock; reading the live dict field
+        # by field can mix values from two different progress ticks.
+        with _SEAL_LOCK:
+            seal = dict(_SEAL)
         payload = {
             "sealed": store_sealed(str(self.db_path)),
             "key_present": vault_ok,
-            "working": _SEAL["working"],
-            "action": _SEAL["action"],
-            "done": _SEAL["done"],
-            "total": _SEAL["total"],
-            "stage": _SEAL["stage"],
-            "error": _SEAL["error"],
+            "working": seal["working"],
+            "action": seal["action"],
+            "done": seal["done"],
+            "total": seal["total"],
+            "stage": seal["stage"],
+            "error": seal["error"],
         }
         self._json(payload)
 
@@ -1810,6 +2138,12 @@ class Handler(BaseHTTPRequestHandler):
         if action not in ("on", "off"):
             self._error("action must be on or off")
             return
+        if JOB.running:
+            self._error("indexing is running; try again when it finishes", 409)
+            return
+        # A seal rewrites blobs and VACUUMs; stale cache entries and open
+        # read/write handles would either show pre-seal data or lock the file.
+        evict_caches("seal")
         with _SEAL_LOCK:
             if _SEAL["working"]:
                 self._json({"working": True, "action": _SEAL["action"]}, 409)
@@ -1892,6 +2226,329 @@ class Handler(BaseHTTPRequestHandler):
         save_privacy_prefs(self.config)
         self._privacy()
 
+    # -------------------------------------------------- settings / status views
+
+    def _vault_status(self) -> None:
+        """Read-only vault state. Never returns key bytes or a passphrase."""
+        home = self.config.home
+        mode = vault_mod.key_mode(home)
+        key = vault_mod.key_path(home)
+        payload = {
+            "mode": mode,
+            "present": bool(mode),
+            "key": str(key),
+            "loaded": vault_mod.current() is not None,
+            "passphrase_env": bool(os.environ.get(vault_mod.PASSPHRASE_ENV)),
+            "sealed": store_sealed(str(self.db_path)),
+            "kdf": None,
+        }
+        if mode == "passphrase":
+            # The header is a compact JSON object before the space; read a
+            # bounded prefix so a damaged/oversized key file cannot stall GET.
+            try:
+                with open(key, "rb") as handle:
+                    head = handle.read(256)
+                raw_header = head[len(vault_mod.KEY_MAGIC_V2):].partition(b" ")[0]
+                payload["kdf"] = json.loads(raw_header.decode("utf-8")).get("kdf")
+            except (OSError, ValueError, UnicodeDecodeError):
+                pass
+        self._json(payload)
+
+    def _set_vault(self, payload: dict) -> None:
+        """Enable the portable passphrase vault, if the vault API allows it."""
+        if str(payload.get("action") or "passphrase") != "passphrase":
+            self._error("action must be passphrase")
+            return
+        secret = payload.get("passphrase")
+        if not isinstance(secret, str) or len(secret) < 8:
+            self._error("passphrase must be at least 8 characters")
+            return
+        try:
+            vault_mod.enable_passphrase(self.config.home, secret)
+        except vault_mod.VaultError as exc:
+            message = str(exc)
+            self._error(message, 409 if "already exists" in message else 400)
+            return
+        except OSError as exc:
+            self._error(f"{type(exc).__name__}: {exc}", 500)
+            return
+        self._vault_status()
+
+    def _backup_status(self) -> None:
+        """Index presence and the bounded set of local backup archives."""
+        from .cli import _default_backup_dir
+
+        db = Path(self.db_path)
+        try:
+            size = db.stat().st_size if db.is_file() else 0
+        except OSError:
+            size = 0
+        seen: set[str] = set()
+        archives: list[dict] = []
+        for folder in (self.config.home, _default_backup_dir()):
+            try:
+                candidates = sorted(
+                    folder.glob("autofind-backup-*.zip"),
+                    key=lambda path: path.stat().st_mtime, reverse=True,
+                )[:20]
+            except OSError:
+                continue
+            for path in candidates:
+                resolved = str(path.resolve())
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                archives.append({
+                    "name": path.name,
+                    "path": str(path),
+                    "bytes": stat.st_size,
+                    "mtime": stat.st_mtime,
+                })
+        last = None
+        try:
+            pointer = json.loads(
+                (self.config.home / BACKUP_LAST_FILE).read_text(encoding="utf-8")
+            )
+            if isinstance(pointer, dict) and Path(pointer.get("archive") or "").is_file():
+                last = pointer
+                if not any(item["path"] == last["archive"] for item in archives):
+                    archives.insert(0, {
+                        "name": Path(last["archive"]).name,
+                        "path": last["archive"],
+                        "bytes": Path(last["archive"]).stat().st_size,
+                        "mtime": float(last.get("at") or 0.0),
+                    })
+        except (OSError, ValueError):
+            pass
+        archives.sort(key=lambda item: item["mtime"], reverse=True)
+        self._json({
+            "db": str(db),
+            "exists": db.is_file(),
+            "bytes": size,
+            "home": str(self.config.home),
+            "last": last,
+            "archives": archives[:40],
+        })
+
+    def _run_backup(self, payload: dict) -> None:
+        """Export the live index to a caller-chosen directory."""
+        raw = payload.get("to") or payload.get("destination") or payload.get("to_dir")
+        if not isinstance(raw, str) or not raw.strip():
+            self._error("destination (to) required")
+            return
+        destination = Path(raw.strip()).expanduser()
+        if not destination.is_absolute() or len(str(destination)) > 1024:
+            self._error("destination must be an absolute path")
+            return
+        try:
+            if destination.exists() and not destination.is_dir():
+                self._error("destination is not a directory")
+                return
+            destination.mkdir(parents=True, exist_ok=True)
+            archive = destination / (
+                f"autofind-backup-{time.strftime('%Y%m%d-%H%M%S')}"
+                f"-{secrets.token_hex(2)}.zip"
+            )
+            manifest = transfer.export_index(self.db_path, archive)
+            archive_size = archive.stat().st_size
+        except (OSError, ValueError) as exc:
+            self._error(f"{type(exc).__name__}: {exc}", 500)
+            return
+        try:
+            pointer = self.config.home / BACKUP_LAST_FILE
+            pointer.parent.mkdir(parents=True, exist_ok=True)
+            pointer.write_text(json.dumps({
+                "archive": str(archive), "bytes": archive_size, "at": time.time(),
+            }), encoding="utf-8")
+        except OSError:
+            pass  # the archive exists; a missing pointer only hides a status hint
+        self._json({
+            "archive": str(archive),
+            "bytes": archive_size,
+            "entries": len(manifest.get("entries", {})),
+            "files": manifest.get("files", 0),
+            "chunks": manifest.get("chunks", 0),
+            "sealed": bool(manifest.get("sealed")),
+        })
+
+    def _similar_files(self, query: dict) -> None:
+        """Documents near one indexed file, via its stored file-level vector."""
+        file_id = _int_param(query, "id", 0, 0)
+        limit = _int_param(query, "limit", 12, 1, 50)
+        if not file_id:
+            self._error("id required")
+            return
+        store = self._store()
+        try:
+            row = store.conn.execute(
+                "SELECT bits FROM file_vectors WHERE file_id = ? AND dim = ?",
+                (file_id, store.dim),
+            ).fetchone()
+            if row is None:
+                self._json({"file_id": file_id, "files": [], "reason": "no file vector"})
+                return
+            vector = from_bits(row["bits"], store.dim)
+            neighbours = store.knn(vector, limit + 1)
+            files: list[dict] = []
+            for other_id, score in neighbours:
+                other_id = int(other_id)
+                if other_id == file_id:
+                    continue
+                info = store.file_by_id(other_id)
+                if info is None:
+                    continue
+                files.append({
+                    "file_id": other_id,
+                    "path": info["path"],
+                    "name": info["name"],
+                    "kind": info["kind"],
+                    "score": round(float(score), 4),
+                    "thumb": f"/api/thumb?id={other_id}" if info["kind"] == "image" else None,
+                })
+                if len(files) >= limit:
+                    break
+        finally:
+            store.close()
+        self._json({"file_id": file_id, "files": files})
+
+    def _history(self, query: dict) -> None:
+        """Recent searches joined with how often each query was used.
+
+        The recent table holds the last ten distinct runs; repeats inside that
+        window and saved-search counters are the two usage signals available
+        without running a search per row.
+        """
+        limit = _int_param(query, "limit", 10, 1, 50)
+        store = self._store()
+        try:
+            rows = store.conn.execute(
+                "SELECT q, MAX(at) AS at, MAX(rowid) AS rid, COUNT(*) AS repeats "
+                "FROM recent_searches GROUP BY q "
+                "ORDER BY at DESC, rid DESC LIMIT ?", (limit,)
+            ).fetchall()
+            saved = {
+                str(row["query"]): row
+                for row in store.conn.execute(
+                    "SELECT query, label, used, last_used FROM saved"
+                ).fetchall()
+            }
+        except sqlite3.Error:
+            rows, saved = [], {}
+        finally:
+            store.close()
+        history = []
+        for row in rows:
+            text = str(row["q"])
+            at = float(row["at"] or 0.0)
+            entry = saved.get(text)
+            used = int(row["repeats"]) + (int(entry["used"]) if entry else 0)
+            history.append({
+                "query": text,
+                "at": at,
+                "uses": used,
+                "saved": bool(entry),
+                "label": (entry["label"] or text) if entry else text,
+                "last_used": float(entry["last_used"] or at) if entry else at,
+            })
+        self._json({"history": history})
+
+    def _rules(self) -> None:
+        self._json(read_index_rules(self.config.home))
+
+    def _set_rules(self, payload: dict) -> None:
+        try:
+            data = save_index_rules(self.config.home, payload)
+        except (OSError, ValueError) as exc:
+            self._error(f"{type(exc).__name__}: {exc}")
+            return
+        self._json(data)
+
+    def _exclusions(self) -> None:
+        self._json({"exclusions": read_index_rules(self.config.home)["exclusions"]})
+
+    def _set_exclusions(self, payload: dict) -> None:
+        raw = payload.get("exclusions")
+        if raw is None:
+            raw = payload.get("patterns")
+        try:
+            patterns = normalise_patterns(raw)
+        except ValueError as exc:
+            self._error(str(exc))
+            return
+        rules = read_index_rules(self.config.home)
+        rules["exclusions"] = patterns
+        try:
+            saved = save_index_rules(self.config.home, rules)
+        except (OSError, ValueError) as exc:
+            self._error(f"{type(exc).__name__}: {exc}")
+            return
+        self._json({"exclusions": saved["exclusions"]})
+
+    def _privacy_categories(self) -> None:
+        active = self.config.privacy_categories
+        self._json({
+            "enabled": self.config.privacy,
+            "available": [item["id"] for item in describe_privacy()["categories"]],
+            "categories": [
+                {"id": item["id"], "enabled": item["id"] in active}
+                for item in describe_privacy()["categories"]
+            ],
+        })
+
+    def _set_privacy_categories(self, payload: dict) -> None:
+        raw = payload.get("categories")
+        if not isinstance(raw, list):
+            self._error("categories must be a list")
+            return
+        known = {item["id"] for item in describe_privacy()["categories"]}
+        unknown = sorted({str(item) for item in raw if str(item) not in known})
+        if unknown:
+            self._error("unknown categories: " + ", ".join(unknown))
+            return
+        if isinstance(payload.get("enabled"), bool):
+            self.config.privacy = payload["enabled"]
+        self.config.privacy_categories = frozenset(str(item) for item in raw)
+        save_privacy_prefs(self.config)
+        self._privacy_categories()
+
+    def _reindex_folder(self, payload: dict) -> None:
+        if JOB.running:
+            self._error("indexing is running; try again when it finishes", 409)
+            return
+        raw = payload.get("folders")
+        if raw is None:
+            single = payload.get("folder") or payload.get("path")
+            raw = [single] if isinstance(single, str) else []
+        if not isinstance(raw, list) or not raw or len(raw) > 50:
+            self._error("folder or folders required (at most 50)")
+            return
+        roots: list[str] = []
+        for item in raw:
+            if not isinstance(item, str) or not item.strip():
+                self._error("folders must be non-empty strings")
+                return
+            folder = Path(item.strip()).expanduser()
+            if not folder.is_dir():
+                self._error(f"not a folder: {item}", 400)
+                return
+            roots.append(str(folder))
+        roots = dedupe_roots(roots)
+        started = JOB.start(roots, self.config, self.db_path, bool(payload.get("prune")))
+        self._json({"started": started, "roots": roots}, 202 if started else 409)
+
+    def _drop_note(self, payload: dict) -> None:
+        try:
+            file_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            self._error("id required")
+            return
+        self._write(lambda store: store.set_note(file_id, None), invalidate=False)
+        self._json({"id": file_id, "ok": True, "deleted": True})
+
     def _preview(self, query: dict) -> None:
         """Quick Look: the first chunks of a file, plus image geometry.
 
@@ -1899,8 +2556,8 @@ class Handler(BaseHTTPRequestHandler):
         preview costs one query instead of re-parsing the file. Images get their
         thumbnail and OCR text instead of a body.
         """
-        file_id = int((query.get("id") or ["0"])[0])
-        limit = min(int((query.get("chars") or ["1600"])[0]), 8000)
+        file_id = _int_param(query, "id", 0, 0)
+        limit = _int_param(query, "chars", 1600, 1, 8000)
         store = self._store()
         try:
             row = store.file_by_id(file_id)
@@ -1911,7 +2568,23 @@ class Handler(BaseHTTPRequestHandler):
             usage = store.conn.execute(
                 "SELECT opens FROM usage WHERE file_id = ?", (file_id,)
             ).fetchone()
-            text = store.file_text(file_id)[:limit]
+            try:
+                text = store.file_text(file_id)[:limit]
+            except vault_mod.VaultError:
+                # A sealed text row without a loaded key must not kill the
+                # whole Quick Look: meta, thumbnail and actions stay usable.
+                text = ""
+            # Older indexes have no extracted body for files that used to be
+            # "other". Parse on demand so Quick Look shows what is inside even
+            # before the next full index run.
+            if not text and row["kind"] != "image":
+                from .extract import extract_text
+                path = Path(row["path"])
+                if path.is_file():
+                    try:
+                        text = extract_text(path, row["kind"], max_bytes=max(limit * 4, 8192))[:limit]
+                    except Exception:
+                        text = ""
         finally:
             store.close()
 
@@ -1933,13 +2606,13 @@ class Handler(BaseHTTPRequestHandler):
                     "width": image["width"],
                     "height": image["height"],
                     "thumb": f"/api/thumb?id={file_id}",
-                    "ocr": (image["ocr_text"] or "")[:limit],
+                    "ocr": _json_text(image["ocr_text"])[:limit],
                 },
             }
         )
 
     def _open_file(self, query: dict, reveal: bool) -> None:
-        file_id = int((query.get("id") or ["0"])[0])
+        file_id = _int_param(query, "id", 0, 0)
         store = self._store()
         try:
             row = store.file_by_id(file_id)
@@ -2000,16 +2673,49 @@ class Handler(BaseHTTPRequestHandler):
     # ----------------------------------------------------------------- POST
 
     def do_POST(self) -> None:  # noqa: N802
+        # Unlike GET, POST used to let any handler exception escape: the client
+        # got a reset connection instead of a JSON error. Keep the transport
+        # boundary consistent for both verbs.
         _maybe_evict()
+        self._replied = False
+        try:
+            self._do_post()
+        except Exception as exc:
+            LOG.write(f"POST {self.path} failed: {type(exc).__name__}: {exc}", level="error")
+            if not self._replied:
+                self._error(f"{type(exc).__name__}: {exc}", 500)
+
+    def _do_post(self) -> None:
         if not self._host_ok():
             self._error("bad host", 403)
             return
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json" and not self.headers.get("Origin"):
+            # Ambient POSTs (scripts/curl) must declare JSON. A browser always
+            # sends Origin on POST and `_host_ok` already pinned it to this
+            # exact host:port, so same-origin UI calls that post `{}` without a
+            # Content-Type keep working while a cross-site form cannot reach
+            # any write route.
+            self.close_connection = True
+            self._error("Content-Type must be application/json", 415)
+            return
         parsed = urlparse(self.path)
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            # The body is still unread; a keep-alive peer would otherwise have
+            # its next request parsed from the leftover bytes.
+            self.close_connection = True
+            self._error("invalid content length")
+            return
+        if length < 0 or length > MAX_POST_BYTES:
+            self.close_connection = True
+            self._error("payload too large", 413)
+            return
         raw = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw or b"{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self._error("invalid json")
             return
 
@@ -2018,9 +2724,30 @@ class Handler(BaseHTTPRequestHandler):
             if not roots:
                 self._error("roots required")
                 return
+            # Per-root rules are real, not decorative: a disabled root is not
+            # walked and its extra excluded_dirs travel with this job only.
+            rules = read_index_rules(self.config.home)
+
+            def rule_for(root: str) -> dict:
+                expanded = Path(root).expanduser()
+                return (rules["roots"].get(str(expanded))
+                        or rules["roots"].get(str(expanded.resolve())) or {})
+
+            roots = [root for root in roots if rule_for(root).get("enabled", True)]
+            if not roots:
+                self._error("all requested roots are disabled by indexing rules", 409)
+                return
+            extra_dirs: set[str] = set()
+            for root in roots:
+                extra_dirs.update(rule_for(root).get("excluded_dirs") or [])
+            config = self.config
+            if extra_dirs:
+                config = replace(
+                    config, excluded_dirs=config.excluded_dirs | frozenset(extra_dirs)
+                )
             prune = bool(payload.get("prune"))
-            started = JOB.start(roots, self.config, self.db_path, prune)
-            self._json({"started": started}, 202 if started else 409)
+            started = JOB.start(roots, config, self.db_path, prune)
+            self._json({"started": started, "roots": roots}, 202 if started else 409)
         elif parsed.path == "/mcp":
             self._mcp(payload)
         elif parsed.path == "/api/reindex":
@@ -2051,6 +2778,8 @@ class Handler(BaseHTTPRequestHandler):
             self._set_tags(payload)
         elif parsed.path == "/api/reindex-one":
             self._reindex_one(payload)
+        elif parsed.path == "/api/screenshot":
+            self._index_screenshot(payload)
         elif parsed.path == "/api/note":
             self._set_note(payload)
         elif parsed.path == "/api/tag-color":
@@ -2077,6 +2806,22 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 Handler.focus_hook()
                 self._json({"focused": True})
+        # New write routes go through the same Host/Origin and JSON checks as
+        # every route above; nothing here bypasses the transport boundary.
+        elif parsed.path in ("/api/vault", "/api/vault/passphrase"):
+            self._set_vault(payload)
+        elif parsed.path in ("/api/rules", "/api/index-rules"):
+            self._set_rules(payload)
+        elif parsed.path == "/api/backup":
+            self._run_backup(payload)
+        elif parsed.path in ("/api/exclusions", "/api/ignore"):
+            self._set_exclusions(payload)
+        elif parsed.path in ("/api/reindex-folder", "/api/reindex/folder"):
+            self._reindex_folder(payload)
+        elif parsed.path == "/api/privacy/categories":
+            self._set_privacy_categories(payload)
+        elif parsed.path == "/api/note/drop":
+            self._drop_note(payload)
         else:
             self._error("unknown route", 404)
 
@@ -2103,7 +2848,11 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(message, dict):
                 continue
             try:
-                response = MCP.handle(message)
+                # McpServer keeps one Store for its lifetime; check_same_thread
+                # is off, but that removes the error, not the race. Serialize
+                # tool calls so two HTTP requests cannot use it at once.
+                with MCP_LOCK:
+                    response = MCP.handle(message)
             except Exception as exc:  # a bad call must not drop the session
                 response = {
                     "jsonrpc": "2.0",
@@ -2115,6 +2864,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if not responses:
             # Notifications get 202 and no body, per the transport spec.
+            self._replied = True
             self.send_response(202)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -2124,6 +2874,7 @@ class Handler(BaseHTTPRequestHandler):
         accept = (self.headers.get("Accept") or "").lower()
         if "text/event-stream" in accept:
             # Some clients only speak SSE; one event, then close.
+            self._replied = True
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -2131,6 +2882,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"data: " + body + b"\n\n")
             return
+        self._replied = True
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -2161,7 +2913,8 @@ class Handler(BaseHTTPRequestHandler):
 
         with WATCH_LOCK:
             if WATCHER is not None and WATCHER.state.running and WATCHER.roots == wanted \
-                    and WATCHER.idle_only == idle_only:
+                    and WATCHER.idle_only == idle_only \
+                    and WATCHER.allow_remote == allow_remote:
                 self._json(WATCHER.state.as_dict())
                 return
             if WATCHER is not None:
@@ -2184,6 +2937,9 @@ class Handler(BaseHTTPRequestHandler):
         something the user never scanned. A file already gone from disk is still
         removed from the index, so the duplicate report converges on reality.
         """
+        if JOB.running:
+            self._error("indexing is running; try again when it finishes", 409)
+            return
         raw = payload.get("ids") or []
         try:
             ids = sorted({int(item) for item in raw})
@@ -2219,6 +2975,9 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"deleted": deleted, "missing": missing, "failed": failed})
 
     def _purge(self) -> None:
+        if JOB.running:
+            self._error("indexing is running; try again when it finishes", 409)
+            return
         embedder = get_embedder("auto", self.config.model_dir)
         store = Store(self.db_path, embedder.name, embedder.dim, vector_backend=self.config.vector_backend)
         try:
@@ -2244,16 +3003,75 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"started": started, "roots": roots}, 202 if started else 409)
 
 
+# FOLDERID_* for the four roots a fresh install offers. English names alone
+# fail on a localized Windows ("Документы", "Загрузки", ...); the Known Folder
+# API returns the real path regardless of the display language.
+_KNOWN_FOLDERS = {
+    "Documents": "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}",
+    "Downloads": "{374DE290-123F-4565-9164-39C4925E467B}",
+    "Desktop": "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",
+    "Pictures": "{33E28130-4E1E-4676-835A-98395C3BC3BB}",
+}
+_LOCALIZED_NAMES = {
+    "Documents": ("Documents", "Документы"),
+    "Downloads": ("Downloads", "Загрузки"),
+    "Desktop": ("Desktop", "Рабочий стол"),
+    "Pictures": ("Pictures", "Изображения"),
+}
+
+
+@lru_cache(maxsize=8)
+def _known_folder_path(folder_id: str) -> str | None:
+    """Resolve one Known Folder GUID on Windows; None elsewhere/on failure."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = (
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8),
+            )
+
+        raw = uuid.UUID(folder_id)
+        guid = GUID(raw.time_low, raw.time_mid, raw.time_hi_version,
+                    (ctypes.c_ubyte * 8)(*raw.bytes[8:]))
+        get_path = ctypes.windll.shell32.SHGetKnownFolderPath
+        get_path.restype = ctypes.c_long
+        get_path.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD,
+                             wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
+        out = ctypes.c_wchar_p()
+        if get_path(ctypes.byref(guid), 0, None, ctypes.byref(out)) != 0:
+            return None
+        try:
+            return str(out.value) if out.value else None
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(ctypes.c_void_p(out.value))
+    except Exception:
+        return None
+
+
 def _default_roots() -> list[str]:
-    """Folders worth indexing on a fresh install: documents, downloads, screenshots."""
+    """Folders worth indexing on a fresh install, in the user's language."""
     home = Path.home()
-    candidates = [
-        home / "Documents",
-        home / "Downloads",
-        home / "Desktop",
-        home / "Pictures" / "Screenshots",
-        home / "Pictures",
-    ]
+    found: dict[str, Path] = {}
+    for key, folder_id in _KNOWN_FOLDERS.items():
+        known = _known_folder_path(folder_id)
+        if known and Path(known).is_dir():
+            found[key] = Path(known)
+        else:
+            for name in _LOCALIZED_NAMES[key]:
+                candidate = home / name
+                if candidate.is_dir():
+                    found[key] = candidate
+                    break
+    pictures = found.get("Pictures", home / "Pictures")
+    candidates = [found[key] for key in ("Documents", "Downloads", "Desktop")]
+    candidates += [pictures / "Screenshots", pictures / "Скриншоты", pictures]
     # Screenshots already sits inside Pictures: listing both made the panel's
     # folder list show the same tree twice and walk every screenshot twice.
     return dedupe_roots(str(path) for path in candidates if path.is_dir())
@@ -2263,7 +3081,7 @@ def start_server(
     db_path: Path,
     config: IndexConfig,
     host: str = "127.0.0.1",
-    port: int = 8765,
+    port: int = DEFAULT_PORT,
 ) -> tuple[ThreadingHTTPServer, str]:
     """Bind the UI server without serving yet, and return it with its URL.
 
@@ -2290,16 +3108,18 @@ def start_server(
     for candidate in range(port, port + 20):
         try:
             server = ThreadingHTTPServer((host, candidate), Handler)
-            port = candidate
             break
         except OSError:
             continue
     if server is None:
         raise RuntimeError("no free port in range")
+    # The OS picks the port when `port=0`, and a busy 8765 silently moves the
+    # bind. Either way the URL must describe the socket we actually own.
+    bound_port = server.server_address[1]
 
     MCP = McpServer(db_path, config)
     MCP_TOKEN = mcp_token(config)
-    return server, f"http://{host}:{port}/"
+    return server, f"http://{host}:{bound_port}/"
 
 
 def prewarm(db_path: Path, config: IndexConfig) -> None:
@@ -2332,18 +3152,73 @@ def _startup_self_test(db_path: Path) -> None:
         pass  # the self-test must never block the app from starting
 
 
+# Evergreen warm-up terms only: no dates, no machine-specific paths, and a
+# bounded number of HTTP requests on every boot.
+PREWARM_COMMON_QUERIES = ("invoice", "config", "README", "auth", "report", "search", "test", "договор")
+PREWARM_RECENT_QUERIES = 5
+
+
+def _prewarm_query_cache(port: int) -> None:
+    """Re-run a few likely searches behind the boot screen.
+
+    The result cache is keyed by query and safe to fill from a local request;
+    warming it here makes the first keystroke of a session as fast as a repeat.
+    """
+    import urllib.parse
+    import urllib.request
+
+    try:
+        base = f"http://127.0.0.1:{port}"
+        with urllib.request.urlopen(f"{base}/api/stats", timeout=15) as response:
+            stats = json.loads(response.read())
+        recent = [item.get("q") or "" for item in stats.get("recent_searches", [])[:PREWARM_RECENT_QUERIES]]
+        for query in dict.fromkeys(list(PREWARM_COMMON_QUERIES) + recent):
+            query = query.strip()
+            if not query:
+                continue
+            params = {"q": query, "limit": "12"}
+            url = f"{base}/api/search?" + urllib.parse.urlencode(params)
+            try:
+                with urllib.request.urlopen(url, timeout=20) as response:
+                    response.read()
+            except Exception:
+                pass
+        # Folder scope is a separate cache key. Use this machine's real roots
+        # instead of a hardcoded developer path (which also leaked a username).
+        for folder in _default_roots()[:2]:
+            params = {"q": "report", "limit": "12", "folder": folder}
+            try:
+                url = f"{base}/api/search?" + urllib.parse.urlencode(params)
+                with urllib.request.urlopen(url, timeout=20) as response:
+                    response.read()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def serve(
     db_path: Path,
     config: IndexConfig,
     host: str = "127.0.0.1",
-    port: int = 8765,
+    port: int = DEFAULT_PORT,
     open_browser: bool = False,
 ) -> None:
+    global _READER
     try:
         vault_mod.try_autoload(config.home)
     except vault_mod.VaultError:
         pass  # not sealed, or the key is gone - search surfaces it on demand
+    # New extension rules must also apply to files indexed last week.
+    try:
+        from .store import reclassify_kinds
+        changed = reclassify_kinds(db_path)
+        if changed:
+            LOG.write(f"reclassified {changed} file(s) with current extractors")
+    except Exception:
+        pass  # a locked/read-only database must not stop the server
     server, url = start_server(db_path, config, host=host, port=port)
+    bound_port = server.server_address[1]
     # flush: when stdout is a log file or a pipe, block buffering would hide
     # the address until the process exits — which is exactly when nobody needs
     # to know it any more.
@@ -2355,9 +3230,29 @@ def serve(
         flush=True,
     )
     prewarm(db_path, config)
+    threading.Thread(
+        target=_prewarm_query_cache, args=(bound_port,),
+        name="autofind-query-cache", daemon=True,
+    ).start()
     LOG.write(f"server started at {url}, index {db_path}")
     threading.Thread(
         target=_startup_self_test, args=(db_path,), name="autofind-selftest", daemon=True
+    ).start()
+    # Search writes (recent searches, usage, pins) keep the WAL growing in a
+    # long-lived server; without a checkpoint a week of typing can leave a
+    # WAL as large as the index itself. PASSIVE never blocks readers.
+    def _checkpoint_loop() -> None:
+        while True:
+            time.sleep(300)
+            try:
+                with _WRITE_STORE_LOCK:
+                    if _WRITE_STORE is not None:
+                        _WRITE_STORE.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                pass
+
+    threading.Thread(
+        target=_checkpoint_loop, name="autofind-wal-checkpoint", daemon=True
     ).start()
     if open_browser:
         threading.Timer(0.6, lambda: _open_browser(url)).start()
@@ -2371,6 +3266,16 @@ def serve(
         server.server_close()
         if MCP is not None:
             MCP.close()
+        # `_prewarm` keeps this reader open for the life of the server so the
+        # pack matrix stays mapped; without closing it the index file stays
+        # locked on Windows after shutdown.
+        if _READER is not None:
+            try:
+                _READER.close()
+            except Exception:
+                pass
+            _READER = None
+        close_write_store()
 
 
 def _prewarm(db_path: Path, config: IndexConfig) -> None:
@@ -2396,6 +3301,18 @@ def _prewarm(db_path: Path, config: IndexConfig) -> None:
                 pack.search(np.zeros(store.dim, dtype=np.float32), 1)
         else:
             store.packed_index()
+        # The first query otherwise pays for the lowercase name view (~21k
+        # rows) and the sealed BM25 header. Build both behind the boot screen
+        # so the first keystroke is as warm as the second.
+        try:
+            from .nameindex import load as load_nameindex
+            load_nameindex(store).lowered()
+        except Exception:
+            pass
+        try:
+            store.inram_bm25()
+        except Exception:
+            pass
         # Warm pages faulted in; the checkout goes back so a future rebuild can
         # replace the file. The pack itself stays cached and warm — the checkout
         # only protected it from being closed mid-search.
@@ -2446,33 +3363,3 @@ def _open_browser(url: str) -> None:
             subprocess.Popen(["xdg-open", url])
     except OSError:
         pass
-
-
-def _get_idle_seconds() -> float:
-    """Seconds since last user input (keyboard/mouse). 0 on non-Windows."""
-    if os.name != "nt":
-        return 0
-    import ctypes
-
-    class LASTINPUTINFO(ctypes.Structure):
-        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
-
-    info = LASTINPUTINFO()
-    info.cbSize = ctypes.sizeof(LASTINPUTINFO)
-    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
-        return 0
-    import time as _t
-    return max(0, _t.time() - info.dwTime / 1000.0)
-
-
-def _is_network_drive(path: str) -> bool:
-    """True if the path is on a network drive (UNCF or mapped letter)."""
-    if os.name != "nt":
-        return False
-    drive = os.path.splitdrive(os.path.abspath(path))[0]
-    if not drive:
-        return False
-    if drive.startswith("\\"):
-        return True
-    kind = ctypes.windll.kernel32.GetDriveTypeW(drive + "\\")
-    return kind == 4  # DRIVE_REMOTE

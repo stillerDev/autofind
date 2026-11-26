@@ -22,13 +22,21 @@ hotkeys.json
 onboarding.json
 mcp_token
 
-# Personal editor settings and machine-specific build/debug artifacts.
+# Personal editor settings and machine-specific build artifacts.
 .vscode/
-_diag.py
-afdiag*.spec
 *-debug.spec
+# _diag.py and afdiag*.spec are build inputs (the specs compile _diag.py), so
+# they are versioned rather than ignored — an ignored entry point makes the
+# diagnostic build irreproducible on a fresh checkout.
 
 # Screenshots taken on a real machine: file paths, user names and index
 # statistics in them are personal, so they stay out of the source tree.
 docs/ui-*.png
 docs/shot-*.png
+
+# Rust build output and editor/tool caches.
+shell-app/target/
+shell-app/target-verify/
+native/target/
+.workbuddy-ai/
+.tastemaker/

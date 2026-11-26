@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — 05 Editorial Index</title>
+<!-- Style 05: editorial print. Structure: centered masthead, left small-caps
+     category rail, right index list with hairline rules and dotted leaders.
+     Palette: elegant/light seed 5 (cream, olive-brown). Type: serif display. -->
+<style>
+  :root{--paper:#fdf9f0;--ink:#1e1a11;--olive:#80704f;--hair:#e2ded6;--mut:#8b8272}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{background:var(--paper);color:var(--ink);font:15px/1.5 Georgia,"Times New Roman",serif}
+  .page{height:100%;display:flex;flex-direction:column;padding:0 90px}
+  .masthead{padding-top:30px;text-align:center;border-bottom:2.5px solid var(--ink);padding-bottom:14px}
+  .masthead .over{font-size:11px;letter-spacing:.42em;color:var(--mut);text-transform:uppercase;font-family:"Segoe UI",sans-serif}
+  .masthead h1{font-size:46px;font-weight:400;letter-spacing:.045em;margin-top:8px}
+  .masthead h1 i{font-style:italic;color:var(--olive)}
+  .masthead .under{display:flex;justify-content:space-between;margin-top:14px;border-top:1px solid var(--hair);
+                   padding-top:8px;font-size:11px;letter-spacing:.22em;color:var(--mut);
+                   font-family:"Segoe UI",sans-serif;text-transform:uppercase}
+  .find{padding:16px 0 14px;border-bottom:1px solid var(--hair);display:flex;align-items:baseline;gap:14px}
+  .find .cap{font-size:12px;letter-spacing:.24em;color:var(--mut);font-family:"Segoe UI",sans-serif;text-transform:uppercase;flex:none}
+  .find .q{font-size:26px;font-style:italic;letter-spacing:.01em}
+  .find .q b{font-weight:400;color:var(--olive)}
+  .find .line{flex:1;border-bottom:1.5px dotted #c9c2b2;transform:translateY(-6px)}
+  .find .n{font-size:12px;color:var(--mut);font-family:"Segoe UI",sans-serif;flex:none}
+  .cols{flex:1;display:flex;gap:54px;padding-top:26px;min-height:0}
+  .rail{width:230px;flex:none}
+  .rail h4{font-size:11px;letter-spacing:.3em;color:var(--mut);font-family:"Segoe UI",sans-serif;
+           text-transform:uppercase;margin-bottom:14px}
+  .rail a{display:flex;justify-content:space-between;font-size:15px;padding:9px 0;color:var(--ink);
+          text-decoration:none;border-bottom:1px solid var(--hair)}
+  .rail a span{color:var(--mut);font-size:12.5px}
+  .rail a.on{color:var(--olive);font-weight:700}
+  .rail a.on::after{content:"→";font-family:"Segoe UI",sans-serif}
+  .rail .note{margin-top:26px;font-size:13px;font-style:italic;color:var(--mut);line-height:1.6;
+              border-top:2.5px solid var(--ink);padding-top:12px}
+  .index{flex:1;min-width:0}
+  .entry{display:flex;align-items:baseline;gap:12px;padding:10px 2px;border-bottom:1px solid var(--hair)}
+  .entry.sel{background:linear-gradient(transparent 60%,#80704f22 60%)}
+  .no{font-size:13px;color:var(--olive);font-style:italic;width:26px;flex:none}
+  .e-body{min-width:0;flex:1}
+  .e-name{font-size:18px;letter-spacing:.005em}
+  .e-name b{font-weight:400;color:var(--olive);border-bottom:2px solid var(--olive)}
+  .e-path{font-size:12px;color:var(--mut);margin-top:3px;font-family:"Segoe UI",sans-serif;letter-spacing:.02em}
+  .lead-dots{flex:1;border-bottom:1.5px dotted #c9c2b2;transform:translateY(-4px);min-width:40px}
+  .e-meta{flex:none;text-align:right;font-size:12px;color:var(--mut);font-family:"Segoe UI",sans-serif;line-height:1.5}
+  .ocr{display:inline-block;font-size:10px;letter-spacing:.18em;color:var(--paper);background:var(--olive);
+       padding:2px 8px;margin-top:4px;font-family:"Segoe UI",sans-serif}
+  .e-snip{font-style:italic;color:#6d6455;font-size:13.5px;margin-top:5px}
+  .foot{padding:16px 0 20px;display:flex;gap:26px;color:var(--mut);font-size:12px;
+        font-family:"Segoe UI",sans-serif;letter-spacing:.05em;border-top:2.5px solid var(--ink)}
+  .foot b{border:1px solid #c9c2b2;border-radius:3px;padding:1px 6px;font-weight:600;color:var(--ink);margin-right:6px}
+  .foot .st{margin-left:auto;color:var(--olive)}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="masthead">
+    <div class="over">Локальный архив · без облака · поиск по содержимому</div>
+    <h1>Auto<i>Find</i></h1>
+    <div class="under"><span>Вып. № 47</span><span>Понедельник, 22 ноября 2026</span><span>Индекс: 128 430 файлов</span></div>
+  </div>
+
+  <div class="find">
+    <span class="cap">Найти</span>
+    <span class="q"><b>смета</b> <b>март</b></span>
+    <span class="line"></span>
+    <span class="n">7 материалов · 18 мс</span>
+  </div>
+
+  <div class="cols">
+    <div class="rail">
+      <h4>Рубрики</h4>
+      <a href="#" class="on">Все <span>7</span></a>
+      <a href="#">Документы <span>3</span></a>
+      <a href="#">Скриншоты <span>1</span></a>
+      <a href="#">Таблицы <span>1</span></a>
+      <a href="#">Код <span>1</span></a>
+      <a href="#">Почта <span>1</span></a>
+      <div class="note">Поиск ведётся по именам файлов, тексту документов и надписям на скриншотах. Всё локально.</div>
+    </div>
+
+    <div class="index">
+      <div class="entry sel">
+        <span class="no">1.</span>
+        <span class="e-body">
+          <div class="e-name">Смета_ремонта_<b>март</b>_2026.pdf</div>
+          <div class="e-path">D:\Документы\Сметы · 2.4 МБ · 12 ноября</div>
+          <div class="e-snip">«…смета за март: материалы и работы, итог 214 500 ₽, срок сдачи до 30 марта…»</div>
+        </span>
+        <span class="lead-dots"></span>
+        <span class="e-meta">PDF<br>12.11</span>
+      </div>
+      <div class="entry">
+        <span class="no">2.</span>
+        <span class="e-body"><div class="e-name"><b>смета</b> за <b>март</b>.docx</div>
+        <div class="e-path">D:\Документы · 184 КБ · 10 ноября</div></span>
+        <span class="lead-dots"></span><span class="e-meta">DOCX<br>10.11</span>
+      </div>
+      <div class="entry">
+        <span class="no">3.</span>
+        <span class="e-body">
+          <div class="e-name">скриншот 2026-03-28 14-02.png <span class="ocr">OCR</span></div>
+          <div class="e-path">Desktop · 1.1 МБ · 28 марта</div>
+          <div class="e-snip">на скриншоте: «Смета за март — итог 214 500 ₽»</div>
+        </span>
+        <span class="lead-dots"></span><span class="e-meta">PNG<br>28.03</span>
+      </div>
+      <div class="entry">
+        <span class="no">4.</span>
+        <span class="e-body"><div class="e-name">Прайс_<b>Март</b>.xlsx</div>
+        <div class="e-path">D:\Документы\Прайсы · 96 КБ · 8 ноября</div></span>
+        <span class="lead-dots"></span><span class="e-meta">XLSX<br>08.11</span>
+      </div>
+      <div class="entry">
+        <span class="no">5.</span>
+        <span class="e-body"><div class="e-name">budget_<b>march</b>.py</div>
+        <div class="e-path">D:\Код\autofind · 12 КБ · 5 ноября</div></span>
+        <span class="lead-dots"></span><span class="e-meta">PY<br>05.11</span>
+      </div>
+      <div class="entry">
+        <span class="no">6.</span>
+        <span class="e-body"><div class="e-name"><b>Смета</b>_<b>март</b>_финал_копия(2).docx</div>
+        <div class="e-path">D:\Документы\Сметы · 176 КБ · 3 ноября</div></span>
+        <span class="lead-dots"></span><span class="e-meta">DOCX<br>03.11</span>
+      </div>
+      <div class="entry">
+        <span class="no">7.</span>
+        <span class="e-body"><div class="e-name">Март_отчёт.eml</div>
+        <div class="e-path">Архив почты · 42 КБ · 1 ноября</div></span>
+        <span class="lead-dots"></span><span class="e-meta">EML<br>01.11</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span><b>Enter</b>открыть</span><span><b>Space</b>просмотр</span><span><b>↑↓</b>выбор</span>
+    <span class="st">готово · 18 мс</span>
+  </div>
+</div>
+</body>
+</html>

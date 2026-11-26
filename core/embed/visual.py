@@ -11,12 +11,14 @@ search. Both expose the same interface, so the pipeline does not branch.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
 from ..images import visual_features
+from .devices import session_providers
 
 LAYOUT_DIM = 228
 CLIP_DIM = 512
@@ -60,7 +62,7 @@ class ClipOnnx:
             self.name = "clip-vit-b32-int8-multi"
         try:
             import onnxruntime as ort  # type: ignore
-            from tokenizers import Tokenizer  # type: ignore
+            from tokenizers import Tokenizer  # type: ignore  # noqa: F401 -- availability check
         except ImportError as exc:
             raise FileNotFoundError("onnxruntime and tokenizers are required for CLIP") from exc
 
@@ -118,20 +120,33 @@ class ClipOnnx:
         options.enable_mem_pattern = False
         return options
 
+    def _new_session(self, path):
+        # Same provider policy as the text embedder: use the GPU when this
+        # onnxruntime build offers one, and fall back to CPU on the first
+        # session-build failure (a driver quirk must not kill image search).
+        providers = session_providers()
+        options = self._ort_for_options()
+        options.intra_op_num_threads = 0 if providers == ["CPUExecutionProvider"] else 1
+        try:
+            return self._ort.InferenceSession(str(path), options, providers=providers)
+        except Exception:
+            if providers == ["CPUExecutionProvider"]:
+                raise
+            options.intra_op_num_threads = 0
+            return self._ort.InferenceSession(
+                str(path), options, providers=["CPUExecutionProvider"]
+            )
+
     @property
     def visual(self):
         if self._visual_session is None:
-            self._visual_session = self._ort.InferenceSession(
-                str(self._visual_path), self._ort_for_options(),
-                providers=["CPUExecutionProvider"])
+            self._visual_session = self._new_session(self._visual_path)
         return self._visual_session
 
     @property
     def textual(self):
         if self._textual_session is None:
-            self._textual_session = self._ort.InferenceSession(
-                str(self._textual_path), self._ort_for_options(),
-                providers=["CPUExecutionProvider"])
+            self._textual_session = self._new_session(self._textual_path)
         return self._textual_session
 
     def encode_image(self, image: Image.Image) -> np.ndarray:
@@ -141,8 +156,11 @@ class ClipOnnx:
         mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
         std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
         tensor = ((array - mean) / std).transpose(2, 0, 1)[None, ...]
-        feed = {"pixel_values": tensor}
-        return _normalise(_embed_output(self.visual.run(None, self._accepted(self.visual, feed))))
+        # Use the name the export declares, not a guessed one: a different name
+        # would be filtered out by _accepted and session.run(None, {}) would fail.
+        session = self.visual
+        feed = {session.get_inputs()[0].name: tensor}
+        return _normalise(_embed_output(session.run(None, self._accepted(session, feed))))
 
     def encode_text(self, text: str) -> np.ndarray:
         encoded = self.text_tokenizer.encode(text)
@@ -185,6 +203,7 @@ def _normalise(vector: np.ndarray) -> np.ndarray:
 
 
 _VISUAL_CACHE: dict[tuple[str, str], "ClipOnnx | LayoutEmbedder"] = {}
+_VISUAL_CACHE_LOCK = threading.Lock()
 
 
 def get_visual_embedder(model_dir: str | Path | None = None, prefer: str = "auto"):
@@ -195,9 +214,15 @@ def get_visual_embedder(model_dir: str | Path | None = None, prefer: str = "auto
     cached = _VISUAL_CACHE.get(key)
     if cached is not None:
         return cached
-    embedder = _make_visual_embedder(model_dir, prefer)
-    _VISUAL_CACHE[key] = embedder
-    return embedder
+    # Double-check under the lock: two simultaneous first requests must not
+    # build two 210 MB sessions and leave one undiscoverable.
+    with _VISUAL_CACHE_LOCK:
+        cached = _VISUAL_CACHE.get(key)
+        if cached is not None:
+            return cached
+        embedder = _make_visual_embedder(model_dir, prefer)
+        _VISUAL_CACHE[key] = embedder
+        return embedder
 
 
 def _make_visual_embedder(model_dir: str | Path | None, prefer: str):

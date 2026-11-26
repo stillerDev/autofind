@@ -36,6 +36,10 @@ winrt-Windows.Storage.Streams; sys_platform == "win32"
 winrt-Windows.Graphics.Imaging; sys_platform == "win32"
 winrt-Windows.Media.Ocr; sys_platform == "win32"
 
+# Windows shortcut creation (core/shortcut.py imports win32com.client).
+# Without this on a clean install `autofind shortcut` / autostart crash.
+pywin32>=306; sys_platform == "win32"
+
 # Desktop app: native window (WebView2), tray icon, global hotkey.
 # Optional — without them the same UI opens in a browser instead.
 pywebview>=5.0; sys_platform == "win32"

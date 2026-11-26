@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Model manifest. Weights are bundled in the installer as int8; sha256 pins the exact export so a silent upstream change cannot break the index.",
+  "note": "Model manifest. Weights are bundled in the installer as int8. Downloadable packs are pinned by byte length and SHA-256 in core/models.py::PACKS, which the loader verifies. A null sha256 here means the model ships only inside the installer and has no independently published upstream export to pin; it is not a claim of verification.",
   "models": {
     "e5-small": {
       "role": "text embeddings",

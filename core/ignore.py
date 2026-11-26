@@ -21,7 +21,7 @@ IGNORE_FILES = (".gitignore", ".cursorignore", ".autofindignore")
 MAX_IGNORE_FILES = 2000
 
 
-def _glob_to_regex(pattern: str) -> re.Pattern:
+def _glob_to_regex(pattern: str, case_insensitive: bool = False) -> re.Pattern:
     out: list[str] = []
     index = 0
     while index < len(pattern):
@@ -45,18 +45,22 @@ def _glob_to_regex(pattern: str) -> re.Pattern:
         else:
             out.append(char)
         index += 1
-    return re.compile("".join(out) + "$")
+    flags = re.IGNORECASE if case_insensitive else 0
+    return re.compile("".join(out) + "$", flags)
 
 
 class Rule:
     __slots__ = ("pattern", "negated", "dir_only", "anchored", "regex")
 
-    def __init__(self, pattern: str, negated: bool, dir_only: bool, anchored: bool) -> None:
+    def __init__(
+        self, pattern: str, negated: bool, dir_only: bool, anchored: bool,
+        case_insensitive: bool = False,
+    ) -> None:
         self.pattern = pattern
         self.negated = negated
         self.dir_only = dir_only
         self.anchored = anchored
-        self.regex = _glob_to_regex(pattern)
+        self.regex = _glob_to_regex(pattern, case_insensitive)
 
     def matches(self, relative: str, is_dir: bool) -> bool:
         if self.dir_only and not is_dir:
@@ -65,7 +69,7 @@ class Rule:
         return bool(self.regex.match(target))
 
 
-def parse(text: str) -> list[Rule]:
+def parse(text: str, case_insensitive: bool = False) -> list[Rule]:
     rules: list[Rule] = []
     for raw in text.splitlines():
         line = raw.strip()
@@ -81,7 +85,7 @@ def parse(text: str) -> list[Rule]:
         anchored = "/" in line
         line = line.lstrip("/")
         if line:
-            rules.append(Rule(line, negated, dir_only, anchored))
+            rules.append(Rule(line, negated, dir_only, anchored, case_insensitive))
     return rules
 
 
@@ -109,7 +113,7 @@ class IgnoreSet:
                 text = candidate.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            rules = parse(text)
+            rules = parse(text, self.case_insensitive)
             if rules:
                 self.rules.setdefault(self._key(base), []).extend(rules)
                 found = True

@@ -14,7 +14,13 @@ from __future__ import annotations
 
 import re
 
-SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?…;:])\s+|\n{2,}")
+# ASCII and CJK sentence stops: the same boundary rule has to split Chinese and
+# Japanese prose (。！？；：) as well as English/Russian (.!?…;:).
+SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?…;:。！？；：])\s+|\n{2,}")
+
+# Both entry points used to repeat the same two literals and could drift apart.
+CHUNK_CHARS = 1200
+OVERLAP = 200
 
 
 def normalize(text: str) -> str:
@@ -22,7 +28,7 @@ def normalize(text: str) -> str:
 
 
 def chunk_spans(
-    text: str, chunk_chars: int = 1200, overlap: int = 200
+    text: str, chunk_chars: int = CHUNK_CHARS, overlap: int = OVERLAP
 ) -> list[tuple[int, int]]:
     """Half-open spans into the *normalised* text, one per chunk.
 
@@ -55,7 +61,7 @@ def chunk_spans(
             if tail is None:
                 buf_start, length = None, 0
             else:
-                buf_start, buf_end = tail, buf_end
+                buf_start = tail  # buf_end stays put: the overlap tail reuses it
                 length = buf_end - buf_start
         if buf_start is None:
             buf_start, buf_end = s_start, s_end
@@ -68,7 +74,9 @@ def chunk_spans(
     return [(start, end) for start, end in spans if end > start]
 
 
-def chunk_text(text: str, chunk_chars: int = 1200, overlap: int = 200) -> list[str]:
+def chunk_text(
+    text: str, chunk_chars: int = CHUNK_CHARS, overlap: int = OVERLAP
+) -> list[str]:
     normalised = normalize(text)
     return [
         normalised[start:end]

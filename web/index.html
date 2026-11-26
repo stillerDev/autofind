@@ -33,10 +33,13 @@
   </script>
 </head>
 <body>
-<!-- The single photo layer. It lives behind everything (z-index: -1) so the
-     hero and the results below are the same image instead of two crops with a
-     seam. Position and zoom are driven by --wall-pos / --wall-scale. -->
+<!-- The single photo layer. It lives behind everything (z-index: -2) so the
+     search pill and the cards below float over one continuous picture instead
+     of two crops with a seam. Position, zoom and dim are driven by
+     --wall-pos / --wall-scale / --wall-dim; the aurora tint sits above it. -->
 <div id="wall"></div>
+<div class="aurora" aria-hidden="true"></div>
+
 <!-- Painted before any script runs, so the window never shows a white flash or
      an empty grid while the vector pack is being faulted in. The greeting is
      filled in by app.js from the languages this machine can actually read. -->
@@ -46,6 +49,7 @@
     <div class="boot-lang" id="boot-lang">English</div>
     <div class="boot-track"><span class="boot-bar" id="boot-bar"></span></div>
     <div class="boot-stage" id="boot-stage" data-i18n="boot.starting"></div>
+    <div class="boot-skip" data-i18n="boot.skip"></div>
   </div>
 </div>
 
@@ -54,9 +58,6 @@
      column unfolds into setup. The greeting stays: this is a welcome, not a
      wizard that hides the product until every field is filled in. -->
 <div class="onboard" id="onboard" hidden>
-  <!-- The little window's own title-bar corner, top right: a grey bar hides
-       it in the tray, a grey cross quits the app. Grey, not red: nothing is
-       lost — the setup simply waits for the next launch. -->
   <div class="onboard-controls" id="onboard-controls">
     <button type="button" data-win="hide"
             data-i18n-title="win.hide" data-i18n-aria="win.hide">
@@ -76,7 +77,7 @@
   <section class="onboard-side" aria-labelledby="onboard-title">
     <div class="onboard-scroll">
       <div class="onboard-brand">
-        <span class="mark"></span>
+        <img class="brand-icon" src="/icon.png" alt="" width="24" height="24">
         <span>AutoFind</span>
       </div>
       <h1 class="onboard-title" id="onboard-title" data-i18n="onboard.title">Welcome to AutoFind</h1>
@@ -160,374 +161,377 @@
 
 <div class="app">
   <header class="hero">
-    <div class="hero-inner">
-      <div class="hero-top">
-        <a class="wordmark" href="/" title="AutoFind">
-          <span class="mark"></span>
-          <span>AutoFind</span>
-        </a>
-        <div class="find">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="7"></circle>
-            <path d="M20 20l-3.5-3.5"></path>
-          </svg>
-          <input id="q" autocomplete="off" spellcheck="false"
-                 data-i18n-placeholder="search.placeholder" data-i18n-aria="search.aria">
-          <!-- Saving a query is the one thing a search box cannot do by itself,
-               and it is the reason a saved search is worth having: the query is
-               already typed, all that is missing is somewhere to put it. -->
-          <button class="save-btn" id="save-btn" type="button"
-                  data-i18n-title="saved.save" data-i18n-aria="saved.save">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
-                 stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                 stroke-linejoin="round" aria-hidden="true">
-              <path d="M7 4.5h10a1.5 1.5 0 0 1 1.5 1.5v14l-6.5-4-6.5 4V6A1.5 1.5 0 0 1 7 4.5z"></path>
-            </svg>
-          </button>
-          <button class="clear" id="clear" type="button" data-i18n-aria="search.clear">×</button>
-          <!-- Recent queries and saved searches, one arrow-press away: the
-               list follows what is typed, ↑↓ pick, Enter runs, Esc closes. -->
-          <div class="suggest" id="suggest" hidden></div>
-        </div>
+    <div class="hero-top">
+      <a class="wordmark" href="/" title="AutoFind">
+        <img class="brand-icon" src="/icon.png" alt="" width="26" height="26">
+        <span>AutoFind</span>
+      </a>
 
-        <div class="header-actions">
-          <!-- The index panel used to be a permanent right column: 320 px of
-               stats and buttons that were read once and then in the way. It is a
-               drawer now, opened from here, the way kensaku does it. -->
-          <button class="icon-btn" id="settings-btn" type="button"
-                  data-i18n-title="settings.title" data-i18n-aria="settings.title">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
-                 stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
-                 stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3.2"></circle>
-              <path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l1.8-1.4-1.9-3.2-2.1.9a7.6 7.6 0 0 0-2.6-1.5L14.2 2h-4.4l-.4 2.3a7.6 7.6 0 0 0-2.6 1.5l-2.1-.9L2.8 8.1l1.8 1.4a7.6 7.6 0 0 0 0 3l-1.8 1.4 1.9 3.2 2.1-.9a7.6 7.6 0 0 0 2.6 1.5l.4 2.3h4.4l.4-2.3a7.6 7.6 0 0 0 2.6-1.5l2.1.9 1.9-3.2z"></path>
-            </svg>
-          </button>
-          <!-- The window has no title bar, so this is the only way out of it.
-               Sits last, in the corner where Windows puts its own close button. -->
-          <div class="win-controls" id="win-controls">
-            <button type="button" data-win="hide"
-                    data-i18n-title="win.hide" data-i18n-aria="win.hide">✕</button>
+      <div class="find">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="7"></circle>
+          <path d="M20 20l-3.5-3.5"></path>
+        </svg>
+        <input id="q" autocomplete="off" spellcheck="false"
+               data-i18n-placeholder="search.placeholder" data-i18n-aria="search.aria">
+        <!-- Saving a query is the one thing a search box cannot do by itself,
+             and it is the reason a saved search is worth having: the query is
+             already typed, all that is missing is somewhere to put it. -->
+        <button class="save-btn" id="save-btn" type="button"
+                data-i18n-title="saved.save" data-i18n-aria="saved.save">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <path d="M7 4.5h10a1.5 1.5 0 0 1 1.5 1.5v14l-6.5-4-6.5 4V6A1.5 1.5 0 0 1 7 4.5z"></path>
+          </svg>
+        </button>
+        <button class="clear" id="clear" type="button" data-i18n-aria="search.clear">×</button>
+        <!-- Recent queries and saved searches, one arrow-press away: the
+             list follows what is typed, ↑↓ pick, Enter runs, Esc closes. -->
+        <div class="suggest" id="suggest" hidden></div>
+      </div>
+
+      <div class="header-actions">
+        <!-- Watcher state and how old the index is, read from /api/watch and
+             /api/health. Hidden until the first poll answers. -->
+        <span class="fresh-badge" id="fresh-badge" hidden></span>
+        <span class="pill" id="status-pill" data-i18n-title="tools.status">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text" data-i18n="status.checking">checking the index…</span>
+        </span>
+        <button class="icon-btn" id="ontop-btn" type="button" title="Всегда сверху"
+                aria-label="Всегда сверху">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3v18M8 7l4-4 4 4M5 14l-2 7h18l-2-7"></path>
+          </svg>
+        </button>
+        <button class="icon-btn" id="dups-btn" type="button"
+                data-i18n-title="rail.duplicates" data-i18n-aria="rail.duplicates">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="8" y="8" width="12" height="12" rx="2"></rect>
+            <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
+          </svg>
+        </button>
+        <button class="icon-btn" id="settings-gear" type="button"
+                data-i18n-title="settings.title" data-i18n-aria="settings.title">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+               stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+        <button class="icon-btn" id="panel-btn" type="button"
+                data-i18n-title="settings.appearance" data-i18n-aria="settings.appearance">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"></path>
+            <circle cx="15" cy="7" r="2"></circle>
+            <circle cx="9" cy="12" r="2"></circle>
+            <circle cx="17" cy="17" r="2"></circle>
+          </svg>
+        </button>
+        <!-- The window has no title bar, so this is the only way out of it.
+             Sits last, in the corner where Windows puts its own close button. -->
+        <div class="win-controls" id="win-controls">
+          <button type="button" data-win="hide"
+                  data-i18n-title="win.hide" data-i18n-aria="win.hide">✕</button>
+        </div>
+      </div>
+    </div>
+
+    <nav class="menu" aria-label="File type">
+      <button class="chip active" data-kind="" data-i18n="kind.all">All</button>
+      <button class="chip" data-kind="docs" data-i18n="kind.docs">Documents</button>
+      <button class="chip" data-kind="code" data-i18n="kind.code">Code</button>
+      <button class="chip" data-kind="pdf" data-i18n="kind.pdf">PDF</button>
+      <button class="chip" data-kind="docx" data-i18n="kind.docx">DOCX</button>
+      <button class="chip" data-kind="image" data-i18n="kind.image">Screenshots</button>
+      <button class="chip" data-kind="email" data-i18n="kind.email">Mail</button>
+      <button class="chip" data-kind="archive" data-i18n="kind.archive">Archives</button>
+    </nav>
+
+    <div class="tools">
+      <label class="field folder-field">
+        <span data-i18n="tools.folder">folder</span>
+        <input id="folder" data-i18n-placeholder="tools.any" autocomplete="off">
+        <svg class="field-edit" viewBox="0 0 24 24" width="12" height="12" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 20l4.2-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20z"></path>
+          <path d="M13.5 7.5l3 3"></path>
+        </svg>
+      </label>
+      <div class="field date-field">
+        <span data-i18n="tools.since">since</span>
+        <!-- A native <input type="date"> draws its placeholder and its picker in
+             the OS locale: an English interface on a Russian Windows still said
+             "дд.мм.гггг" and opened a Russian calendar. This is ours instead, so
+             it is rounded, glassy and in the interface language. -->
+        <button class="date-btn" id="since-btn" type="button"
+                data-i18n-title="cal.open" data-i18n-aria="cal.open"
+                aria-haspopup="dialog" aria-expanded="false">
+          <span id="since-label"></span>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+               aria-hidden="true">
+            <rect x="3.5" y="5" width="17" height="15.5" rx="3.5"></rect>
+            <path d="M3.5 9.5h17M8.5 3.5v3M15.5 3.5v3"></path>
+          </svg>
+          <svg class="date-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+               stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 9.5l6 6 6-6"></path>
+          </svg>
+        </button>
+        <div class="calendar" id="calendar" role="dialog"
+             data-i18n-aria="cal.open" hidden>
+          <div class="cal-head">
+            <button class="cal-nav" type="button" data-cal="prev"
+                    data-i18n-aria="cal.prev">‹</button>
+            <div class="cal-title" id="cal-title"></div>
+            <button class="cal-nav" type="button" data-cal="next"
+                    data-i18n-aria="cal.next">›</button>
+          </div>
+          <div class="cal-week" id="cal-week"></div>
+          <div class="cal-grid" id="cal-grid"></div>
+          <div class="cal-foot">
+            <button class="cal-act" type="button" data-cal="clear"
+                    data-i18n="cal.clear">clear</button>
+            <button class="cal-act" type="button" data-cal="today"
+                    data-i18n="cal.today">today</button>
+            <button class="cal-act" type="button" data-cal="docdate" id="doc-date-toggle"
+                    data-i18n="cal.docDateLabel"
+                    data-i18n-title="cal.docDate" data-i18n-aria="cal.docDate">date</button>
           </div>
         </div>
       </div>
-
-      <nav class="menu" aria-label="File type">
-        <button class="chip active" data-kind="" data-i18n="kind.all">All</button>
-        <button class="chip" data-kind="docs" data-i18n="kind.docs">Documents</button>
-        <button class="chip" data-kind="code" data-i18n="kind.code">Code</button>
-        <button class="chip" data-kind="pdf" data-i18n="kind.pdf">PDF</button>
-        <button class="chip" data-kind="docx" data-i18n="kind.docx">DOCX</button>
-        <button class="chip" data-kind="image" data-i18n="kind.image">Screenshots</button>
-        <button class="chip" data-kind="email" data-i18n="kind.email">Mail</button>
-        <button class="chip" data-kind="archive" data-i18n="kind.archive">Archives</button>
-      </nav>
+      <div class="field sort-field">
+        <button class="sort-trigger" id="sort-btn" type="button"
+                aria-haspopup="listbox" aria-expanded="false" aria-controls="sort-menu"
+                data-i18n-aria="tools.sort">
+          <span data-i18n="tools.sort">sort</span>
+          <span class="sort-value" id="sort-value" data-i18n="sort.best">best match</span>
+          <svg class="sort-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+               stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 9.5l6 6 6-6"></path>
+          </svg>
+        </button>
+        <!-- The menu lives inside the field, so "under the trigger" is its own
+             anchor: as a toolbar sibling it drifted under the whole row. -->
+        <div class="sort-menu" id="sort-menu" role="listbox"
+             data-i18n-aria="tools.sort" hidden>
+          <button type="button" role="option" data-sort="best" data-i18n="sort.best">best match</button>
+          <button type="button" role="option" data-sort="newest" data-i18n="sort.newest">newest</button>
+          <button type="button" role="option" data-sort="oldest" data-i18n="sort.oldest">oldest</button>
+          <button type="button" role="option" data-sort="largest" data-i18n="sort.largest">largest</button>
+          <button type="button" role="option" data-sort="name" data-i18n="sort.name">by name</button>
+        </div>
+      </div>
+      <!-- The filter builder writes real query tokens, so what it builds can be
+           read, edited, and saved like anything typed by hand. -->
+      <button class="tool-btn" id="filters-btn" type="button"
+              data-i18n="filters.open" aria-expanded="false" aria-controls="filter-builder">Filters</button>
+      <button class="tool-btn" id="regex-open" type="button" aria-expanded="false" aria-controls="regex-builder">Regex</button>
+      <div class="regex-builder" id="regex-builder" hidden>
+        <div class="regex-head"><b id="regex-title">Regex builder</b>
+          <button class="row-x" id="regex-close" type="button" aria-label="close">×</button></div>
+        <label class="regex-field"><span id="regex-pattern-label">pattern</span>
+          <input id="regex-pattern" spellcheck="false" placeholder="error\d+"></label>
+        <div class="regex-insert" id="regex-insert">
+          <button type="button" data-insert="\d">\d</button>
+          <button type="button" data-insert="\w">\w</button>
+          <button type="button" data-insert="\.">\.</button>
+          <button type="button" data-insert="()">()</button>
+          <button type="button" data-insert="[]">[]</button>
+          <button type="button" data-insert="^">^</button>
+          <button type="button" data-insert="$">$</button>
+          <button type="button" data-insert="+">+</button>
+          <button type="button" data-insert="*">*</button>
+          <button type="button" data-insert="?">?</button>
+        </div>
+        <label class="regex-field"><span id="regex-sample-label">sample</span>
+          <textarea id="regex-sample" rows="3" spellcheck="false">error 42
+error 7
+warning 3</textarea></label>
+        <div class="regex-flags" id="regex-flags">
+          <label><input type="checkbox" value="i" checked> i</label>
+          <label><input type="checkbox" value="m"> m</label>
+          <label><input type="checkbox" value="s"> s</label>
+        </div>
+        <div class="regex-sample-view" id="regex-sample-view"></div>
+        <div class="regex-live" id="regex-live"></div>
+      </div>
+      <div class="filter-builder" id="filter-builder" hidden>
+        <div class="filter-grid">
+          <label class="filter-field">
+            <span data-i18n="filters.type">type</span>
+            <span class="filter-picker" data-picker="f-type">
+              <select id="f-type" hidden>
+                <option value="" data-i18n="filters.any">any</option>
+                <option value="docs" data-i18n="kind.docs">Documents</option>
+                <option value="code" data-i18n="kind.code">Code</option>
+                <option value="pdf" data-i18n="kind.pdf">PDF</option>
+                <option value="image" data-i18n="kind.image">Screenshots</option>
+                <option value="email" data-i18n="kind.email">Mail</option>
+                <option value="archive" data-i18n="kind.archive">Archives</option>
+              </select>
+              <button class="filter-picker-btn" type="button" aria-haspopup="listbox"
+                      aria-expanded="false" aria-controls="f-type-menu"
+                      data-i18n-aria="filters.type">
+                <span class="filter-picker-value" data-i18n="filters.any">any</span>
+                <svg class="filter-picker-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                     stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                     stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 9.5l6 6 6-6"></path>
+                </svg>
+              </button>
+              <span class="filter-menu" id="f-type-menu" role="listbox"
+                    data-i18n-aria="filters.type" hidden></span>
+            </span>
+          </label>
+          <label class="filter-field">
+            <span data-i18n="filters.folder">folder</span>
+            <input id="f-folder" autocomplete="off" spellcheck="false"
+                   data-i18n-placeholder="filters.folderAny">
+          </label>
+          <label class="filter-field">
+            <span data-i18n="filters.sizeMin">min size</span>
+            <span class="filter-size">
+              <input id="f-size-min" type="number" min="0" step="1" inputmode="numeric">
+              <span class="unit-picker">
+                <input type="hidden" id="f-size-min-unit" value="mb">
+                <button class="unit-trigger" type="button" aria-haspopup="listbox"
+                        aria-expanded="false" aria-controls="f-size-min-unit-menu"
+                        data-i18n-aria="filters.sizeUnit">
+                  <span class="unit-value" data-i18n="unit.mb">MB</span>
+                  <svg class="unit-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                       stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <path d="M6 9.5l6 6 6-6"></path>
+                  </svg>
+                </button>
+                <span class="unit-menu" id="f-size-min-unit-menu" role="listbox"
+                      data-i18n-aria="filters.sizeUnit" hidden>
+                  <button type="button" role="option" data-unit="b" data-i18n="unit.b">B</button>
+                  <button type="button" role="option" data-unit="kb" data-i18n="unit.kb">KB</button>
+                  <button type="button" role="option" data-unit="mb" data-i18n="unit.mb" aria-selected="true">MB</button>
+                  <button type="button" role="option" data-unit="gb" data-i18n="unit.gb">GB</button>
+                </span>
+              </span>
+            </span>
+          </label>
+          <label class="filter-field">
+            <span data-i18n="filters.sizeMax">max size</span>
+            <span class="filter-size">
+              <input id="f-size-max" type="number" min="0" step="1" inputmode="numeric">
+              <span class="unit-picker">
+                <input type="hidden" id="f-size-max-unit" value="mb">
+                <button class="unit-trigger" type="button" aria-haspopup="listbox"
+                        aria-expanded="false" aria-controls="f-size-max-unit-menu"
+                        data-i18n-aria="filters.sizeUnit">
+                  <span class="unit-value" data-i18n="unit.mb">MB</span>
+                  <svg class="unit-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                       stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                       stroke-linejoin="round" aria-hidden="true">
+                    <path d="M6 9.5l6 6 6-6"></path>
+                  </svg>
+                </button>
+                <span class="unit-menu" id="f-size-max-unit-menu" role="listbox"
+                      data-i18n-aria="filters.sizeUnit" hidden>
+                  <button type="button" role="option" data-unit="b" data-i18n="unit.b">B</button>
+                  <button type="button" role="option" data-unit="kb" data-i18n="unit.kb">KB</button>
+                  <button type="button" role="option" data-unit="mb" data-i18n="unit.mb" aria-selected="true">MB</button>
+                  <button type="button" role="option" data-unit="gb" data-i18n="unit.gb">GB</button>
+                </span>
+              </span>
+            </span>
+          </label>
+          <label class="filter-field">
+            <span data-i18n="filters.period">modified</span>
+            <span class="filter-picker" data-picker="f-period">
+              <select id="f-period" hidden>
+                <option value="" data-i18n="filters.anyTime">any time</option>
+                <option value="<1d" data-i18n="filters.today">today</option>
+                <option value="<7d" data-i18n="filters.week">past week</option>
+                <option value="<31d" data-i18n="filters.month">past month</option>
+                <option value="<365d" data-i18n="filters.year">past year</option>
+              </select>
+              <button class="filter-picker-btn" type="button" aria-haspopup="listbox"
+                      aria-expanded="false" aria-controls="f-period-menu"
+                      data-i18n-aria="filters.period">
+                <span class="filter-picker-value" data-i18n="filters.anyTime">any time</span>
+                <svg class="filter-picker-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                     stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                     stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 9.5l6 6 6-6"></path>
+                </svg>
+              </button>
+              <span class="filter-menu" id="f-period-menu" role="listbox"
+                    data-i18n-aria="filters.period" hidden></span>
+            </span>
+          </label>
+          <label class="filter-field">
+            <span data-i18n="filters.tag">tag</span>
+            <input id="f-tag" list="filter-tag-list" autocomplete="off" spellcheck="false"
+                   data-i18n-placeholder="filters.tagAny">
+            <datalist id="filter-tag-list"></datalist>
+          </label>
+          <label class="filter-field">
+            <span data-i18n="filters.collection">collection</span>
+            <span class="filter-picker" data-picker="f-collection">
+              <select id="f-collection" hidden>
+                <option value="" data-i18n="filters.any">any</option>
+              </select>
+              <button class="filter-picker-btn" type="button" aria-haspopup="listbox"
+                      aria-expanded="false" aria-controls="f-collection-menu"
+                      data-i18n-aria="filters.collection">
+                <span class="filter-picker-value" data-i18n="filters.any">any</span>
+                <svg class="filter-picker-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
+                     stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                     stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 9.5l6 6 6-6"></path>
+                </svg>
+              </button>
+              <span class="filter-menu" id="f-collection-menu" role="listbox"
+                    data-i18n-aria="filters.collection" hidden></span>
+            </span>
+          </label>
+        </div>
+        <div class="filter-actions">
+          <span class="filter-preview" id="filter-preview"></span>
+          <button class="btn mini" id="filter-clear" type="button" data-i18n="filters.clear">Clear</button>
+          <button class="btn primary mini" id="filter-apply" type="button" data-i18n="filters.apply">Apply</button>
+        </div>
+      </div>
+      <span class="menu-anchor">
+        <button class="tool-btn" id="export-btn" type="button"
+                data-i18n="export.open" aria-expanded="false" aria-controls="export-menu">Export</button>
+        <div class="export-menu" id="export-menu" hidden>
+          <button type="button" data-export="csv">CSV</button>
+          <button type="button" data-export="json">JSON</button>
+          <button type="button" data-export="md">MD</button>
+        </div>
+      </span>
+      <div class="meta-line" id="meta"></div>
     </div>
   </header>
 
-  <div class="tools">
-    <span class="pill" id="status-pill" data-i18n-title="tools.status">
-      <span class="dot" id="status-dot"></span>
-      <span id="status-text" data-i18n="status.checking">checking the index…</span>
-    </span>
-    <label class="field folder-field">
-      <span data-i18n="tools.folder">folder</span>
-      <input id="folder" data-i18n-placeholder="tools.any" autocomplete="off">
-      <svg class="field-edit" viewBox="0 0 24 24" width="12" height="12" fill="none"
-           stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-           stroke-linejoin="round" aria-hidden="true">
-        <path d="M4 20l4.2-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20z"></path>
-        <path d="M13.5 7.5l3 3"></path>
-      </svg>
-    </label>
-    <div class="field date-field">
-      <span data-i18n="tools.since">since</span>
-      <!-- A native <input type="date"> draws its placeholder and its picker in
-           the OS locale: an English interface on a Russian Windows still said
-           "дд.мм.гггг" and opened a Russian calendar. This is ours instead, so
-           it is rounded, grey and in the interface language. -->
-      <button class="date-btn" id="since-btn" type="button"
-              data-i18n-title="cal.open" data-i18n-aria="cal.open"
-              aria-haspopup="dialog" aria-expanded="false">
-        <span id="since-label"></span>
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none"
-             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-             aria-hidden="true">
-          <rect x="3.5" y="5" width="17" height="15.5" rx="3.5"></rect>
-          <path d="M3.5 9.5h17M8.5 3.5v3M15.5 3.5v3"></path>
-        </svg>
-        <!-- Same affordance as the sort menu: a chevron says "this opens
-             something", which an icon alone does not. -->
-        <svg class="date-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
-             stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
-             stroke-linejoin="round" aria-hidden="true">
-          <path d="M6 9.5l6 6 6-6"></path>
-        </svg>
-      </button>
-      <div class="calendar" id="calendar" role="dialog"
-           data-i18n-aria="cal.open" hidden>
-        <div class="cal-head">
-          <button class="cal-nav" type="button" data-cal="prev"
-                  data-i18n-aria="cal.prev">‹</button>
-          <div class="cal-title" id="cal-title"></div>
-          <button class="cal-nav" type="button" data-cal="next"
-                  data-i18n-aria="cal.next">›</button>
-        </div>
-        <div class="cal-week" id="cal-week"></div>
-        <div class="cal-grid" id="cal-grid"></div>
-        <div class="cal-foot">
-          <button class="cal-act" type="button" data-cal="clear"
-                  data-i18n="cal.clear">clear</button>
-          <button class="cal-act" type="button" data-cal="today"
-                  data-i18n="cal.today">today</button>
-          <button class="cal-act" type="button" data-cal="docdate" id="doc-date-toggle"
-                  data-i18n="cal.docDateLabel"
-                  data-i18n-title="cal.docDate" data-i18n-aria="cal.docDate">date</button>
-        </div>
-      </div>
-    </div>
-    <div class="field sort-field">
-      <button class="sort-trigger" id="sort-btn" type="button"
-              aria-haspopup="listbox" aria-expanded="false" aria-controls="sort-menu"
-              data-i18n-aria="tools.sort">
-        <span data-i18n="tools.sort">sort</span>
-        <span class="sort-value" id="sort-value" data-i18n="sort.best">best match</span>
-        <svg class="sort-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
-             stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
-             stroke-linejoin="round" aria-hidden="true">
-          <path d="M6 9.5l6 6 6-6"></path>
-        </svg>
-      </button>
-    </div>
-    <div class="sort-menu" id="sort-menu" role="listbox"
-         data-i18n-aria="tools.sort" hidden>
-      <button type="button" role="option" data-sort="best" data-i18n="sort.best">best match</button>
-      <button type="button" role="option" data-sort="newest" data-i18n="sort.newest">newest</button>
-      <button type="button" role="option" data-sort="oldest" data-i18n="sort.oldest">oldest</button>
-      <button type="button" role="option" data-sort="largest" data-i18n="sort.largest">largest</button>
-      <button type="button" role="option" data-sort="name" data-i18n="sort.name">by name</button>
-    </div>
-    <!-- The filter builder writes real query tokens, so what it builds can be
-         read, edited, and saved like anything typed by hand. -->
-    <button class="tool-btn" id="filters-btn" type="button"
-            data-i18n="filters.open" aria-expanded="false" aria-controls="filter-builder">Filters</button>
-    <div class="filter-builder" id="filter-builder" hidden>
-      <div class="filter-grid">
-        <label class="filter-field">
-          <span data-i18n="filters.type">type</span>
-          <span class="filter-picker" data-picker="f-type">
-            <select id="f-type" hidden>
-              <option value="" data-i18n="filters.any">any</option>
-              <option value="docs" data-i18n="kind.docs">Documents</option>
-              <option value="code" data-i18n="kind.code">Code</option>
-              <option value="pdf" data-i18n="kind.pdf">PDF</option>
-              <option value="image" data-i18n="kind.image">Screenshots</option>
-              <option value="email" data-i18n="kind.email">Mail</option>
-              <option value="archive" data-i18n="kind.archive">Archives</option>
-            </select>
-            <button class="filter-picker-btn" type="button" aria-haspopup="listbox"
-                    aria-expanded="false" aria-controls="f-type-menu"
-                    data-i18n-aria="filters.type">
-              <span class="filter-picker-value" data-i18n="filters.any">any</span>
-              <svg class="filter-picker-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
-                   stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
-                   stroke-linejoin="round" aria-hidden="true">
-                <path d="M6 9.5l6 6 6-6"></path>
-              </svg>
-            </button>
-            <span class="filter-menu" id="f-type-menu" role="listbox"
-                  data-i18n-aria="filters.type" hidden></span>
-          </span>
-        </label>
-        <label class="filter-field">
-          <span data-i18n="filters.folder">folder</span>
-          <input id="f-folder" autocomplete="off" spellcheck="false"
-                 data-i18n-placeholder="filters.folderAny">
-        </label>
-        <label class="filter-field">
-          <span data-i18n="filters.sizeMin">min size</span>
-          <span class="filter-size">
-            <input id="f-size-min" type="number" min="0" step="1" inputmode="numeric">
-            <span class="unit-picker">
-              <input type="hidden" id="f-size-min-unit" value="mb">
-              <button class="unit-trigger" type="button" aria-haspopup="listbox"
-                      aria-expanded="false" aria-controls="f-size-min-unit-menu"
-                      data-i18n-aria="filters.sizeUnit">
-                <span class="unit-value" data-i18n="unit.mb">MB</span>
-                <svg class="unit-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
-                     stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
-                     stroke-linejoin="round" aria-hidden="true">
-                  <path d="M6 9.5l6 6 6-6"></path>
-                </svg>
-              </button>
-              <span class="unit-menu" id="f-size-min-unit-menu" role="listbox"
-                    data-i18n-aria="filters.sizeUnit" hidden>
-                <button type="button" role="option" data-unit="b" data-i18n="unit.b">B</button>
-                <button type="button" role="option" data-unit="kb" data-i18n="unit.kb">KB</button>
-                <button type="button" role="option" data-unit="mb" data-i18n="unit.mb" aria-selected="true">MB</button>
-                <button type="button" role="option" data-unit="gb" data-i18n="unit.gb">GB</button>
-              </span>
-            </span>
-          </span>
-        </label>
-        <label class="filter-field">
-          <span data-i18n="filters.sizeMax">max size</span>
-          <span class="filter-size">
-            <input id="f-size-max" type="number" min="0" step="1" inputmode="numeric">
-            <span class="unit-picker">
-              <input type="hidden" id="f-size-max-unit" value="mb">
-              <button class="unit-trigger" type="button" aria-haspopup="listbox"
-                      aria-expanded="false" aria-controls="f-size-max-unit-menu"
-                      data-i18n-aria="filters.sizeUnit">
-                <span class="unit-value" data-i18n="unit.mb">MB</span>
-                <svg class="unit-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
-                     stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
-                     stroke-linejoin="round" aria-hidden="true">
-                  <path d="M6 9.5l6 6 6-6"></path>
-                </svg>
-              </button>
-              <span class="unit-menu" id="f-size-max-unit-menu" role="listbox"
-                    data-i18n-aria="filters.sizeUnit" hidden>
-                <button type="button" role="option" data-unit="b" data-i18n="unit.b">B</button>
-                <button type="button" role="option" data-unit="kb" data-i18n="unit.kb">KB</button>
-                <button type="button" role="option" data-unit="mb" data-i18n="unit.mb" aria-selected="true">MB</button>
-                <button type="button" role="option" data-unit="gb" data-i18n="unit.gb">GB</button>
-              </span>
-            </span>
-          </span>
-        </label>
-        <label class="filter-field">
-          <span data-i18n="filters.period">modified</span>
-          <span class="filter-picker" data-picker="f-period">
-            <select id="f-period" hidden>
-              <option value="" data-i18n="filters.anyTime">any time</option>
-              <option value="<1d" data-i18n="filters.today">today</option>
-              <option value="<7d" data-i18n="filters.week">past week</option>
-              <option value="<31d" data-i18n="filters.month">past month</option>
-              <option value="<365d" data-i18n="filters.year">past year</option>
-            </select>
-            <button class="filter-picker-btn" type="button" aria-haspopup="listbox"
-                    aria-expanded="false" aria-controls="f-period-menu"
-                    data-i18n-aria="filters.period">
-              <span class="filter-picker-value" data-i18n="filters.anyTime">any time</span>
-              <svg class="filter-picker-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
-                   stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
-                   stroke-linejoin="round" aria-hidden="true">
-                <path d="M6 9.5l6 6 6-6"></path>
-              </svg>
-            </button>
-            <span class="filter-menu" id="f-period-menu" role="listbox"
-                  data-i18n-aria="filters.period" hidden></span>
-          </span>
-        </label>
-        <label class="filter-field">
-          <span data-i18n="filters.tag">tag</span>
-          <input id="f-tag" list="filter-tag-list" autocomplete="off" spellcheck="false"
-                 data-i18n-placeholder="filters.tagAny">
-          <datalist id="filter-tag-list"></datalist>
-        </label>
-        <label class="filter-field">
-          <span data-i18n="filters.collection">collection</span>
-          <span class="filter-picker" data-picker="f-collection">
-            <select id="f-collection" hidden>
-              <option value="" data-i18n="filters.any">any</option>
-            </select>
-            <button class="filter-picker-btn" type="button" aria-haspopup="listbox"
-                    aria-expanded="false" aria-controls="f-collection-menu"
-                    data-i18n-aria="filters.collection">
-              <span class="filter-picker-value" data-i18n="filters.any">any</span>
-              <svg class="filter-picker-caret" viewBox="0 0 24 24" width="9" height="9" fill="none"
-                   stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
-                   stroke-linejoin="round" aria-hidden="true">
-                <path d="M6 9.5l6 6 6-6"></path>
-              </svg>
-            </button>
-            <span class="filter-menu" id="f-collection-menu" role="listbox"
-                  data-i18n-aria="filters.collection" hidden></span>
-          </span>
-        </label>
-      </div>
-      <div class="filter-actions">
-        <span class="filter-preview" id="filter-preview"></span>
-        <button class="btn mini" id="filter-clear" type="button" data-i18n="filters.clear">Clear</button>
-        <button class="btn primary mini" id="filter-apply" type="button" data-i18n="filters.apply">Apply</button>
-      </div>
-    </div>
-    <button class="tool-btn" id="export-btn" type="button"
-            data-i18n="export.open" aria-expanded="false" aria-controls="export-menu">Export</button>
-    <div class="export-menu" id="export-menu" hidden>
-      <button type="button" data-export="csv">CSV</button>
-      <button type="button" data-export="json">JSON</button>
-    </div>
-    <div class="meta-line" id="meta"></div>
-  </div>
-
   <main>
+    <!-- Parsed filters, live tools and removable chips sit above the results. -->
+    <div class="query-bar" id="query-chips" hidden></div>
     <div id="content"></div>
   </main>
 </div>
 
 <div class="scrim" id="scrim"></div>
 
-
-<!-- The function rail: a vertical stack of circular buttons pinned to the
-     left edge, TikTok-style. Each circle opens its own function. -->
-<nav class="rail" id="rail" aria-label="functions">
-  <button class="rail-btn" id="rail-dups" type="button" data-i18n-title="rail.duplicates" data-i18n-aria="rail.duplicates">
-    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="8" y="8" width="12" height="12" rx="2"></rect>
-      <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
-    </svg>
-  </button>
-  <button class="rail-btn" id="rail-index" type="button" data-i18n-title="rail.index" data-i18n-aria="rail.index">
-    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <ellipse cx="12" cy="5.5" rx="8" ry="2.8"></ellipse>
-      <path d="M4 5.5v6c0 1.6 3.6 2.8 8 2.8s8-1.2 8-2.8v-6"></path>
-      <path d="M4 11.5v6c0 1.6 3.6 2.8 8 2.8s8-1.2 8-2.8v-6"></path>
-    </svg>
-  </button>
-  <button class="rail-btn" id="rail-privacy" type="button" data-i18n-title="rail.privacy" data-i18n-aria="rail.privacy">
-    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"></path>
-      <path d="M9.5 12l2 2 3.5-4"></path>
-    </svg>
-  </button>
-  <button class="rail-btn" id="rail-seal" type="button" data-i18n-title="rail.encryption" data-i18n-aria="rail.encryption">
-    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="5" y="11" width="14" height="9" rx="2"></rect>
-      <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
-      <circle cx="12" cy="15.5" r="1.4"></circle>
-    </svg>
-  </button>
-  <button class="rail-btn" id="rail-search" type="button" data-i18n-title="rail.search" data-i18n-aria="rail.search">
-    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <circle cx="11" cy="11" r="6.5"></circle>
-      <path d="M20 20l-4.2-4.2"></path>
-      <path d="M8.5 11h5M11 8.5v5"></path>
-    </svg>
-  </button>
-  <button class="rail-btn" id="rail-keys" type="button" data-i18n-title="rail.keys" data-i18n-aria="rail.keys">
-    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="3" y="7" width="18" height="11" rx="2"></rect>
-      <path d="M6.5 10.5h.01M10 10.5h.01M13.5 10.5h.01M17 10.5h.01M8 14h8"></path>
-    </svg>
-  </button>
-  <button class="rail-btn" id="rail-appearance" type="button" data-i18n-title="rail.appearance" data-i18n-aria="rail.appearance">
-    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="3" y="5" width="18" height="14" rx="2"></rect>
-      <circle cx="9" cy="10" r="1.6"></circle>
-      <path d="M3.5 17l4.8-4.6a1.6 1.6 0 0 1 2.2 0l2 2 2.4-2.3a1.6 1.6 0 0 1 2.2 0L21 15.7"></path>
-    </svg>
-  </button>
-</nav>
-
+<!-- The settings drawer: one glass column on the right that folds every
+     function away from the search screen. Six tabs, same set the app has
+     always had: index, privacy, encryption, search, keys, appearance. -->
 <aside class="drawer" id="panel" aria-hidden="true">
   <div class="drawer-head">
     <h3 id="drawer-title" data-i18n="rail.index">Index</h3>
@@ -584,7 +588,7 @@
     <h3 data-i18n="panel.duplicates">Duplicate screenshots</h3>
     <p class="panel-note" data-i18n="panel.duplicatesNote"></p>
     <div class="btn-row">
-      <button class="btn" id="dups-btn" data-i18n="panel.findDuplicates">Find duplicates</button>
+      <button class="btn" id="dups-open" data-i18n="panel.findDuplicates">Find duplicates</button>
     </div>
   </div>
 
@@ -596,7 +600,7 @@
       <div class="stat-grid">
         <div class="stat"><span data-i18n="panel.docTexts">doc texts</span><b id="s-texts">—</b></div>
         <div class="stat"><span data-i18n="panel.docSealed">sealed</span><b id="s-sealed">—</b></div>
-        <div class="stat"><span data-i18n="panel.definitions">definitions</span><b id="s-symbols">—</b></div>
+        <div class="stat"><span data-i18n="panel.definitions">definitions</span><b id="s-symbols2">—</b></div>
       </div>
       <div class="progress"><div id="job-bar"></div></div>
     </div>
@@ -625,7 +629,6 @@
     </div>
     <p class="panel-note" data-i18n="panel.privacyNote"></p>
   </div>
-
   </div>
 
   <div class="drawer-pane" data-drawer-pane="encryption">
@@ -642,8 +645,6 @@
     </div>
     <p class="panel-note" id="seal-warn" hidden data-i18n="panel.sealWarn"></p>
   </div>
-
-
   </div>
 
   <div class="drawer-pane" data-drawer-pane="search">
@@ -671,9 +672,22 @@
         <div class="types-list" id="types-list"></div>
         <p class="settings-note types-example" data-i18n="types.example"></p>
       </section>
+      <section class="settings-section" id="history-section">
+        <div class="types-head"><h4 id="history-title">Query history</h4>
+          <button class="btn mini" id="history-clear" type="button">Clear</button></div>
+        <div class="history-list" id="history-list"></div>
+      </section>
+      <section class="settings-section" id="smart-section">
+        <h4 id="smart-title">Smart collections</h4>
+        <p class="settings-note">Saved searches, ready to run again.</p>
+        <div class="smart-list" id="smart-list"></div>
+      </section>
+      <section class="settings-section" id="dnd-section">
+        <h4 id="collections-title">Collections — drop files here</h4>
+        <div class="collection-targets" id="collection-targets"></div>
+      </section>
       </div>
   </div>
-
   </div>
 
   <div class="drawer-pane" data-drawer-pane="keys">
@@ -692,7 +706,6 @@
         </section>
       </div>
   </div>
-
   </div>
 
   <div class="drawer-pane" data-drawer-pane="appearance">
@@ -797,7 +810,6 @@
       </section>
     </div>
   </div>
-
   </div>
 
   <div class="side-foot">
@@ -885,6 +897,10 @@
 
 <div class="toast" id="toast"></div>
 
+<!-- Debounced Quick Look on card hover. Filled from /api/preview; it never
+     blocks the pointer and disappears the moment the card is left. -->
+<div class="hover-preview" id="hover-preview" hidden></div>
+
 <div class="modal" id="preview">
   <div class="modal-card preview-card">
     <div class="modal-head">
@@ -948,6 +964,8 @@
       <section class="settings-section">
         <h4 data-i18n="settings.about">About</h4>
         <dl class="about-grid" id="about"></dl>
+        <p class="telemetry-badge" id="telemetry-badge">No telemetry — everything stays on this computer</p>
+        <p class="portable-badge" id="portable-badge" hidden></p>
         <button class="btn mini settings-replay" id="replay-onboarding" type="button"
                 data-i18n="settings.replayWelcome">Show the welcome screen again</button>
       </section>
@@ -956,6 +974,27 @@
         <p class="settings-note" data-i18n="audit.note"></p>
         <div class="audit-list" id="audit-list"></div>
         <p class="audit-warn" id="audit-warn"></p>
+      </section>
+      <section class="settings-section" id="audit-breakdown-section">
+        <h4 id="audit-breakdown-title">Disk breakdown</h4>
+        <div class="breakdown-list" id="audit-breakdown"></div>
+      </section>
+      <section class="settings-section" id="exclusions-section">
+        <h4 id="exclusions-title">Search exclusions</h4>
+        <p class="settings-note" id="exclusions-note"></p>
+        <textarea id="exclusions-editor" rows="3" spellcheck="false"
+                  placeholder="one word or phrase per line"></textarea>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn mini primary" id="exclusions-save" type="button">Save</button>
+        </div>
+      </section>
+      <section class="settings-section" id="diagnostics-section">
+        <h4 id="diagnostics-title">Diagnostics</h4>
+        <div class="btn-row">
+          <button class="btn mini" id="selftest-btn" type="button">Run self-test</button>
+          <button class="btn mini" id="logs-btn" type="button">View log</button>
+        </div>
+        <pre class="diag-output" id="diag-output" hidden></pre>
       </section>
       </div>
     </div>
@@ -983,9 +1022,6 @@
   </div>
 </div>
 
-<script src="/i18n.js"></script>
-<script src="/app.js"></script>
-
 <div id="help-overlay" hidden>
   <div class="help-card">
     <h3 data-i18n="help.title"></h3>
@@ -1001,5 +1037,8 @@
     <button class="help-close" data-i18n="help.close"></button>
   </div>
 </div>
+
+<script src="/i18n.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>

@@ -18,6 +18,7 @@ watcher skips the cycle rather than fighting for the SQLite write lock.
 
 from __future__ import annotations
 
+import os
 import struct
 import sys
 import threading
@@ -146,8 +147,13 @@ class Watcher:
                 "roots on network drives refused: " + ", ".join(remote)
                 + " (pass allow_remote to index them anyway)"
             )
+            # `start()` already set running=True and spawned this thread. The
+            # early return skips the common finally below, so clear the flag
+            # here or watch_forever() spins forever with no watcher behind it.
+            self.state.running = False
             return
         store = None
+        fan = None
         try:
             embedder = get_embedder("auto", self.config.model_dir)
             visual = get_visual_embedder(self.config.model_dir)
@@ -170,6 +176,8 @@ class Watcher:
         except Exception as exc:
             self._note_error(f"{type(exc).__name__}: {exc}")
         finally:
+            if fan is not None:
+                fan.stop()
             if store is not None:
                 store.close()
             self.state.running = False
@@ -199,6 +207,7 @@ class Watcher:
         previous = self._snapshot()
         resync = max(self.interval * 15, 60.0)
         last_resync = time.time()
+        last_cycle = last_resync
         while not self._stop.wait(0.2):
             if self._deferred():
                 continue
@@ -222,7 +231,13 @@ class Watcher:
                     if changed or removed:
                         self._apply(store, embedder, visual, changed, removed)
                     previous = current
-                self.state.cycles += 1
+                # The event loop ticks every 0.2 s, but a "cycle" is one
+                # polling-sized pass. Counting every tick inflated the counter
+                # by ~1/interval (10x at the 2 s default). Deferred iterations
+                # are skipped above, so active-user tests still see zero.
+                if now - last_cycle >= self.interval:
+                    last_cycle = now
+                    self.state.cycles += 1
             except Exception as exc:  # a broken batch must not kill the watcher
                 self._note_error(f"{type(exc).__name__}: {exc}")
             if fan.broken:
@@ -352,11 +367,15 @@ class EventFan:
         self._lock = threading.Lock()
         self._events: set[str] = set()
         self._overflow = threading.Event()
+        self._stop = stop
         self.broken = False
         self._threads: list[threading.Thread] = []
+        # Blocking ReadDirectoryChangesW calls need their handles cancelled on
+        # stop; setting an Event alone cannot wake them.
+        self._handles: list[int] = []
         for root in roots:
             thread = threading.Thread(
-                target=self._watch_root, args=(root, stop), name=f"autofind-fswatch", daemon=True
+                target=self._watch_root, args=(root, stop), name="autofind-fswatch", daemon=True
             )
             self._threads.append(thread)
             thread.start()
@@ -372,9 +391,34 @@ class EventFan:
             # overflow just nudges it by returning an empty batch.
         return paths
 
+    def stop(self, timeout: float = 1.0) -> None:
+        """Wake blocked readers and join them instead of leaking one thread per root."""
+        self._stop.set()
+        with self._lock:
+            handles = list(self._handles)
+        if handles:
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                cancel = ctypes.windll.kernel32.CancelIoEx
+                cancel.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+                cancel.restype = wintypes.BOOL
+                for handle in handles:
+                    cancel(wintypes.HANDLE(handle), None)
+            except Exception:
+                pass  # best effort; a daemon thread still exits on the next event
+        deadline = time.monotonic() + timeout
+        for thread in self._threads:
+            remaining = max(0.0, deadline - time.monotonic())
+            if remaining:
+                thread.join(remaining)
+
     def _push(self, root: str, name: str) -> None:
         with self._lock:
-            self._events.add(f"{root}\\{name}")
+            # A root such as `C:/docs` must not produce `C:/docs\file.txt`:
+            # that path never matches the indexed one. Let Path own the join.
+            self._events.add(str(Path(root) / name))
 
     def _watch_root(self, root: str, stop: threading.Event) -> None:
         try:
@@ -406,6 +450,8 @@ class EventFan:
             if handle in (None, invalid):
                 self.broken = True  # root is a share or gone: poll instead
                 return
+            with self._lock:
+                self._handles.append(handle)
             try:
                 buffer = ctypes.create_string_buffer(BUFFER_BYTES)
                 returned = wintypes.DWORD()
@@ -419,6 +465,8 @@ class EventFan:
                     )
                     if not ok or returned.value == 0:
                         error = ctypes.get_last_error()
+                        if stop.is_set() or error == 995:  # ERROR_OPERATION_ABORTED
+                            return  # our own CancelIoEx, not a broken root
                         if error == 1022:  # ERROR_NOTIFY_ENUM_DIR: buffer overflow
                             self._overflow.set()
                             continue
@@ -427,6 +475,9 @@ class EventFan:
                     for _action, name in _parse_events(buffer.raw[: returned.value]):
                         self._push(root, name)
             finally:
+                with self._lock:
+                    if handle in self._handles:
+                        self._handles.remove(handle)
                 kernel32.CloseHandle(handle)
         except Exception:
             self.broken = True
@@ -460,7 +511,16 @@ def make_event_fan(roots: Sequence[str], stop: threading.Event) -> EventFan | No
 
 
 def watch_forever(watcher: Watcher) -> int:
-    """Blocking run for the CLI: prints one line per batch until Ctrl+C."""
+    """Blocking run for the CLI: prints one line per batch until Ctrl+C.
+
+    A `<db>.watch` file carries this process's pid while the run lasts, so
+    `autofind watch-status` can tell a live watcher from a stale lock.
+    """
+    lock_path = Path(str(watcher.db_path) + ".watch")
+    try:
+        lock_path.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        lock_path = None  # a missing lock only costs watch-status its answer
     watcher.start()
     mode = "events (ReadDirectoryChangesW)" if watcher.state.mode == "events" else "polling"
     print(f"watching {len(watcher.roots)} root(s) via {mode}")
@@ -474,6 +534,11 @@ def watch_forever(watcher: Watcher) -> int:
         pass
     finally:
         watcher.stop()
+        if lock_path is not None:
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
     state = watcher.state
     print(
         f"\nstopped after {state.cycles} cycles: "

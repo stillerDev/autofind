@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 from pathlib import Path
 
 # Only the start of the file is used to choose the delimiter.
@@ -130,8 +131,11 @@ def extract_delimited(
 ) -> str:
     """Column summary and the first `head_rows` rows as `column = "value"`."""
     try:
-        data = Path(path).read_bytes()[:max_bytes]
-        truncated = Path(path).stat().st_size > len(data)
+        # Read a bounded prefix straight from the handle: read_bytes() would
+        # materialise a 10 GB export before the slice ever saw max_bytes.
+        with open(path, "rb") as handle:
+            data = handle.read(max_bytes)
+            truncated = os.fstat(handle.fileno()).st_size > len(data)
     except OSError:
         return ""
     text = _decode(data)

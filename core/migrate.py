@@ -264,8 +264,9 @@ def _read_sqlite(path: Path) -> Source:
     """
     source = Source(path, "sqlite")
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    except sqlite3.Error:
+        # as_uri() percent-encodes '#'/'?'/spaces; a raw URI cuts the path there.
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    except (sqlite3.Error, OSError):
         return source
     conn.row_factory = sqlite3.Row
     try:

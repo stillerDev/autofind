@@ -109,11 +109,27 @@ def load_labels(path: str | Path) -> dict:
 
 
 def matches(path: str, expected: str) -> bool:
-    lowered = path.replace("\\", "/").lower()
-    needle = expected.replace("\\", "/").lower()
-    if needle in lowered:
-        return True
-    return lowered.rsplit("/", 1)[-1] == needle
+    """True when `expected` names the same file as `path`.
+
+    Matching on components, not on a raw substring: `needle in lowered` used
+    to credit `report.doc` to `myreport.docx` and inflate recall on corpora
+    with shared name fragments. A label may name the file, its path suffix, or
+    the stem without an extension, but every component must match whole.
+    """
+    got = [part for part in path.replace("\\", "/").lower().split("/") if part]
+    want = [part for part in expected.replace("\\", "/").lower().split("/") if part]
+    if not want or len(want) > len(got):
+        return False
+    for offset, component in enumerate(want):
+        actual = got[len(got) - len(want) + offset]
+        if actual == component:
+            continue
+        # Only the final component may omit the extension ("docs/plan").
+        last = offset == len(want) - 1
+        if last and actual.rsplit(".", 1)[0] == component:
+            continue
+        return False
+    return True
 
 
 def evaluate(

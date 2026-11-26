@@ -58,20 +58,26 @@ def read_efu(path: str | Path) -> list[Entry]:
             except (TypeError, ValueError):
                 size = 0
             mtime = 0.0
-            raw_time = row.get("Date Modified") or row.get("date_modified") or ""
+            raw_time = str(row.get("Date Modified") or row.get("date_modified") or "").strip()
             try:
-                # Everything writes FILETIME ticks; a plain text export may
-                # carry an ISO string instead — accept both.
-                if re.fullmatch(r"\d{10,}", str(raw_time).strip()):
+                # Everything writes FILETIME ticks; other exports carry an ISO
+                # string or an RFC-2822 date (e.g. "Mon, 12 Nov 2026 18:24:00 +0000").
+                # parsedate_to_datetime was imported but never used, so RFC dates
+                # silently became mtime=0.0 and the later index run re-read them.
+                if re.fullmatch(r"\d{10,}", raw_time):
                     mtime = filetime_to_unix(int(raw_time))
-                elif str(raw_time).strip():
-                    from email.utils import parsedate_to_datetime  # noqa: F401
+                elif raw_time:
+                    from email.utils import parsedate_to_datetime
+
                     import datetime
 
-                    mtime = datetime.datetime.fromisoformat(
-                        str(raw_time).strip().replace("Z", "+00:00")
-                    ).timestamp()
-            except (TypeError, ValueError):
+                    try:
+                        mtime = datetime.datetime.fromisoformat(
+                            raw_time.replace("Z", "+00:00")
+                        ).timestamp()
+                    except ValueError:
+                        mtime = parsedate_to_datetime(raw_time).timestamp()
+            except (TypeError, ValueError, IndexError):
                 mtime = 0.0
             entries.append(Entry(path=filename, size=size, mtime=mtime))
     return entries

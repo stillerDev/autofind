@@ -15,9 +15,11 @@ from __future__ import annotations
 import json
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
+from .__version__ import __version__
 from .config import IndexConfig
 from .embed import get_embedder
 from .personal import expand_aliases
@@ -26,6 +28,9 @@ from .search import search_page
 from .store import Store
 
 PROTOCOL_VERSION = "2024-11-05"
+# Clients on a newer revision are answered in their own version when it is
+# listed here; anything else falls back to PROTOCOL_VERSION.
+SUPPORTED_PROTOCOL_VERSIONS = frozenset({PROTOCOL_VERSION, "2025-03-26", "2025-06-18"})
 SERVER_NAME = "autofind"
 DEFAULT_PAGE = 10
 MAX_PAGE = 50
@@ -40,7 +45,9 @@ def _error(message: str) -> dict:
 
 
 def _encode_cursor(offset: int) -> str:
-    return f"o{offset}"
+    # The decoder accepts any non-empty digit run, so never emit one that a
+    # round-trip would reject.
+    return f"o{min(max(int(offset), 0), 9999999)}"
 
 
 def _decode_cursor(cursor: str | None) -> int:
@@ -53,7 +60,7 @@ def _decode_cursor(cursor: str | None) -> int:
     """
     if not cursor:
         return 0
-    match = re.fullmatch(r"o(\d{1,7})", str(cursor))
+    match = re.fullmatch(r"o(\d+)", str(cursor))
     if not match:
         raise ValueError(f"bad cursor {cursor!r}: call the tool again without it")
     return int(match.group(1))
@@ -185,6 +192,10 @@ class McpServer:
         self.db_path = Path(db_path)
         self.config = config
         self._store: Store | None = None
+        # stdio is single-threaded, but the HTTP MCP endpoint shares one
+        # McpServer across request threads. Serialize tool calls so a single
+        # Store is never used concurrently.
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------- plumbing
 
@@ -203,13 +214,19 @@ class McpServer:
         return self._store
 
     def handle(self, request: dict) -> dict | None:
+        with self._lock:
+            return self._handle(request)
+
+    def _handle(self, request: dict) -> dict | None:
         method = request.get("method")
         request_id = request.get("id")
         params = request.get("params") or {}
 
         if method == "initialize":
+            requested = params.get("protocolVersion")
+            version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
             return self._result(request_id, {
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": version,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": _version()},
                 "instructions": (
@@ -441,9 +458,32 @@ class McpServer:
                 }), flush=True)
                 continue
 
-            response = self.handle(request)
-            if response is not None:
-                print(json.dumps(response, ensure_ascii=False), flush=True)
+            # A JSON-RPC batch is an array of requests; answer with an array
+            # of responses in the same order (notifications produce none).
+            batch = isinstance(request, list)
+            items = request if batch else [request]
+            responses = []
+            for item in items:
+                if not isinstance(item, dict):
+                    responses.append({
+                        "jsonrpc": "2.0", "id": None,
+                        "error": {"code": -32600, "message": "invalid request"},
+                    })
+                    continue
+                try:
+                    response = self.handle(item)
+                except Exception as exc:  # one broken tool must not kill stdio
+                    response = {
+                        "jsonrpc": "2.0", "id": item.get("id"),
+                        "error": {"code": -32603, "message": f"{type(exc).__name__}: {exc}"},
+                    }
+                if response is not None:
+                    responses.append(response)
+            if batch:
+                print(json.dumps(responses, ensure_ascii=False), flush=True)
+            else:
+                for response in responses:
+                    print(json.dumps(response, ensure_ascii=False), flush=True)
 
         if self._store is not None:
             self._store.close()
@@ -451,12 +491,8 @@ class McpServer:
 
 
 def _version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("autofind")
-    except Exception:
-        return "0.1.0"
+    """One source of truth: core.__version__, not a second literal."""
+    return __version__
 
 
 def serve(db_path: Path, config: IndexConfig) -> int:

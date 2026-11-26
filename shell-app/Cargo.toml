@@ -1,0 +1,27 @@
+[package]
+name = "autofind-shell"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tao = "0.34.8"
+wry = "0.57.3"
+tray-icon = "0.25.1"
+muda = "0.20.0"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging",
+    # Screen capture for the Ctrl+Alt+S hotkey: GDI BitBlt -> DIB -> PNG.
+    "Win32_Graphics_Gdi",
+    # GetLocalTime for collision-free screenshot names.
+    "Win32_System_SystemInformation"
+] }
+global-hotkey = "0.8.0"
+
+# The shell is launched on every app start. A stripped, thin-LTO binary loads
+# faster from disk and bundles smaller in the PyInstaller spec. Measure with
+# tools/bench_gui_shell.ps1 if these flags ever change.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"

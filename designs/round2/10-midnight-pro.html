@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — 10 Midnight Pro</title>
+<!-- Style 10: dense pro dark app. Structure: icon rail + sidebar groups +
+     query bar + data table + right details panel. Built for keyboard flow.
+     Palette: technical/dark seed 3 (tastemaker): teal primary, rose accent. -->
+<style>
+  :root{
+    --bg:#0a1110; --surface:#151d1b; --raised:#1a2421; --line:#202827; --line2:#2a3532;
+    --ink:#e6f6f2; --mut:#7e938d; --pri:#1d8373; --pril:#2aa38d; --acc:#da7e9c;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{background:var(--bg);color:var(--ink);font:13px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+  .app{height:100%;display:flex}
+  /* icon rail */
+  .rail{width:52px;flex:none;background:#0d1513;border-right:1px solid var(--line);
+        display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:6px}
+  .rail .logo{width:30px;height:30px;border-radius:8px;background:var(--pri);color:#fff;font-weight:800;font-size:12px;
+              display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+  .rail .rb{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+            color:var(--mut);font-size:14px;border:1px solid transparent}
+  .rail .rb.on{color:var(--ink);background:var(--surface);border-color:var(--line2)}
+  .rail .rb.bottom{margin-top:auto}
+  /* sidebar */
+  .side{width:224px;flex:none;background:#0d1513;border-right:1px solid var(--line);padding:14px 10px;
+        display:flex;flex-direction:column}
+  .side h6{font-size:10.5px;letter-spacing:.14em;color:var(--mut);text-transform:uppercase;padding:10px 10px 6px}
+  .si{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:7px;color:#b9cac5;font-size:13px}
+  .si .b{margin-left:auto;font-size:10.5px;color:var(--mut);background:var(--surface);border-radius:8px;padding:1px 7px}
+  .si.on{background:var(--surface);color:var(--ink);box-shadow:inset 2px 0 0 var(--pri)}
+  .side .user{margin-top:auto;display:flex;gap:9px;align-items:center;padding:9px 10px;border-top:1px solid var(--line);
+              color:var(--mut);font-size:12px}
+  .side .user .dot{width:7px;height:7px;border-radius:50%;background:#54d18b;box-shadow:0 0 8px #54d18b99}
+  /* main */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{height:54px;flex:none;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--line)}
+  .qb{flex:1;height:36px;background:var(--surface);border:1px solid var(--line2);border-radius:9px;
+      display:flex;align-items:center;gap:11px;padding:0 13px}
+  .qb .q{font-size:14px}
+  .qb .caret{width:2px;height:16px;background:var(--pri)}
+  .qb .fl{margin-left:auto;display:flex;gap:6px}
+  .fchip{font-size:11px;color:var(--mut);border:1px solid var(--line2);border-radius:6px;padding:3px 9px}
+  .fchip.on{color:#8fe0d0;border-color:#1d837366;background:#1d83731a}
+  .kbd{font-size:10.5px;color:var(--mut);border:1px solid var(--line2);border-radius:5px;padding:3px 7px}
+  .tablehead{display:flex;height:34px;align-items:center;padding:0 18px;border-bottom:1px solid var(--line);
+             color:var(--mut);font-size:11px;letter-spacing:.1em;text-transform:uppercase;flex:none}
+  .rows{flex:1;overflow:hidden}
+  .r{display:flex;align-items:center;height:44px;padding:0 18px;border-bottom:1px solid var(--line)}
+  .r.sel{background:#1d837314;box-shadow:inset 2.5px 0 0 var(--pri)}
+  .ic{flex:none;width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;
+      font:800 8.5px/1 "Segoe UI",sans-serif;color:#fff;margin-right:12px}
+  .nm{flex:1.4;font-size:13.5px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .nm b{color:var(--pril);font-weight:600}
+  .pth{flex:1.2;color:var(--mut);font-size:12.5px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ocr{color:var(--acc);font-size:10px;border:1px solid #da7e9c55;border-radius:5px;padding:1px 6px;margin-left:8px}
+  .sz{width:80px;flex:none;color:var(--mut);font-size:12.5px}
+  .dt{width:110px;flex:none;color:var(--mut);font-size:12.5px;text-align:right}
+  .footbar{height:40px;flex:none;display:flex;align-items:center;gap:16px;padding:0 18px;
+           border-top:1px solid var(--line);color:var(--mut);font-size:11.5px}
+  .footbar .g{margin-left:auto;color:#8fe0d0}
+  /* details */
+  .det{width:296px;flex:none;border-left:1px solid var(--line);background:#0d1513;display:flex;flex-direction:column}
+  .det .head{height:54px;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid var(--line);
+             font-weight:600;font-size:13px;gap:8px}
+  .det .head .x{margin-left:auto;color:var(--mut)}
+  .pv{margin:14px 16px;height:170px;border-radius:10px;background:linear-gradient(150deg,#1c3a34,#122521 60%,#0f1d1a);
+      border:1px solid var(--line2);position:relative;overflow:hidden}
+  .pv::before{content:"";position:absolute;left:14px;top:14px;width:52%;height:9px;border-radius:5px;background:#1d8373}
+  .pv::after{content:"";position:absolute;left:14px;top:32px;width:78%;height:7px;border-radius:4px;background:#ffffff22;
+             box-shadow:0 14px 0 #ffffff1c,0 28px 0 #ffffff16}
+  .det .sec{padding:10px 16px;border-bottom:1px solid var(--line)}
+  .det .lbl{font-size:10.5px;letter-spacing:.12em;color:var(--mut);text-transform:uppercase}
+  .det .val{font-size:13px;margin-top:4px}
+  .det .snip{font-size:12.5px;color:#b9cac5;line-height:1.55;margin-top:4px}
+  .det .snip b{color:var(--pril);font-weight:600}
+  .det .acts{margin-top:auto;padding:12px 16px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .abtn{border:1px solid var(--line2);border-radius:8px;padding:9px 0;text-align:center;font-size:12.5px;color:#b9cac5}
+  .abtn.pri{background:var(--pri);border-color:var(--pri);color:#fff;font-weight:600}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail">
+    <span class="logo">AF</span>
+    <span class="rb on">⌂</span><span class="rb">⌕</span><span class="rb">◷</span>
+    <span class="rb">▣</span><span class="rb">★</span>
+    <span class="rb bottom">⚙</span>
+  </nav>
+
+  <aside class="side">
+    <h6>Библиотека</h6>
+    <span class="si">🕘 Недавние <span class="b">24</span></span>
+    <span class="si on">⌕ Поиск «смета март»</span>
+    <span class="si">🖼 Скриншоты <span class="b">312</span></span>
+    <span class="si">📄 Документы <span class="b">1 204</span></span>
+    <span class="si">{ } Код <span class="b">86</span></span>
+    <h6>Списки</h6>
+    <span class="si">★ Пины <span class="b">12</span></span>
+    <span class="si">⚑ Коллекция «Март» <span class="b">9</span></span>
+    <span class="si">↻ Сохранённые поиски <span class="b">4</span></span>
+    <div class="user"><span class="dot"></span> индекс готов · 128 430 файлов</div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <span class="qb">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7e938d" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <span class="q">смета март</span><span class="caret"></span>
+        <span class="fl"><span class="fchip on">тип: всё</span><span class="fchip">папка</span><span class="fchip">дата</span><span class="fchip">размер</span></span>
+      </span>
+      <span class="kbd">Ctrl K</span><span class="kbd">/</span>
+    </div>
+
+    <div class="tablehead">
+      <span style="flex:1.4">Имя</span><span style="flex:1.2">Папка</span>
+      <span style="width:80px">Размер</span><span style="width:110px;text-align:right">Изменён</span>
+    </div>
+
+    <div class="rows">
+      <div class="r sel">
+        <span class="ic" style="background:#b04141">PDF</span>
+        <span class="nm"><b>Смета</b>_ремонта_<b>март</b>_2026.pdf</span>
+        <span class="pth">D:\Документы\Сметы · «итог 214 500 ₽»</span>
+        <span class="sz">2.4 МБ</span><span class="dt">12 ноя 2026</span>
+      </div>
+      <div class="r">
+        <span class="ic" style="background:#3f6fc4">DOC</span>
+        <span class="nm"><b>смета</b> за <b>март</b>.docx</span>
+        <span class="pth">D:\Документы</span>
+        <span class="sz">184 КБ</span><span class="dt">10 ноя 2026</span>
+      </div>
+      <div class="r">
+        <span class="ic" style="background:#3d8f5f">PNG</span>
+        <span class="nm">скриншот 2026-03-28 14-02.png<span class="ocr">OCR</span></span>
+        <span class="pth">Desktop · «Смета за март — итог 214 500 ₽»</span>
+        <span class="sz">1.1 МБ</span><span class="dt">28 мар 2026</span>
+      </div>
+      <div class="r">
+        <span class="ic" style="background:#2e7d54">XLS</span>
+        <span class="nm">Прайс_<b>Март</b>.xlsx</span>
+        <span class="pth">D:\Документы\Прайсы</span>
+        <span class="sz">96 КБ</span><span class="dt">8 ноя 2026</span>
+      </div>
+      <div class="r">
+        <span class="ic" style="background:#54586a">PY</span>
+        <span class="nm">budget_<b>march</b>.py</span>
+        <span class="pth">D:\Код\autofind</span>
+        <span class="sz">12 КБ</span><span class="dt">5 ноя 2026</span>
+      </div>
+      <div class="r">
+        <span class="ic" style="background:#b04141">PDF</span>
+        <span class="nm"><b>смета</b>-<b>март</b>.pdf</span>
+        <span class="pth">D:\Архив\2025</span>
+        <span class="sz">2.2 МБ</span><span class="dt">2 апр 2025</span>
+      </div>
+    </div>
+
+    <div class="footbar">
+      <span><b style="color:var(--ink)">Enter</b> открыть</span>
+      <span><b style="color:var(--ink)">Space</b> превью</span>
+      <span><b style="color:var(--ink)">Ctrl+C</b> путь</span>
+      <span><b style="color:var(--ink)">P</b> закрепить</span>
+      <span class="g">7 результатов · 18 мс · всё локально</span>
+    </div>
+  </main>
+
+  <aside class="det">
+    <div class="head">Смета_ремонта_март_2026.pdf <span class="x">✕</span></div>
+    <div class="pv"></div>
+    <div class="sec"><div class="lbl">Путь</div><div class="val">D:\Документы\Сметы\</div></div>
+    <div class="sec">
+      <div class="lbl">Свойства</div>
+      <div class="val">2.4 МБ · 14 страниц · изменён 12.11.2026</div>
+    </div>
+    <div class="sec">
+      <div class="lbl">Фрагмент</div>
+      <div class="snip">«…<b>смета</b> за <b>март</b>: материалы и работы, итог 214 500 ₽, срок сдачи до 30.03…»</div>
+    </div>
+    <div class="acts">
+      <span class="abtn pri">Открыть</span><span class="abtn">В папке</span>
+      <span class="abtn">Похожие</span><span class="abtn">Закрепить</span>
+    </div>
+  </aside>
+</div>
+</body>
+</html>

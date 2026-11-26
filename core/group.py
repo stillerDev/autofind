@@ -21,7 +21,7 @@ import re
 from functools import lru_cache
 from itertools import count
 from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from typing import Sequence
 
 # A burst is a run of screenshots of the same thing: same folder, close in time,
 # visually near-identical.
@@ -97,7 +97,10 @@ folder = lru_cache(maxsize=8192)(folder)
 
 
 def dhash(image) -> int:
-    """64-bit difference hash: 9x8 grayscale, one bit per horizontal comparison.
+    """63-bit difference hash: 9x8 grayscale, one bit per horizontal comparison.
+
+    The layout is 64 bits, but the top bit is dropped so the value always fits
+    a signed SQLite INTEGER.
 
     Cheap (one resize plus a comparison), stable against scaling and minor
     recompression, and good enough to tell "the same window again" from "a
@@ -189,6 +192,8 @@ def group_hits(hits: Sequence, bursts: bool = True, hashes: dict[int, str] | Non
     for hit in hits:
         width = getattr(hit, "width", 0)
         height = getattr(hit, "height", 0)
+        digest = (hashes or {}).get(hit.file_id)
+        copy_key = ("copy", hit.name.lower(), digest) if digest else None
         burstable = (
             bursts and hit.kind == "image" and getattr(hit, "phash", 0)
             and width >= BURST_MIN_SIDE and height >= BURST_MIN_SIDE
@@ -198,6 +203,8 @@ def group_hits(hits: Sequence, bursts: bool = True, hashes: dict[int, str] | Non
             if anchor is not None:
                 anchor.members.append(hit)
                 anchor.reason = "burst"
+                if copy_key is not None:
+                    by_copy.setdefault(copy_key, anchor)
                 continue
 
         key = ("version", folder(hit.path), version_key(hit.name))
@@ -205,10 +212,12 @@ def group_hits(hits: Sequence, bursts: bool = True, hashes: dict[int, str] | Non
         if existing is not None:
             existing.members.append(hit)
             existing.reason = "version"
+            # A hit absorbed by a version group must still be reachable as a
+            # copy: later byte-identical rows could not find this group before.
+            if copy_key is not None:
+                by_copy.setdefault(copy_key, existing)
             continue
 
-        digest = (hashes or {}).get(hit.file_id)
-        copy_key = ("copy", hit.name.lower(), digest) if digest else None
         existing = by_copy.get(copy_key) if copy_key else None
         if existing is not None:
             existing.members.append(hit)

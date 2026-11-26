@@ -55,6 +55,43 @@ _KEEP_TEMP_MAX_AGE = 24 * 3600
 # running right now would have its staging deleted out from under it.
 _GRACE_SECONDS = 60 * 60
 
+# Migration-era database copies ("index.v9.db") and superseded vector packs
+# ("index.db.v3.vec") older than this are dead weight no code path reads.
+# The age gate keeps a backup that was written minutes ago safe to keep.
+_SIDECAR_MAX_AGE = 3 * 24 * 3600
+
+
+@dataclass(frozen=True)
+class CleanupConfig:
+    """Age gates for stale-artifact cleanup, in seconds.
+
+    Defaults are the historical 24 h / 1 h / 72 h. Operators can override them
+    without editing source; env overrides are opt-in, so an existing install
+    behaves exactly as before.
+    """
+
+    keep_temp_max_age: float = _KEEP_TEMP_MAX_AGE
+    grace_seconds: float = _GRACE_SECONDS
+    sidecar_max_age: float = _SIDECAR_MAX_AGE
+
+    @classmethod
+    def from_env(cls) -> "CleanupConfig":
+        def seconds(name: str, default: float) -> float:
+            raw = os.environ.get(name)
+            if raw is None:
+                return default
+            try:
+                value = float(raw)
+            except ValueError:
+                return default
+            return value if value >= 0 else default
+
+        return cls(
+            keep_temp_max_age=seconds("AUTOFIND_KEEP_TEMP_MAX_AGE", _KEEP_TEMP_MAX_AGE),
+            grace_seconds=seconds("AUTOFIND_GRACE_SECONDS", _GRACE_SECONDS),
+            sidecar_max_age=seconds("AUTOFIND_SIDECAR_MAX_AGE", _SIDECAR_MAX_AGE),
+        )
+
 
 @dataclass
 class Inventory:
@@ -109,14 +146,48 @@ def dir_size(path: Path) -> int:
     return total
 
 
+def _windows_pids() -> set[int]:
+    """EnumProcesses via ctypes: one in-process API call instead of spawning
+    tasklist (measured ~365 ms here, mostly process creation)."""
+    import ctypes
+    from ctypes import wintypes
+
+    # use_last_error makes WinError return the real failing code; without it
+    # every EnumProcesses failure reports WinError 0 and the fallback looks fine.
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    enum = psapi.EnumProcesses
+    enum.argtypes = [
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    enum.restype = wintypes.BOOL
+    count = 4096
+    while count <= 65536:
+        ids = (wintypes.DWORD * count)()
+        needed = wintypes.DWORD()
+        if not enum(ids, ctypes.sizeof(ids), ctypes.byref(needed)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        used = needed.value // ctypes.sizeof(wintypes.DWORD)
+        if used < count:
+            return {int(ids[i]) for i in range(used)}
+        count *= 2
+    return set()
+
+
 def _current_pids() -> set[int]:
     """This process and, on Windows, every running PID — the updater stage dir
     embeds its owner's PID, and guessing "dead" from a PID reuse would delete
-    a live download. Cheap: one 1 KB API call is nothing next to a deleted
-    installer."""
+    a live download."""
     pids = {os.getpid(), os.getppid()}
-    # tasklist is the only stdlib-compatible way without psutil; skip failure
-    # silently — the age grace period below is the real safety net.
+    if os.name == "nt":
+        try:
+            pids.update(_windows_pids())
+            return pids
+        except Exception:
+            pass
+    # Fallback for non-Windows and for a locked-down Windows where psapi is
+    # unavailable. Failure is silent: the age grace period is the safety net.
     try:
         import subprocess
 
@@ -136,10 +207,11 @@ def _current_pids() -> set[int]:
     return pids
 
 
-def _update_temp_dirs(home: Path) -> list[Path]:
+def _update_temp_dirs() -> list[Path]:
     """Updater staging directories in the system temp folder. The path comes
     from updater._stage_dir; keeping the pattern in sync here is why the
-    constant lives in one place above."""
+    constant lives in one place above. No home argument: staging is always in
+    the system temp directory, never under the data home."""
     temp = Path(os.environ.get("TEMP") or tempfile_dir())
     if not temp.is_dir():
         return []
@@ -174,7 +246,7 @@ def inventory(home: Path) -> Inventory:
             result.part_bytes += path.stat().st_size
         except OSError:
             continue
-    for stage in _update_temp_dirs(result.home):
+    for stage in _update_temp_dirs():
         result.update_temp_bytes += dir_size(stage)
     for log in sorted(result.home.glob("autofind.log*")):
         try:
@@ -189,6 +261,58 @@ def _part_files(home: Path) -> list[Path]:
         return sorted(home.glob(f"*{_PART_SUFFIX}"))
     except OSError:
         return []
+
+
+def _stale_sidecars(home: Path, config: CleanupConfig | None = None) -> list[Path]:
+    """Relict files beside the index that no current code path reads.
+
+    * ``index.v<digits>.db`` and friends: migration-era full copies of the
+      index. Modern migrations live inside the database (store._migrate_connection),
+      so a copy like this can only come from an older release — and nothing in
+      the current tree opens it.
+    * superseded vector packs (``index.db.vec``, ``index.db.v<N>.vec`` for
+      N != the packed version vectors.py advertises) and their ``.hot`` delta
+      files. Since schema v9 the document backend is `filebin`, so the pack is
+      only meaningful for whichever version the running code names.
+
+    The age gate is the safety net: a file written minutes ago by a process we
+    do not know about survives until the next run.
+    """
+    config = config or CleanupConfig.from_env()
+    now = time.time()
+    stale: list[Path] = []
+    try:
+        candidates = list(home.glob("index.v*.db*")) + list(home.glob("index.db.vec*"))
+        # Every pack version except the one vectors.py currently names, plus
+        # every delta file of any version.
+        for path in home.glob("index.db.v*.vec*"):
+            name = path.name
+            version = name[len("index.db.v"):]
+            digits = version.split(".", 1)[0].split("-", 1)[0]
+            if digits.isdigit() and int(digits) == _pack_version():
+                if ".hot" not in name:
+                    continue
+            candidates.append(path)
+    except OSError:
+        return []
+    for path in candidates:
+        try:
+            if now - path.stat().st_mtime < config.sidecar_max_age:
+                continue
+            stale.append(path)
+        except OSError:
+            continue
+    return stale
+
+
+def _pack_version() -> int:
+    """vectors.PACK_VERSION, imported lazily so maintenance never pulls numpy."""
+    try:
+        from .vectors import PACK_VERSION
+
+        return int(PACK_VERSION)
+    except Exception:
+        return -1  # unknown: keep current-version packs, clean the rest
 
 
 def cleanup_stale_artifacts(home: Path) -> list[str]:
@@ -218,18 +342,27 @@ def cleanup_stale_artifacts(home: Path) -> list[str]:
             _rmtree(stale)
             done.append(f"removed old backup {stale.name}")
 
+    config = CleanupConfig.from_env()
     now = time.time()
     for part in _part_files(home):
         try:
-            if now - part.stat().st_mtime < _GRACE_SECONDS:
+            if now - part.stat().st_mtime < config.grace_seconds:
                 continue
             part.unlink()
             done.append(f"removed stale {part.name}")
         except OSError:
             continue
 
+    for sidecar in _stale_sidecars(home, config):
+        try:
+            size = sidecar.stat().st_size
+            sidecar.unlink()
+            done.append(f"removed stale sidecar {sidecar.name} ({_size(size)})")
+        except OSError:
+            continue
+
     live_pids: set[int] | None = None
-    for stage in _update_temp_dirs(home):
+    for stage in _update_temp_dirs():
         try:
             suffix = stage.name[len(_UPDATE_TEMP_PREFIX):]
             pid = int(suffix.split("-", 1)[0])
@@ -240,7 +373,7 @@ def cleanup_stale_artifacts(home: Path) -> list[str]:
         if pid is not None and pid in live_pids:
             continue  # some process may still be writing here
         try:
-            if now - stage.stat().st_mtime < _KEEP_TEMP_MAX_AGE:
+            if now - stage.stat().st_mtime < config.keep_temp_max_age:
                 continue
             _rmtree(stage)
             done.append(f"removed update temp {stage.name}")

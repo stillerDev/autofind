@@ -27,7 +27,6 @@ UI server picks up an index run without a restart.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import threading
 import time
@@ -43,10 +42,6 @@ from .store import char_mask
 # ranking wants anyway. The vectorised path never caps: its cost is a
 # searchsorted per query byte over the survivors, linear and small.
 HARD_CAP = 20_000
-
-# Guards against a pathological index (a whole drive at depth 20). Above this we
-# fall back to the SQL path instead of eating gigabytes.
-MAX_ENTRIES = 1_500_000
 
 # Bytes that make the character after them read as a word start. Stored as
 # plain bytes and turned into a numpy array at call time: a module-level
@@ -67,7 +62,7 @@ ALPHABET_FIRST = 0x20
 ALPHABET_CHARS = frozenset(chr(code) for code in range(0x20, 0x7F))
 # Bumped whenever the alpha table's byte range changes: a sidecar saved under
 # a different table must not be read by code whose column math assumes this one.
-ALPHA_VERSION = 2
+ALPHA_VERSION = 3  # v3: blobs carry the trailing NUL that closes the last record
 
 
 def subsequence_score(query: str, name: str) -> float | None:
@@ -180,11 +175,17 @@ class NameIndex:
                 )
             return starts
 
+        def joined_blob(parts: list[bytes]) -> bytes:
+            # `join` writes only count-1 separators; offsets budget count.
+            # The trailing NUL closes the final record so offsets[-1] is a
+            # valid end index instead of one past the buffer.
+            return b"\x00".join(parts) + (b"\x00" if parts else b"")
+
         # Lowered names: one byte buffer with NUL separators, so a literal-
         # substring query is a single C-level scan over contiguous memory
         # instead of 100k `in` tests in Python.
         encoded_lower = [name.encode("utf-8", "surrogatepass") for name in lowered]
-        self.blob = b"\x00".join(encoded_lower)
+        self.blob = joined_blob(encoded_lower)
         self.blob_array = np.frombuffer(self.blob, dtype=np.uint8)
         self.name_len = np.array([len(item) for item in encoded_lower], dtype=np.int32)
         # Char count for the skip penalty: the Python scorer measured len() in
@@ -195,7 +196,7 @@ class NameIndex:
         # Original-case names, own blob (lower() can change byte lengths, so
         # the lowered offsets are not reusable).
         encoded_names = [name.encode("utf-8", "surrogatepass") for name in names]
-        self.name_blob = b"\x00".join(encoded_names)
+        self.name_blob = joined_blob(encoded_names)
         self.name_blob_array = np.frombuffer(self.name_blob, dtype=np.uint8)
         self.name_offsets = joined_offsets([len(item) for item in encoded_names])
 
@@ -204,14 +205,14 @@ class NameIndex:
         # per-path `path.lower().startswith()` loop saw. Paths are the largest
         # string in the index — the reason the flat layout matters at 500k+.
         encoded_paths = [path.encode("utf-8", "surrogatepass") for path in paths]
-        self.path_blob = b"\x00".join(encoded_paths)
+        self.path_blob = joined_blob(encoded_paths)
         self.path_blob_array = np.frombuffer(self.path_blob, dtype=np.uint8)
         self.path_offsets = joined_offsets([len(item) for item in encoded_paths])
 
         encoded_paths_lower = [
             path.lower().encode("utf-8", "surrogatepass") for path in paths
         ]
-        self.path_lower_blob = b"\x00".join(encoded_paths_lower)
+        self.path_lower_blob = joined_blob(encoded_paths_lower)
         self.path_lower_array = np.frombuffer(self.path_lower_blob, dtype=np.uint8)
         self.path_lower_offsets = joined_offsets(
             [len(item) for item in encoded_paths_lower]
@@ -483,7 +484,73 @@ class NameIndex:
 
         taken = {position for position, _ in literal}
         rest = self._subsequence(needle, limit - len(literal), skip=taken)
-        return [(int(self.ids[position]), score) for position, score in literal] + rest
+        results = [(int(self.ids[position]), score) for position, score in literal] + rest
+
+        # A free-text query with several words is tokenised by other engines
+        # but used to be one opaque string here: `browser extension` never
+        # matched `BROWSER_EXTENSION.md` because the separator differed. Score
+        # names AND paths that contain every token, then merge with the usual
+        # fuzzy result so single-word ranking is untouched.
+        tokens = needle.split()
+        if 2 <= len(tokens) <= 6:
+            results = self._merge(results, self._all_tokens(tokens, limit), limit)
+        return results
+
+    def _merge(
+        self, first: list[tuple[int, float]], second: list[tuple[int, float]], limit: int
+    ) -> list[tuple[int, float]]:
+        """Keep the best score per file; stable on the original order."""
+        best: dict[int, float] = {}
+        for file_id, score in first + second:
+            if file_id not in best or score > best[file_id]:
+                best[file_id] = score
+        return sorted(best.items(), key=lambda item: -item[1])[:limit]
+
+    @staticmethod
+    def _literal_positions(buf, offsets, needle: str) -> set[int]:
+        """File positions whose record in `buf` contains `needle` verbatim.
+
+        One C-level regex scan over the joined blob plus one searchsorted per
+        hit; the same primitive the literal tier uses, reused for paths so a
+        folder token can satisfy one word of a multi-word query.
+        """
+        encoded = needle.encode("utf-8", "surrogatepass")
+        starts = np.fromiter(
+            (match.start() for match in re.finditer(re.escape(encoded), memoryview(buf))),
+            dtype=np.int64,
+        )
+        if not len(starts):
+            return set()
+        return set(
+            (np.searchsorted(offsets, starts, side="right") - 1).tolist()
+        )
+
+    def _all_tokens(self, tokens: Sequence[str], limit: int) -> list[tuple[int, float]]:
+        """Names/paths containing every token, ranked above single-token hits."""
+        name_hits: list[set[int]] = []
+        path_hits: list[set[int]] = []
+        matched: set[int] | None = None
+        for token in tokens:
+            if len(token) < 2:
+                return []
+            in_name = self._literal_positions(self.blob, self.offsets, token)
+            in_path = self._literal_positions(
+                self.path_lower_array, self.path_lower_offsets, token
+            )
+            name_hits.append(in_name)
+            path_hits.append(in_path)
+            union = in_name | in_path
+            matched = union if matched is None else matched & union
+            if not matched:
+                return []
+        scored: list[tuple[int, float]] = []
+        for position in matched:
+            score = 200.0 if all(position in hits for hits in name_hits) else 170.0
+            score += sum(6.0 for hits in name_hits if position in hits)
+            score += sum(2.0 for hits in path_hits if position in hits)
+            scored.append((int(self.ids[position]), score))
+        scored.sort(key=lambda item: -item[1])
+        return scored[:limit]
 
     def _literal(self, needle: str, limit: int) -> list[tuple[int, float]]:
         """Every name containing `needle`, ranked by the scorer's literal branch.
@@ -700,18 +767,21 @@ class NameIndex:
                 continue
             length = len(encoded)
             ok = lengths >= length
+            safe = len(self.path_lower_array) - 1
             for offset, byte in enumerate(encoded):
-                ok &= (
-                    self.path_lower_array[self.path_lower_offsets[:-1] + offset]
-                    == byte
-                )
+                # Short records would index into the next one (or one past the
+                # buffer for the last row); clip first, keep the `lengths` mask.
+                index = np.minimum(self.path_lower_offsets[:-1] + offset, safe)
+                ok &= self.path_lower_array[index] == byte
             if not ok.any():
                 continue
             has_next = lengths > length
             next_byte = np.zeros(count, dtype=np.uint8)
             if has_next.any():
                 index = self.path_lower_offsets[:-1] + length
-                next_byte[has_next] = self.path_lower_array[index[has_next]]
+                next_byte[has_next] = self.path_lower_array[
+                    np.minimum(index[has_next], safe)
+                ]
             ok &= (lengths == length) | np.isin(next_byte, separators)
             mask |= ok
         return np.nonzero(mask)[0]
@@ -743,8 +813,12 @@ class NameIndex:
         except UnicodeEncodeError:
             return []
         ok = self.name_len >= len(encoded)
+        safe = len(self.blob_array) - 1
         for offset, byte in enumerate(encoded):
-            ok &= self.blob_array[self.offsets[:-1] + offset] == byte
+            # Clip the index: a prefix longer than a short name must read the
+            # last byte harmlessly, never walk off the joined blob.
+            index = np.minimum(self.offsets[:-1] + offset, safe)
+            ok &= self.blob_array[index] == byte
             if not ok.any():
                 return []
         positions = np.nonzero(ok)[0]
@@ -833,15 +907,25 @@ def search_rows(store, text: str, limit: int = 50) -> list[tuple[int, float]]:
     mask = char_mask(needle)
     try:
         rows = store.conn.execute(
-            "SELECT id, name, char_mask FROM files"
+            "SELECT id, name, path, char_mask FROM files"
         ).fetchall()
     except Exception:
         return []
+    tokens = needle.split()
+    multi = 2 <= len(tokens) <= 6
     scored: list[tuple[float, int]] = []
     for row in rows:
-        if mask and (int(row[2] or 0) & mask) != mask:
+        if mask and (int(row[3] or 0) & mask) != mask:
             continue
-        score = _score(needle, str(row[1] or "").lower())
+        name = str(row[1] or "").lower()
+        score = _score(needle, name)
+        if multi and all(len(token) >= 2 for token in tokens):
+            path = str(row[2] or "").lower()
+            if all(token in name or token in path for token in tokens):
+                token_score = 200.0 if all(token in name for token in tokens) else 170.0
+                token_score += 6.0 * sum(token in name for token in tokens)
+                token_score += 2.0 * sum(token in path for token in tokens)
+                score = token_score if score is None else max(score, token_score)
         if score is not None:
             scored.append((score, int(row[0])))
     scored.sort(key=lambda item: item[0], reverse=True)

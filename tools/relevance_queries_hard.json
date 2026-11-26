@@ -1,0 +1,223 @@
+[
+ {
+  "query": "extension chess",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\chess-ai\\BROWSER_EXTENSION.md"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\chess-ai\\BROWSER_EXTENSION.md"
+ },
+ {
+  "query": "readme chess",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\chess-ai\\README.md"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\chess-ai\\README.md"
+ },
+ {
+  "query": "requirements chess",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\chess-ai\\requirements.txt"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\chess-ai\\requirements.txt"
+ },
+ {
+  "query": "analyzer chess",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\chess-ai\\run_analyzer.bat"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\chess-ai\\run_analyzer.bat"
+ },
+ {
+  "query": "requires blender",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\zstandard-0.25.0-py3.13.egg-info\\requires.txt",
+   "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\requires.txt"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-mcp-server\\blender_mcp.egg-info\\requires.txt"
+ },
+ {
+  "query": "global gridly",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\gridly\\gridly\\macos_global_overlay.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\gridly\\gridly\\macos_global_overlay.py"
+ },
+ {
+  "query": "titlebar gridly",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\gridly\\gridly\\macos_titlebar_wrap.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\gridly\\gridly\\macos_titlebar_wrap.py"
+ },
+ {
+  "query": "requirements gridly",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\gridly\\gridly\\requirements-macos.txt",
+   "C:\\Users\\h1ile\\Downloads\\gridly\\gridly\\requirements.txt"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\gridly\\gridly\\requirements-macos.txt"
+ },
+ {
+  "query": "readme oracul",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\oracul\\README.md"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\oracul\\README.md"
+ },
+ {
+  "query": "requirements oracul",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\oracul\\requirements.txt"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\oracul\\requirements.txt"
+ },
+ {
+  "query": "targets oracul",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\oracul\\targets.json"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\oracul\\targets.json"
+ },
+ {
+  "query": "global gridly1",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\gridly1\\macos_global_overlay.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\gridly1\\macos_global_overlay.py"
+ },
+ {
+  "query": "requirements gridly1",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\gridly1\\requirements-macos.txt",
+   "C:\\Users\\h1ile\\Downloads\\gridly1\\requirements.txt"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\gridly1\\requirements-macos.txt"
+ },
+ {
+  "query": "client xmlrpc",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\xmlrpc\\client.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\xmlrpc\\client.py"
+ },
+ {
+  "query": "server xmlrpc",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\xmlrpc\\server.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\xmlrpc\\server.py"
+ },
+ {
+  "query": "batch search",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\chess-ai\\src\\search\\batch_eval.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\chess-ai\\src\\search\\batch_eval.py"
+ },
+ {
+  "query": "cargo tauri",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\src-tauri\\Cargo.toml",
+   "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\Cargo.toml"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\Cargo.toml"
+ },
+ {
+  "query": "build tauri",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\src-tauri\\build.rs",
+   "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\build.rs"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\build.rs"
+ },
+ {
+  "query": "linux tauri",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\src-tauri\\tauri.onnxruntime.linux.conf.json",
+   "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\tauri.onnxruntime.linux.conf.json"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\tauri.onnxruntime.linux.conf.json"
+ },
+ {
+  "query": "macos tauri",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\src-tauri\\tauri.onnxruntime.macos.conf.json",
+   "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\tauri.onnxruntime.macos.conf.json"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\tauri.onnxruntime.macos.conf.json"
+ },
+ {
+  "query": "windows tauri",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\kensaku-latest\\src-tauri\\tauri.onnxruntime.windows.conf.json",
+   "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\tauri.onnxruntime.windows.conf.json"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\kensaku-src\\src-tauri\\tauri.onnxruntime.windows.conf.json"
+ },
+ {
+  "query": "level setuptools",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools-80.9.0.dist-info\\top_level.txt"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools-80.9.0.dist-info\\top_level.txt"
+ },
+ {
+  "query": "macos distutils",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\_macos_compat.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\_macos_compat.py"
+ },
+ {
+  "query": "modified distutils",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\_modified.py",
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\tests\\test_modified.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\_modified.py"
+ },
+ {
+  "query": "msvccompiler distutils",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\_msvccompiler.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\_msvccompiler.py"
+ },
+ {
+  "query": "archive distutils",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\archive_util.py",
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\tests\\test_archive_util.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\archive_util.py"
+ },
+ {
+  "query": "ccompiler distutils",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\ccompiler.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\ccompiler.py"
+ },
+ {
+  "query": "cygwinccompiler distutils",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\cygwinccompiler.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\cygwinccompiler.py"
+ },
+ {
+  "query": "debug distutils",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\debug.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\debug.py"
+ },
+ {
+  "query": "errors distutils",
+  "relevant": [
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\compilers\\C\\errors.py",
+   "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\errors.py"
+  ],
+  "target": "C:\\Users\\h1ile\\Downloads\\blender-5.3.0-beta+v53.72a9c18070f2-windows.amd64-release\\5.3\\python\\lib\\site-packages\\setuptools\\_distutils\\errors.py"
+ }
+]

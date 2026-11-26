@@ -8,6 +8,16 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from . import DEFAULT_PORT
+
+if TYPE_CHECKING:
+    from .config import IndexConfig
+    from .store import Store
+
+ROOTS_META_KEY = "index_roots"
+MAX_SERVER_RESPONSE_BYTES = 8 * (1 << 20)
 
 # The command modules are imported inside `main`/handlers: importing them here
 # would make every cold start pay for search/store machinery the command may
@@ -32,6 +42,48 @@ def get_visual_embedder(*args, **kwargs):
 # startup (doctor alone pulls the OCR stack) for machinery it never touches.
 
 BAR_WIDTH = 28
+
+
+def _path_root(path: str) -> str:
+    """The mount a file lives under, without the broken substr(path, 1, 3)."""
+    drive, tail = os.path.splitdrive(str(path))
+    if drive:
+        return drive + os.sep
+    parts = Path(tail).parts
+    return str(Path(parts[0])) if parts else str(path)
+
+
+def _record_roots(store, roots) -> None:
+    """Persist the folders actually indexed so `watch-status` can report them."""
+    try:
+        known = json.loads(store.get_meta(ROOTS_META_KEY) or "[]")
+        if not isinstance(known, list):
+            known = []
+    except (ValueError, TypeError):
+        known = []
+    merged = list(dict.fromkeys(
+        list(known) + [str(Path(root).expanduser()) for root in roots]
+    ))
+    try:
+        store.set_meta(ROOTS_META_KEY, json.dumps(merged, ensure_ascii=False))
+        store.commit()
+    except Exception:
+        pass  # roots are informational; never fail a build over their metadata
+
+
+def _default_backup_dir() -> Path:
+    """Desktop, whether it is local, OneDrive-redirected or localised."""
+    home = Path.home()
+    onedrive = os.environ.get("OneDrive")
+    if onedrive:
+        candidate = Path(onedrive) / "Desktop"
+        if candidate.is_dir():
+            return candidate
+    desktop = home / "Desktop"
+    if desktop.is_dir():
+        return desktop
+    localized = home / "Рабочий стол"  # common on Russian Windows
+    return localized if localized.is_dir() else desktop
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -99,20 +151,33 @@ def main(argv: list[str] | None = None) -> int:
     search_cmd.add_argument("--sort", default=None, choices=["best", "newest", "oldest", "largest", "name"])
     search_cmd.add_argument("--files", action="store_true", help="collapse results to one row per file")
     search_cmd.add_argument("--json", action="store_true", help="machine readable output")
-    search_cmd.add_argument("--embedder", default="auto", choices=["auto", "e5", "static", "hashing"])
+    # One-shot CLI searches must start fast: the static pack spends ~0.4 s
+    # parsing a 17 MB tokenizer on every process launch. The desktop/server
+    # path keeps `auto` (static-e5) and pays that cost once. `--embedder auto`
+    # restores the higher-quality text engine here when speed is not the point.
+    search_cmd.add_argument("--embedder", default="hashing", choices=["auto", "e5", "static", "hashing"])
+    search_cmd.add_argument("--local", action="store_true",
+                            help="search this process even when the app server is running")
 
     serve_cmd = sub.add_parser("serve", help="start the local web UI in a browser")
-    serve_cmd.add_argument("--port", type=int, default=8765)
+    serve_cmd.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve_cmd.add_argument("--no-browser", action="store_true")
 
     app_cmd = sub.add_parser("app", help="open the desktop window (tray + global hotkey)")
-    app_cmd.add_argument("--port", type=int, default=8765)
-    app_cmd.add_argument("--hotkey", default="ctrl+alt+space", help="show/hide key, e.g. ctrl+alt+space")
+    app_cmd.add_argument("--port", type=int, default=DEFAULT_PORT)
+    # No literal here: run_app() resolves hotkeys.json:focus when this is unset.
+    app_cmd.add_argument("--hotkey", default=None, help="show/hide key (default: hotkeys.json)")
     app_cmd.add_argument("--no-hotkey", action="store_true")
     app_cmd.add_argument("--no-tray", action="store_true")
     app_cmd.add_argument("--hidden", action="store_true", help="start in the tray")
     app_cmd.add_argument("--windowed", action="store_true", help="framed window instead of borderless")
     app_cmd.add_argument("--browser", action="store_true", help="use the browser even if a window is possible")
+
+    vault_cmd = sub.add_parser("vault", help="manage the paranoid-mode key")
+    vault_cmd.add_argument("action", choices=["status", "passphrase"])
+    vault_cmd.add_argument("--passphrase", default=None,
+                           help="passphrase for `vault passphrase` (or AUTOFIND_PASSPHRASE)")
+    vault_cmd.add_argument("--json", action="store_true")
     app_cmd.add_argument("--debug", action="store_true")
 
     seal_cmd = sub.add_parser(
@@ -135,6 +200,13 @@ def main(argv: list[str] | None = None) -> int:
 
     backup_cmd = sub.add_parser("backup", help="pack the index and sidecars into a timestamped ZIP")
     backup_cmd.add_argument("--to", dest="to_dir", default=None, help="target directory (default: the desktop)")
+
+    restore_cmd = sub.add_parser("restore", help="unpack a verified backup into AUTOFIND_HOME")
+    restore_cmd.add_argument("--from", dest="archive", required=True,
+                             help="the .zip written by `autofind backup`")
+    restore_cmd.add_argument("--force", action="store_true",
+                             help="replace an existing index (kept under import-backup/)")
+    restore_cmd.add_argument("--json", action="store_true")
 
     share_cmd = sub.add_parser("share", help="copy the results of a query as markdown to the clipboard")
     share_cmd.add_argument("query")
@@ -170,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     verify_cmd = sub.add_parser("verify", help="compare the index against disk: missing, changed, extra")
     verify_cmd.add_argument("--prune", action="store_true", help="drop missing paths from the index")
 
+    sub.add_parser("compact", help="checkpoint the WAL and VACUUM the index file")
+
     update_cmd = sub.add_parser("update", help="check GitHub for a newer release and install it")
     update_cmd.add_argument("--check", action="store_true",
                             help="only check for an update, do not install")
@@ -189,6 +263,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mcp", help="MCP server over stdio for AI agents (read-only)")
     sub.add_parser("cheat", help="print the query grammar")
 
+    model_cmd = sub.add_parser("model", help="download or check pinned model packs")
+    model_cmd.add_argument("action", nargs="?", default="status",
+                           choices=["download", "status"])
+    model_cmd.add_argument("pack", nargs="?", default="e5",
+                           help="pack name (default: e5; see core.models.PACKS)")
+
     big_cmd = sub.add_parser("big", help="largest files in the index")
     big_cmd.add_argument("min_mb", nargs="?", type=float, default=10.0)
     big_cmd.add_argument("--limit", type=int, default=50)
@@ -206,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     dead_cmd = sub.add_parser("dead", help="indexed paths that no longer exist")
     dead_cmd.add_argument("--prune", action="store_true",
                           help="remove dead paths from the index, not just list them")
+    dead_cmd.add_argument("--limit", type=int, default=100000)
     dead_cmd.add_argument("--json", action="store_true")
 
     top_cmd = sub.add_parser("top", help="files you open the most")
@@ -259,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         "--transport", default="stdio", choices=["stdio", "http"],
         help="stdio launches the process per client; http uses the running app",
     )
-    connect_cmd.add_argument("--port", type=int, default=8765, help="port for the http transport")
+    connect_cmd.add_argument("--port", type=int, default=DEFAULT_PORT, help="port for the http transport")
     connect_cmd.add_argument("--write", action="store_true", help="actually edit the files")
     connect_cmd.add_argument("--json", action="store_true")
 
@@ -290,6 +371,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_privacy(args, config, db_path)
     if args.command == "ocr":
         return _cmd_ocr(args, config)
+    if args.command == "model":
+        return _cmd_model(args, config)
     if args.command == "mcp":
         from .mcp import serve as serve_mcp
 
@@ -307,6 +390,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_app(args, config, db_path)
     if args.command == "seal":
         return _cmd_seal(args, config, db_path)
+    if args.command == "vault":
+        return _cmd_vault(args, config)
     if args.command == "export":
         return _cmd_export(args, config, db_path)
     if args.command == "uninstall":
@@ -315,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_finder(args, config, db_path)
     if args.command == "backup":
         return _cmd_backup(args, config, db_path)
+    if args.command == "restore":
+        return _cmd_restore(args, config)
     if args.command == "share":
         return _cmd_share(args, config, db_path)
     if args.command == "open":
@@ -332,7 +419,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "config":
         return _cmd_config(args, config)
     if args.command == "compact":
-        from .store import Store
         if not db_path.exists():
             print(f"no index at {db_path}", file=sys.stderr)
             return 2
@@ -359,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
         return module.main()
 
     if args.command == "update":
-        from .updater import check_update, download_update, apply_update, UpdateError, current_version, parse_version
+        from .updater import check_update, download_update, apply_update, UpdateError, current_version
         if args.check:
             info = check_update()
             if info:
@@ -374,8 +460,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(f"downloading v{info['version']} ({info.get('name', 'update')})...")
         try:
-            staged = download_update(info["url"], info.get("size", 0))
-            apply_update(staged)
+            # Both checks live inside the updater behind `if expected_sha256`;
+            # without forwarding the hash from check_update() they are dead.
+            sha256 = info.get("sha256")
+            staged = download_update(info["url"], info.get("size", 0), sha256)
+            apply_update(staged, expected_sha256=sha256)
             print("update installed — restarting")
         except (UpdateError, OSError) as exc:
             print(f"update failed: {exc}", file=sys.stderr)
@@ -483,6 +572,24 @@ def _cmd_autostart(args) -> int:
     return 0
 
 
+def _shell_binary() -> "Path | None":
+    """The native WebView2 shell, when it has been built for this layout."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    name = "autofind-shell.exe" if os.name == "nt" else "autofind-shell"
+    if getattr(_sys, "frozen", False):
+        meipass = getattr(_sys, "_MEIPASS", None)
+        candidates = []
+        if meipass:
+            candidates.append(_Path(meipass) / name)
+        candidates.append(_Path(_sys.executable).resolve().parent / name)
+    else:
+        candidates = [_Path(__file__).resolve().parent.parent
+                      / "shell-app" / "target" / "release" / name]
+    return next((c for c in candidates if c.is_file()), None)
+
+
 def _cmd_app(args, config: IndexConfig, db_path: Path) -> int:
     from .app import open_app
 
@@ -492,16 +599,44 @@ def _cmd_app(args, config: IndexConfig, db_path: Path) -> int:
 
         serve(db_path, config, port=args.port, open_browser=True)
         return 0
-    code = open_app(
-        db_path=db_path,
-        config=config,
-        port=args.port,
-        hotkey=None if args.no_hotkey else args.hotkey,
-        tray=not args.no_tray,
-        start_hidden=args.hidden,
-        borderless=not args.windowed,
-        debug=args.debug,
-    )
+    # The Rust shell shows the window in tens of milliseconds (window first,
+    # WebView2 after the backend answers) and stays resident like the kensaku
+    # tray app. It has no tray icon or global hotkey of its own, so it only
+    # replaces the pywebview path when neither was requested; pywebview stays
+    # the fallback whenever the binary is missing.
+    shell = _shell_binary() if (args.no_tray and args.no_hotkey) else None
+    if shell is not None:
+        import os
+        import subprocess
+        import sys
+
+        env = os.environ.copy()
+        env["PYTHON"] = sys.executable
+        env["AUTOFIND_HOME"] = str(config.home)
+        if getattr(sys, "frozen", False):
+            env["AUTOFIND_FROZEN"] = "1"
+        env["AUTOFIND_PORT"] = str(args.port)
+        subprocess.Popen(
+            [str(shell)],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return 0
+    app_kwargs: dict = {
+        "db_path": db_path,
+        "config": config,
+        "port": args.port,
+        "tray": not args.no_tray,
+        "start_hidden": args.hidden,
+        "borderless": not args.windowed,
+        "debug": args.debug,
+    }
+    if args.no_hotkey:
+        app_kwargs["hotkey"] = None           # explicitly disabled
+    elif args.hotkey:
+        app_kwargs["hotkey"] = args.hotkey    # explicit override
+    # Omitted otherwise: run_app reads the configured chord from hotkeys.json.
+    code = open_app(**app_kwargs)
     if code != 0:
         # No window available: the UI still has to open somehow.
         from .api import serve
@@ -513,6 +648,9 @@ def _cmd_app(args, config: IndexConfig, db_path: Path) -> int:
 
 
 def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
+    # A rebuild recreates every row; per-commit fsync only slows the crawl.
+    # The index can be regenerated, so WAL durability is not needed here.
+    os.environ.setdefault("AUTOFIND_FAST_INDEX", "1")
     from .indexer import run_index
     from .ocr import engine_report
     from .store import Store
@@ -539,6 +677,7 @@ def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
         )
         elapsed = time.perf_counter() - started
     finally:
+        _record_roots(store, args.roots)
         store.close()
 
     print()
@@ -561,12 +700,113 @@ def _cmd_index(args, config: IndexConfig, db_path: Path) -> int:
         for path, reason in stats.sensitive_examples[:3]:
             print(f"  · {path}  ({reason})")
     print(f"time           {elapsed:.1f}s  ({stats.files_per_second:.1f} files/s)")
+    if os.environ.get("AUTOFIND_SHOW_TIMINGS"):
+        timings = " ".join(
+            f"{key}={value:.2f}s" for key, value in sorted(stats.timings.items())
+        )
+        if timings:
+            print(f"timings        {timings}")
     for path, error in stats.errors[:5]:
         print(f"  ! {path}: {error}", file=sys.stderr)
     return 0
 
 
+def _server_search(config: IndexConfig, db_path: Path, args) -> dict | None:
+    """Ask the running app server to search instead of opening the index here.
+
+    Kensaku's cold CLI number comes from the same shape: their binary talks to
+    a warm daemon. The app writes its port to `<home>/app.port` while it runs;
+    one cheap HTTP GET with a hard deadline answers in single-digit
+    milliseconds from a warm server, which beats every millisecond of local
+    index loading (the sealed BM25 sidecar alone costs ~450 ms to decrypt).
+    Any failure — no port file, dead server, wrong index, timeout — falls
+    through to the local path without a word.
+    """
+    if getattr(args, "local", False):
+        return None
+    try:
+        if db_path.resolve() != config.db_path.resolve():
+            return None  # a custom --db is not what the server is serving
+    except OSError:
+        return None
+    port = _read_app_port(config.home)
+    if not port:
+        return None
+    query = " ".join(args.query)
+    from urllib.parse import urlencode
+
+    from urllib.request import urlopen
+
+    params = {"q": query, "limit": str(max(args.limit, 1)), "offset": str(args.offset)}
+    if args.sort:
+        params["sort"] = args.sort
+    if args.kind:
+        params["kind"] = args.kind
+    url = f"http://127.0.0.1:{port}/api/search?{urlencode(params)}"
+    try:
+        with urlopen(url, timeout=3) as response:
+            # A bad/miswired server must not be able to make the CLI buffer an
+            # unbounded body into RAM; the local index remains the fallback.
+            payload = json.loads(response.read(MAX_SERVER_RESPONSE_BYTES).decode("utf-8"))
+    except Exception:
+        return None
+    hits = payload.get("hits")
+    if hits is None or (not hits and payload.get("ms", 0) and payload.get("total")):
+        # an answer that clearly did not come from the search route
+        return None
+    return payload
+
+
+def _read_app_port(home: Path) -> int | None:
+    try:
+        return int((home / "app.port").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _print_search_payload(payload: dict, args) -> int:
+    """Format a server payload exactly like the local path prints its page."""
+    query = payload.get("query", "")
+    elapsed_ms = payload.get("ms", 0)
+    total = payload.get("total", 0)
+    approx = bool(payload.get("approx"))
+    hits = payload.get("hits", [])
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    if not hits:
+        print(f"nothing found for «{query}» ({elapsed_ms:.0f} ms)")
+        return 1
+    chips = "  ".join(f"[{chip['label']}]" for chip in payload.get("chips") or [])
+    header = (
+        f"{len(hits)} of {'≈' if approx else ''}{total} in {elapsed_ms:.0f} ms — «{query}»"
+    )
+    print(header)
+    if chips:
+        print(chips)
+    print()
+    if args.files:
+        for position, hit in enumerate(hits, start=1):
+            print(f"{position:2}. {hit.get('score', 0):.4f}  {hit.get('path', '')}")
+        return 0
+    for position, hit in enumerate(hits, start=1):
+        name = hit.get("path", "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        channels = "+".join(hit.get("channels") or [])
+        print(f"{position:2}. {hit.get('score', 0):.4f}  [{channels}]  {name}")
+        print(f"    {hit.get('path', '')}")
+        if hit.get("snippet"):
+            print(f"    {hit['snippet']}")
+        print()
+    return 0
+
+
 def _cmd_search(args, config: IndexConfig, db_path: Path) -> int:
+    # The running server answers in ~5 ms from a warm index; everything that
+    # can go wrong with the delegation falls through to the local path below.
+    served = _server_search(config, db_path, args)
+    if served is not None:
+        return _print_search_payload(served, args)
+
     from .personal import expand_aliases
     from .query import understand
     from .search import search_page
@@ -819,7 +1059,29 @@ def _cmd_ocr(args, config: IndexConfig) -> int:
 
     if args.action == "download":
         target = args.target or "all"
+        if target == "indra":
+            # The accurate tier is its own pinned pack with its own downloader;
+            # it is not a rapidocr script model.
+            from .ocr import indra
+
+            def _progress(name: str, done: int, total: int) -> None:
+                if total:
+                    sys.stderr.write(f"\r  {name:<14} {done / 1048576:7.1f} / {total / 1048576:7.1f} MB")
+                    if done == total:
+                        sys.stderr.write("\n")
+                sys.stderr.flush()
+
+            try:
+                directory = indra.download_pack(progress=_progress)
+            except RuntimeError as exc:
+                print(f"download failed: {exc}", file=sys.stderr)
+                return 1
+            problem = indra.verify_pack()
+            print(f"indra ready in {directory}" + (f" ({problem})" if problem else ""))
+            return 0 if problem is None else 1
         models = list(ocr_languages.MODELS) if target in ("all", "*") else [target]
+        if "indra" in models:
+            models.remove("indra")  # not a rapidocr model; download it explicitly
         failed = 0
         for model in models:
             if model in ("multi",):
@@ -840,12 +1102,51 @@ def _cmd_ocr(args, config: IndexConfig) -> int:
         print("usage: autofind ocr read <image> [--lang korean]", file=sys.stderr)
         return 2
     preferred = f"rapidocr:{args.lang}" if getattr(args, "lang", None) else None
-    result = ocr_image(args.target, config.ocr_languages, preferred)
+    # Match the indexer's OCR settings so `autofind ocr read` reads a screenshot
+    # exactly the way indexing did (CJK fallback and its model/keys included).
+    result = ocr_image(
+        args.target, config.ocr_languages, preferred,
+        cjk=config.ocr_cjk,
+        cjk_model=config.ocr_cjk_model,
+        cjk_keys=config.ocr_cjk_keys,
+    )
     if args.json:
         print(json.dumps({"engine": result.engine, "text": result.text}, ensure_ascii=False, indent=2))
     else:
         print(f"[{result.engine}]")
         print(result.text)
+    return 0
+
+
+def _cmd_model(args, config: IndexConfig) -> int:
+    """Download or inspect a pinned model pack (README: `autofind model download e5`)."""
+    from . import models as model_packs
+
+    if args.pack not in model_packs.PACKS:
+        print(f"unknown pack: {args.pack}. available: {', '.join(model_packs.PACKS)}",
+              file=sys.stderr)
+        return 2
+    status = model_packs.pack_status(args.pack)
+    if args.action == "status":
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        return 0 if status["available"] else 1
+    if status["available"]:
+        print(f"{args.pack} is already in place: {status['pack_dir']}")
+        return 0
+
+    def progress(name: str, done: int, total: int) -> None:
+        if total:
+            sys.stderr.write(f"\r  {name:<18} {done / 1048576:7.1f} / {total / 1048576:7.1f} MB")
+            if done == total:
+                sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    try:
+        directory = model_packs.download_pack(args.pack, progress=progress)
+    except RuntimeError as exc:
+        print(f"download failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"{args.pack} ready in {directory}")
     return 0
 
 
@@ -988,14 +1289,34 @@ def _cmd_backup(args, config: IndexConfig, db_path: Path) -> int:
     if not db_path.exists():
         print(f"no index at {db_path}", file=sys.stderr)
         return 2
-    target_dir = Path(args.to_dir) if args.to_dir else (
-        Path.home() / "Desktop")
+    target_dir = Path(args.to_dir) if args.to_dir else _default_backup_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     archive = target_dir / f"autofind-backup-{stamp}.zip"
     manifest = export_index(db_path, archive)
     print(f"backup: {archive}")
     print(f"  files in archive: {len(manifest['entries'])}")
+    return 0
+
+
+def _cmd_restore(args, config: "IndexConfig") -> int:
+    """Restore a backup with the same verified path the API/transfer layer uses."""
+    from .transfer import import_index, import_status
+
+    archive = Path(args.archive).expanduser()
+    if not archive.is_file():
+        print(f"no archive at {archive}", file=sys.stderr)
+        return 2
+    try:
+        manifest = import_index(archive, config.home, force=bool(args.force))
+    except (ValueError, FileExistsError, OSError) as exc:
+        print(f"restore failed: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(manifest, ensure_ascii=False))
+    else:
+        print(import_status(manifest))
+        print(f"index home: {config.home}")
     return 0
 
 
@@ -1127,9 +1448,19 @@ def _cmd_watch_status(args, config: IndexConfig, db_path: Path) -> int:
         return 2
     store = _open_store(config, db_path)
     try:
-        roots = [row[0] for row in store.conn.execute(
-            "SELECT DISTINCT substr(path, 1, 3) FROM files"
-        ).fetchall()]
+        try:
+            roots = json.loads(store.get_meta(ROOTS_META_KEY) or "[]")
+            if not isinstance(roots, list):
+                roots = []
+        except (ValueError, TypeError):
+            roots = []
+        if not roots:
+            # Legacy index that predates the roots metadata: report real
+            # mount prefixes instead of `substr(path,1,3)` (always "C:\\" on
+            # Windows, a broken "/ho" fragment on POSIX).
+            roots = sorted({
+                _path_root(row[0]) for row in store.conn.execute("SELECT path FROM files")
+            })
     finally:
         store.close()
     # The watcher keeps a lock file with its pid while it runs.
@@ -1174,8 +1505,11 @@ def _cmd_changelog(args) -> int:
     for name in ("WHATSNEW.TXT", "CHANGELOG.md"):
         path = Path(__file__).resolve().parent.parent / name
         if path.exists():
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-            print("\n".join(lines[:args.lines]))
+            from itertools import islice
+
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = list(islice(fh, max(0, args.lines)))
+            print("\n".join(line.rstrip("\n") for line in lines))
             return 0
     print("no changelog file in this build")
     return 0
@@ -1228,7 +1562,7 @@ def _cmd_finder(args, config: IndexConfig, db_path: Path) -> int:
         elif args.command == "dupes":
             rows = finders.duplicates(store.conn, limit=args.limit)
         elif args.command == "dead":
-            rows = finders.dead_paths(store.conn)
+            rows = finders.dead_paths(store.conn, limit=max(1, args.limit))
             if args.prune and rows:
                 removed = finders.prune_dead(store, rows)
                 print(f"pruned {removed} dead paths")
@@ -1272,11 +1606,14 @@ def _cmd_verify(args, config: IndexConfig, db_path: Path) -> int:
             except OSError:
                 missing.append((int(row["id"]), row["path"]))
                 continue
-            if st.st_size != int(row["size"] or 0):
+            # The indexer treats a file as changed on size *or* mtime; verify
+            # has to use the same rule or it silently misses edited files.
+            if (st.st_size != int(row["size"] or 0)
+                    or abs(st.st_mtime - float(row["mtime"] or 0)) >= 1e-6):
                 changed += 1
         for _, path in missing:
             print(f"  missing: {path}")
-        print(f"checked {len(rows)}: {len(missing)} missing, {changed} size-changed")
+        print(f"checked {len(rows)}: {len(missing)} missing, {changed} changed")
         if args.prune and missing:
             found = [finders.Found(path=path, name="", kind="", size=0, mtime=0)
                      for _, path in missing]
@@ -1350,7 +1687,6 @@ def _cmd_saved(args, config: IndexConfig, db_path: Path) -> int:
     try:
         if args.drop:
             gone = drop(store, args.drop)
-            store.close()
             if args.json:
                 print(json.dumps({"dropped": gone}))
             else:
@@ -1358,18 +1694,17 @@ def _cmd_saved(args, config: IndexConfig, db_path: Path) -> int:
             return 0 if gone else 1
         if args.query:
             item = save(store, " ".join(args.query), args.label)
-            store.close()
             if args.json:
                 print(json.dumps(item, ensure_ascii=False))
             else:
                 print(f"saved #{item['id']}: {item['query']}")
             return 0
         rows = store.saved_searches()
-        store.close()
     except ValueError as exc:
-        store.close()
         print(str(exc), file=sys.stderr)
         return 1
+    finally:
+        store.close()  # one close for every branch, including exceptions
     if args.json:
         print(json.dumps(
             [{"id": int(row["id"]), "query": row["query"], "label": row["label"],
@@ -1396,7 +1731,6 @@ def _cmd_alias(args, config: IndexConfig, db_path: Path) -> int:
     try:
         if args.drop:
             gone = forget(store, args.drop)
-            store.close()
             if args.json:
                 print(json.dumps({"dropped": gone}))
             else:
@@ -1404,18 +1738,17 @@ def _cmd_alias(args, config: IndexConfig, db_path: Path) -> int:
             return 0 if gone else 1
         if args.alias and args.expand:
             item = teach(store, args.alias, args.expand)
-            store.close()
             if args.json:
                 print(json.dumps(item, ensure_ascii=False))
             else:
                 print(f"{item['alias']} → {item['expand']}")
             return 0
         table = store.aliases()
-        store.close()
     except ValueError as exc:
-        store.close()
         print(str(exc), file=sys.stderr)
         return 1
+    finally:
+        store.close()  # one close for every branch, including exceptions
     if args.json:
         print(json.dumps(table, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
@@ -1514,16 +1847,54 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
+def _cmd_vault(args, config: IndexConfig) -> int:
+    """Inspect the key, or enable the portable passphrase-wrapped vault."""
+    from . import vault as vault_mod
+
+    mode = vault_mod.key_mode(config.home)
+    if args.action == "status":
+        data = {"mode": mode, "key": str(vault_mod.key_path(config.home)),
+                "present": bool(mode)}
+        if args.json:
+            print(json.dumps(data, ensure_ascii=False))
+        else:
+            print(f"key mode     {mode or 'not configured'}")
+            print(f"key file     {data['key']} ({'present' if mode else 'missing'})")
+        return 0 if mode else 1
+
+    secret = args.passphrase or os.environ.get(vault_mod.PASSPHRASE_ENV)
+    if not secret:
+        try:
+            import getpass
+
+            secret = getpass.getpass("vault passphrase (>= 8 characters): ")
+        except (EOFError, OSError):
+            print("no passphrase supplied", file=sys.stderr)
+            return 2
+    try:
+        vault_mod.enable_passphrase(config.home, secret)
+    except vault_mod.VaultError as exc:
+        print(f"cannot set passphrase: {exc}", file=sys.stderr)
+        return 1
+    print(f"portable vault enabled at {vault_mod.key_path(config.home)}")
+    return 0
+
+
 def _cmd_seal(args, config: IndexConfig, db_path: Path) -> int:
     """Paranoid mode: encrypt (or decrypt) every content blob in the index."""
     from . import vault as vault_mod
     from .store import Store
 
+    # The embedder name must match what the index was built with, or
+    # Store._check_embedder refuses to open it — sealing is orthogonal to the
+    # embedder, so ask the index which one it holds.
+    embedder = get_embedder("auto", config.model_dir)
+
     action = args.action
     if action == "status":
         sealed = False
         try:
-            store = Store(db_path, "hashing-384", 384, readonly=True)
+            store = Store(db_path, embedder.name, embedder.dim, readonly=True)
             sealed = store.sealed
             store.close()
         except Exception as exc:
@@ -1543,11 +1914,12 @@ def _cmd_seal(args, config: IndexConfig, db_path: Path) -> int:
 
     if action == "on":
         try:
-            vault = vault_mod.enable(config.home)
+            vault_mod.enable(config.home)
         except vault_mod.VaultError as exc:
             print(f"cannot enable paranoid mode: {exc}", file=sys.stderr)
             return 1
-        store = Store(db_path, "hashing-384", 384, readonly=False, vector_backend="pack")
+        store = Store(db_path, embedder.name, embedder.dim, readonly=False,
+                      vector_backend=config.vector_backend)
         try:
             t0 = time.perf_counter()
             store.seal_index()
@@ -1565,7 +1937,8 @@ def _cmd_seal(args, config: IndexConfig, db_path: Path) -> int:
         except vault_mod.VaultError as exc:
             print(f"cannot decrypt: {exc}", file=sys.stderr)
             return 1
-        store = Store(db_path, "hashing-384", 384, readonly=False, vector_backend="pack")
+        store = Store(db_path, embedder.name, embedder.dim, readonly=False,
+                      vector_backend=config.vector_backend)
         try:
             t0 = time.perf_counter()
             store.unseal_index()
@@ -1670,7 +2043,9 @@ def _cmd_uninstall(args, config: IndexConfig) -> int:
         print("nothing to remove")
         return 0
 
-    if getattr(args, "yes", False):
+    # `--confirm` is the parser's flag; the raw `yes` attribute stays accepted
+    # because tests and older callers pass it directly.
+    if getattr(args, "confirm", False) or getattr(args, "yes", False):
         import shutil
         try:
             shutil.rmtree(home)

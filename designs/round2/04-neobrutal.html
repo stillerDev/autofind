@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — 04 Neo-Brutalist Poster</title>
+<!-- Style 04: neo-brutalist poster. Structure: giant type header block, thick
+     ink borders, hard offset shadows (no blur), ruled table body, black footer
+     rail. Canonical paper/ink/marker palette stated as the style's identity. -->
+<style>
+  :root{--paper:#f5f0e8;--ink:#141414;--mark:#ffd23f;--red:#e4572e;--white:#fffdf8}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{background:var(--paper);color:var(--ink);font:15px/1.4 "Segoe UI",system-ui,sans-serif}
+  .page{height:100%;display:flex;flex-direction:column}
+  /* poster header */
+  .hero{padding:34px 56px 26px;border-bottom:3px solid var(--ink);display:flex;align-items:flex-end;gap:26px}
+  .logo{font:900 66px/0.92 "Segoe UI Black","Segoe UI",sans-serif;letter-spacing:-.03em;text-transform:uppercase}
+  .logo span{display:block;font-size:15px;font-weight:700;letter-spacing:.28em;margin-bottom:10px}
+  .stamp{margin-left:auto;background:var(--red);color:var(--white);font-weight:800;font-size:13px;
+         letter-spacing:.1em;padding:10px 16px;border:3px solid var(--ink);box-shadow:5px 5px 0 var(--ink);
+         transform:rotate(2deg)}
+  /* search strip */
+  .strip{padding:22px 56px;border-bottom:3px solid var(--ink);background:var(--white)}
+  .field{display:flex;align-items:center;gap:14px;border:3px solid var(--ink);background:var(--white);
+         padding:14px 18px;box-shadow:7px 7px 0 var(--ink)}
+  .field .mark-q{background:linear-gradient(transparent 42%, var(--mark) 42% 88%, transparent 88%);
+         font:800 30px/1.2 "Segoe UI Black","Segoe UI",sans-serif;letter-spacing:-.01em}
+  .caret{width:3px;height:30px;background:var(--ink)}
+  .find-btn{margin-left:auto;background:var(--ink);color:var(--white);font-weight:800;font-size:15px;
+            letter-spacing:.06em;padding:12px 22px;border:3px solid var(--ink)}
+  .chips{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+  .chip{font-weight:700;font-size:13px;padding:7px 14px;border:2.5px solid var(--ink);background:var(--white);
+        box-shadow:3px 3px 0 var(--ink)}
+  .chip.on{background:var(--mark)}
+  /* ruled results */
+  .tbl{flex:1;overflow:hidden;padding:0 56px}
+  .tr{display:flex;align-items:center;gap:16px;padding:11px 10px;border-bottom:2.5px solid var(--ink)}
+  .tr.head{font-size:12px;font-weight:800;letter-spacing:.12em;border-bottom-width:3px;padding-top:16px}
+  .tr.sel{background:var(--mark);box-shadow:inset 4px 0 0 var(--ink)}
+  .type{flex:none;width:52px;height:26px;border:2.5px solid var(--ink);display:flex;align-items:center;justify-content:center;
+        font-weight:900;font-size:11px;letter-spacing:.05em;background:var(--white)}
+  .nm{flex:1;font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pth{flex:1.2;font-size:12.5px;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .badge{font-size:11px;font-weight:900;background:var(--red);color:var(--white);border:2.5px solid var(--ink);
+         padding:2px 8px;margin-left:8px}
+  .sz,.dt{flex:none;width:86px;font-weight:700;font-size:13px}
+  .dt{text-align:right}
+  .foot{background:var(--ink);color:var(--paper);display:flex;align-items:center;gap:30px;padding:16px 56px;
+        font-size:13px;font-weight:700;letter-spacing:.03em}
+  .foot b{background:var(--paper);color:var(--ink);padding:2px 8px;font-weight:900;margin-right:6px}
+  .foot .cnt{margin-left:auto;color:var(--mark)}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="hero">
+    <div class="logo"><span>Локальный поиск · файлы · скриншоты · OCR</span>Auto­Find</div>
+    <div class="stamp">128 430 ФАЙЛОВ<br>В ИНДЕКСЕ</div>
+  </div>
+
+  <div class="strip">
+    <div class="field">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <span class="mark-q">смета март</span><span class="caret"></span>
+      <span class="find-btn">НАЙТИ →</span>
+    </div>
+    <div class="chips">
+      <span class="chip on">ВСЁ</span><span class="chip">ДОКУМЕНТЫ</span><span class="chip">КОД</span>
+      <span class="chip">PDF</span><span class="chip">СКРИНШОТЫ</span><span class="chip">ПОЧТА</span><span class="chip">АРХИВЫ</span>
+    </div>
+  </div>
+
+  <div class="tbl">
+    <div class="tr head"><span class="type" style="border:none;background:none">ТИП</span><span>ИМЯ</span><span>ПУТЬ · ФРАГМЕНТ</span><span class="sz">РАЗМЕР</span><span class="dt">ДАТА</span></div>
+    <div class="tr sel">
+      <span class="type">PDF</span>
+      <span class="nm">Смета_ремонта_март_2026.pdf</span>
+      <span class="pth">D:\Документы\Сметы · «смета за март: итог 214 500 ₽»</span>
+      <span class="sz">2.4 МБ</span><span class="dt">12 НОЯ</span>
+    </div>
+    <div class="tr">
+      <span class="type">DOC</span>
+      <span class="nm">смета за март.docx</span>
+      <span class="pth">D:\Документы</span>
+      <span class="sz">184 КБ</span><span class="dt">10 НОЯ</span>
+    </div>
+    <div class="tr">
+      <span class="type">PNG</span>
+      <span class="nm">скриншот 2026-03-28 14-02.png<span class="badge">OCR</span></span>
+      <span class="pth">Desktop · «Смета за март — итог 214 500 ₽»</span>
+      <span class="sz">1.1 МБ</span><span class="dt">28 МАР</span>
+    </div>
+    <div class="tr">
+      <span class="type">XLS</span>
+      <span class="nm">Прайс_Март.xlsx</span>
+      <span class="pth">D:\Документы\Прайсы</span>
+      <span class="sz">96 КБ</span><span class="dt">8 НОЯ</span>
+    </div>
+    <div class="tr">
+      <span class="type">PY</span>
+      <span class="nm">budget_march.py</span>
+      <span class="pth">D:\Код\autofind</span>
+      <span class="sz">12 КБ</span><span class="dt">5 НОЯ</span>
+    </div>
+    <div class="tr">
+      <span class="type">EML</span>
+      <span class="nm">Март_отчёт.eml</span>
+      <span class="pth">Архив почты</span>
+      <span class="sz">42 КБ</span><span class="dt">1 НОЯ</span>
+    </div>
+    <div class="tr">
+      <span class="type">PDF</span>
+      <span class="nm">смета-март.pdf</span>
+      <span class="pth">D:\Архив\2025</span>
+      <span class="sz">2.2 МБ</span><span class="dt">2 АПР</span>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span><b>ENTER</b>ОТКРЫТЬ</span><span><b>SPACE</b>ПРОСМОТР</span><span><b>↑↓</b>ВЫБОР</span>
+    <span><b>CTRL+K</b>ФИЛЬТР</span>
+    <span class="cnt">7 РЕЗУЛЬТАТОВ · 18 МС</span>
+  </div>
+</div>
+</body>
+</html>

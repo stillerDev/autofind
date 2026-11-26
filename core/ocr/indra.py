@@ -38,10 +38,9 @@ import hashlib
 import json
 import math
 import os
-import tempfile
 import threading
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -315,6 +314,57 @@ class LineBox:
 
 OUT_STRIDE = 2.0
 CORE_X_SHRINK = 0.15
+# The detector's core channel is a probability, not an unbounded logit. At 0.0
+# noise pixels become "lines", count explodes and a blank page reads as CJK.
+# Keep this in step with the documented `p > 0.5` contract in decode_lines.
+CORE_THRESHOLD = 0.5
+
+
+def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
+    """4-neighbour connected-component labelling of a boolean mask.
+
+    Labels are 1..count, 0 is background — the same contract
+    `scipy.ndimage.label` used to serve. OpenCV is the fast path (it is already
+    a dependency through rapidocr); a bounded pure-Python flood fill stands in
+    when cv2 is missing, so the engine degrades slowly instead of failing on
+    every page.
+    """
+    try:
+        import cv2
+
+        count, labels = cv2.connectedComponents(
+            mask.astype(np.uint8), connectivity=4
+        )
+        return labels, int(count) - 1  # cv2 labels the background 0
+    except ImportError:
+        pass
+    labels = np.zeros(mask.shape, dtype=np.int32)
+    count = 0
+    height, width = mask.shape
+    for start_row in range(height):
+        row = mask[start_row]
+        for start_col in np.flatnonzero(row):
+            start_col = int(start_col)
+            if labels[start_row, start_col]:
+                continue
+            count += 1
+            stack = [(start_row, start_col)]
+            labels[start_row, start_col] = count
+            while stack:
+                r, c = stack.pop()
+                if r > 0 and mask[r - 1, c] and not labels[r - 1, c]:
+                    labels[r - 1, c] = count
+                    stack.append((r - 1, c))
+                if r + 1 < height and mask[r + 1, c] and not labels[r + 1, c]:
+                    labels[r + 1, c] = count
+                    stack.append((r + 1, c))
+                if c > 0 and mask[r, c - 1] and not labels[r, c - 1]:
+                    labels[r, c - 1] = count
+                    stack.append((r, c - 1))
+                if c + 1 < width and mask[r, c + 1] and not labels[r, c + 1]:
+                    labels[r, c + 1] = count
+                    stack.append((r, c + 1))
+    return labels, count
 
 
 def decode_lines(out: np.ndarray, h: int, w: int) -> list[LineBox]:
@@ -323,14 +373,12 @@ def decode_lines(out: np.ndarray, h: int, w: int) -> list[LineBox]:
     `p > 0.5` marks core pixels; each connected component (4-neighbour, like
     the Rust flood fill) becomes one line whose top/bottom is the ink-weighted
     average of the per-pixel distances. Boxes are in detector input pixels."""
-    from scipy import ndimage  # local: keeps module import cheap on the CLI path
-
     if out.ndim == 4:  # onnxruntime keeps the batch dimension
         out = out[0]
     if out.ndim != 3 or out.shape[0] < 3:
         return []
-    mask = out[0] > 0.0
-    labels, count = ndimage.label(mask)  # default structure is 4-connectivity
+    mask = out[0] > CORE_THRESHOLD
+    labels, count = _label_components(mask)
     if count == 0:
         return []
     owned = labels.ravel() > 0
@@ -917,6 +965,11 @@ class Engine:
     @classmethod
     def load(cls, directory: Path, threads: int = 2) -> "Engine":
         spec = _Spec.parse(json.loads((directory / "meta.json").read_text(encoding="utf-8")))
+        # A pack without the bare "vocab" entry used to raise a bare KeyError here,
+        # which _core() cached as "indra permanently unavailable" with no clue why.
+        base = spec.vocabs.get("")
+        if base is None:
+            raise ValueError("indra pack meta.json is missing the base 'vocab' entry")
         groups = [
             Group(name=name, session=_session(directory / f"rec_{name}.onnx", threads), vocab=vocab)
             for name, vocab in spec.vocabs.items()
@@ -928,7 +981,7 @@ class Engine:
         return cls(
             det=_session(directory / "det.onnx", threads),
             rec=_session(directory / "rec.onnx", threads),
-            vocab=spec.vocabs[""],
+            vocab=base,
             groups=groups,
             script_session=optional("script.onnx") if groups else None,
             orient=optional("orient.onnx"),
@@ -1051,7 +1104,10 @@ class Engine:
         best: list[tuple[str, float]] = [("", -1.0)] * len(crops)
         for group, lines in plan:
             src = tall if group is None and self.window > 1 else crops
-            widths = [crops[j].w for j in lines]
+            # Batch on the crops actually fed to the recognizer: a tall window
+            # changes the width, so crops[j].w understates it and can push a
+            # batch past MAX_AREA.
+            widths = [src[j].w for j in lines]
             for part in width_batches(widths):
                 idx = [lines[i] for i in part]
                 batch = [src[j] for j in idx]
@@ -1077,7 +1133,7 @@ class Engine:
         empty = [j for j, (text, _) in enumerate(best) if not text.strip()]
         if empty:
             src = tall if self.window > 1 else crops
-            widths = [crops[j].w for j in empty]
+            widths = [src[j].w for j in empty]
             for part in width_batches(widths):
                 idx = [empty[i] for i in part]
                 batch = [src[j] for j in idx]
@@ -1105,7 +1161,6 @@ class Engine:
             }
             out = _run(self.script, feed)
             p = next(iter(out.values()))
-            classes = max(int(p.shape[1]) if p.ndim > 1 else 1, 1)
             for k, j in enumerate(part):
                 row = p[k]
                 arg = int(np.argmax(row))

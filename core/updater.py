@@ -128,11 +128,20 @@ def check_update() -> dict | None:
         if new_ver <= cur_ver or new_ver < MIN_VERSION:
             return None
         sums = _sha256_lookup(release)
-        # Find the Windows asset
+        # Find the Windows asset. The old `"win" in name` also matched
+        # "darwin", so a macOS zip could be offered as the Windows update.
         for asset in release.get("assets", []):
             name = asset.get("name", "").lower()
-            if ("windows" in name or "win" in name or "setup" in name or ".exe" in name) \
-                    and name.endswith((".exe", ".zip")):
+            if not name.endswith((".exe", ".zip")):
+                continue
+            if "darwin" in name or "macos" in name or "linux" in name:
+                continue
+            windows = (
+                "windows" in name or "win64" in name or "win32" in name
+                or re.search(r"(?:^|[-_.])win(?:[-_.]|$)", name) is not None
+                or (name.endswith(".exe") and "setup" in name)
+            )
+            if windows:
                 url = asset["browser_download_url"]
                 if not url.startswith("https://"):
                     return None  # non-https asset URL: refuse the whole update
@@ -203,6 +212,12 @@ def download_update(
                     fh.write(block)
             if total and downloaded != total:
                 raise UpdateError(f"download truncated: {downloaded}/{total} bytes")
+            # Content-Length is advisory: a server may omit it or lie about it.
+            # The size published in the release stays authoritative either way.
+            if expected_size and downloaded != expected_size:
+                raise UpdateError(
+                    f"download size mismatch: {downloaded}/{expected_size} bytes"
+                )
     except UpdateError:
         staging_path.unlink(missing_ok=True)
         raise
@@ -281,7 +296,9 @@ def apply_update(
 
     if current_exe is None:
         current_exe = Path(sys.executable)
-        if sys.frozen:
+        # `sys.frozen` only exists inside a PyInstaller bundle; plain CPython
+        # has no such attribute (an uncaught AttributeError here kills update).
+        if getattr(sys, "frozen", False):
             current_exe = Path(sys.argv[0]).resolve()
     current_exe = Path(current_exe)
     if not current_exe.is_file():

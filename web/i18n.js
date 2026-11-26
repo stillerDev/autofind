@@ -18,6 +18,8 @@
 const I18N = {
   en: {
 
+    "screenshot.saved": "Screenshot saved: {name}",
+    "screenshot.indexed": "Screenshot added to the index",
     "help.title": 'Keyboard shortcuts',
     "help.overlay": 'toggle this overlay',
     "help.density": 'compact / comfortable list',
@@ -153,6 +155,9 @@ const I18N = {
     "chip.filter": "regex {value}",
     "chip.tag": "tag: {value}",
     "chip.collection": "collection: {value}",
+    "chip.ocr": "ocr: {value}",
+    "chip.from": "from: {value}",
+    "chip.subject": "subject: {value}",
     "chip.remove": "remove “{source}”",
 
     "typeVal.image": "image",
@@ -539,6 +544,8 @@ const I18N = {
 
   ru: {
 
+    "screenshot.saved": "Скриншот сохранён: {name}",
+    "screenshot.indexed": "Скриншот добавлен в индекс",
     "help.title": 'Горячие клавиши',
     "help.overlay": 'показать/скрыть подсказку',
     "help.density": 'компактный/обычный список',
@@ -674,6 +681,9 @@ const I18N = {
     "chip.filter": "regex {value}",
     "chip.tag": "тег: {value}",
     "chip.collection": "коллекция: {value}",
+    "chip.ocr": "ocr: {value}",
+    "chip.from": "от: {value}",
+    "chip.subject": "тема: {value}",
     "chip.remove": "убрать «{source}»",
 
     "typeVal.image": "картинки",
@@ -1059,6 +1069,8 @@ const I18N = {
   },
   zh: {
 
+    "screenshot.saved": "截图已保存：{name}",
+    "screenshot.indexed": "截图已加入索引",
     "help.title": '键盘快捷键',
     "help.overlay": '显示/隐藏此面板',
     "help.density": '紧凑/舒适列表',
@@ -1182,6 +1194,9 @@ const I18N = {
     "chip.filter": "正则 {value}",
     "chip.tag": "标签：{value}",
     "chip.collection": "合集：{value}",
+    "chip.ocr": "OCR 文字：{value}",
+    "chip.from": "发件人：{value}",
+    "chip.subject": "主题：{value}",
     "chip.remove": "移除 “{source}”",
     "typeVal.image": "图片",
     "typeVal.doc": "文档",
@@ -1572,6 +1587,94 @@ function detectLang() {
   const base = system.split("-")[0];
   return I18N[base] ? base : DEFAULT_LANG;
 }
+
+// Strings for the convenience features. Kept in i18n.js so app.js stays
+// free of literal UI text and every language has the same key set.
+const I18N_EXTRA_EN = {
+    "chip.title": "Click to edit, × to remove",
+    "within.placeholder": "search within these results",
+    "within.count": "{n} of {total} shown",
+    "undo": "Undo filter", "redo": "Redo filter",
+    "reindexFolder": "Reindex this folder",
+    "pinBest": "Pin best result",
+    "freq": "opened {n}×",
+    "notes.label": "Note", "notes.save": "Save note", "notes.saved": "Note saved",
+    "notes.placeholder": "Write a note about this file…",
+    "why.title": "Why this file matched", "why.channels": "Matched channels",
+    "why.score": "Score", "why.terms": "Query terms",
+    "dup.older": "older", "dup.larger": "larger", "dup.keep": "suggested keep",
+    "tag.recent": "Recent tags", "tag.new": "New tag…",
+    "token.hint": "Try a token:",
+    "natdate.note": "Read “{phrase}” as {token}",
+    "regex.open": "Regex", "regex.title": "Regex builder",
+    "regex.pattern": "pattern", "regex.sample": "sample", "regex.flags": "flags",
+    "regex.live": "Live index preview", "regex.insert": "insert",
+    "regex.noMatches": "no matches in the index", "regex.matchCount": "{n} matches in the index",
+    "history.title": "Query history", "history.empty": "No searches yet",
+    "history.clear": "Clear history", "history.opened": "opened: {name}",
+    "history.count": "{n} results",
+    "smart.title": "Smart collections", "collections.title": "Collections — drop files here",
+    "exclusions.title": "Index exclusions",
+    "exclusions.note": "Patterns saved to the index rules; matching files are skipped on the next reindex.",
+    "exclusions.placeholder": "one pattern per line, e.g. *.tmp",
+    "exclusions.saved": "Exclusions saved",
+    "portable.on": "Portable — data travels with the app",
+    "portable.off": "Installed — data in the user profile",
+    "audit.title": "Disk breakdown",
+    "logs.title": "Diagnostics", "logs.selfTest": "Run self-test",
+    "logs.viewLog": "View log", "logs.running": "Running…",
+    "telemetry": "No telemetry — everything stays on this computer",
+    "fresh.watching": "watching", "fresh.off": "watcher off",
+    "fresh.age": "index {age} ago", "fresh.unknown": "index age unknown",
+    "hover.empty": "no preview available",
+    "hover.open": "open", "hover.reindex": "reindex folder",
+    "reindex.started": "Reindexing started", "reindex.noFolder": "Set an in: or path: filter first",
+    "screenshot.saved": "Screenshot saved: {name}", "screenshot.indexed": "Screenshot added to the index",
+};
+const I18N_EXTRA_RU = {
+    "chip.title": "Нажмите, чтобы изменить, × — удалить",
+    "within.placeholder": "искать в этих результатах",
+    "within.count": "показано {n} из {total}",
+    "undo": "Отменить фильтр", "redo": "Повторить фильтр",
+    "reindexFolder": "Переиндексировать папку",
+    "pinBest": "Закрепить лучший результат",
+    "freq": "открыто {n}×",
+    "notes.label": "Заметка", "notes.save": "Сохранить", "notes.saved": "Заметка сохранена",
+    "notes.placeholder": "Заметка об этом файле…",
+    "why.title": "Почему найдено", "why.channels": "Каналы поиска",
+    "why.score": "Оценка", "why.terms": "Слова запроса",
+    "dup.older": "старше", "dup.larger": "больше", "dup.keep": "рекомендуем оставить",
+    "tag.recent": "Недавние теги", "tag.new": "Новый тег…",
+    "token.hint": "Попробуйте токен:",
+    "natdate.note": "Понял «{phrase}» как {token}",
+    "regex.open": "Regex", "regex.title": "Конструктор regex",
+    "regex.pattern": "выражение", "regex.sample": "пример", "regex.flags": "флаги",
+    "regex.live": "Предпросмотр по индексу", "regex.insert": "вставить",
+    "regex.noMatches": "совпадений в индексе нет", "regex.matchCount": "{n} совпадений в индексе",
+    "history.title": "История запросов", "history.empty": "Запросов пока нет",
+    "history.clear": "Очистить историю", "history.opened": "открыто: {name}",
+    "history.count": "{n} результатов",
+    "smart.title": "Умные коллекции", "collections.title": "Коллекции — перетащите файлы сюда",
+    "exclusions.title": "Исключения индексации",
+    "exclusions.note": "Шаблоны сохраняются в правила индексации; подходящие файлы пропускаются при следующей переиндексации.",
+    "exclusions.placeholder": "один шаблон на строку, например *.tmp",
+    "exclusions.saved": "Исключения сохранены",
+    "portable.on": "Портативный режим — данные рядом с приложением",
+    "portable.off": "Обычная установка — данные в профиле пользователя",
+    "audit.title": "Разбор занимаемого места",
+    "logs.title": "Диагностика", "logs.selfTest": "Запустить self-test",
+    "logs.viewLog": "Просмотр лога", "logs.running": "Выполняется…",
+    "telemetry": "Без телеметрии — всё остаётся на этом компьютере",
+    "fresh.watching": "отслеживается", "fresh.off": " вотчер выключен",
+    "fresh.age": "индекс {age} назад", "fresh.unknown": "возраст индекса неизвестен",
+    "hover.empty": "предпросмотр недоступен",
+    "hover.open": "открыть", "hover.reindex": "переиндексировать папку",
+    "reindex.started": "Переиндексация началась", "reindex.noFolder": "Сначала укажите in: или path:",
+    "screenshot.saved": "Скриншот сохранён: {name}", "screenshot.indexed": "Скриншот добавлен в индекс",
+};
+Object.assign(I18N.en, I18N_EXTRA_EN);
+Object.assign(I18N.ru, I18N_EXTRA_RU);
+Object.assign(I18N.zh, I18N_EXTRA_EN);  // fallback until translated
 
 let LANG = detectLang();
 

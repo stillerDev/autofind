@@ -263,7 +263,7 @@ class Pack:
     __slots__ = (
         "path", "dim", "count", "capacity", "orig_count", "_map",
         "ids", "matrix", "sketches", "inverse", "orig_ids",
-        "_sketch_tries", "_sketch_accepts", "_sketch_mode",
+        "_sketch_tries", "_sketch_accepts", "_sketch_mode", "_sketch_lock",
     )
 
     def __init__(self, path: Path, dim: int, count: int, capacity: int,
@@ -297,6 +297,9 @@ class Pack:
         self._sketch_tries = 0
         self._sketch_accepts = 0
         self._sketch_mode = "auto"
+        # One pack is shared by every concurrent search. Without a lock two
+        # threads can both see "2 tries" and neither switches the shortcut off.
+        self._sketch_lock = threading.Lock()
 
     @classmethod
     def open(cls, path: str | Path, dim: int) -> "Pack | None":
@@ -397,7 +400,11 @@ class Pack:
         # per-thread — the server searches from several threads at once, and a
         # shared scratch would race.
         row_u64 = self.sketches[:count].view(np.uint64)
-        qb = np.packbits(q > 0).view(np.uint64)
+        # `np.view(uint64)` needs a multiple of 8 bytes. Sketch rows are padded
+        # to a 64-bit lane only when dim is a multiple of 64; for dim=100 the
+        # query has 13 bytes and the view raises without these pad bytes.
+        qb = np.packbits(q > 0)
+        qb = np.pad(qb, (0, self.sketches.shape[1] - qb.size)).view(np.uint64)
         scratch = getattr(_SKETCH_SCRATCH, "buf", None)
         if scratch is None or scratch.shape != row_u64.shape:
             scratch = np.empty_like(row_u64)
@@ -412,7 +419,6 @@ class Pack:
         kept_min = float(scores_unique[top].min()) if take else 1.0
         # Best possible excluded score, from the nearest sketch we did not
         # rerank (the (keep+1)-th smallest distance; conservative on ties).
-        self._sketch_tries += 1
         if keep < count:
             excluded = float(np.partition(dist, keep)[keep])
             angle = min(np.pi * excluded / self.dim, np.pi)
@@ -424,19 +430,21 @@ class Pack:
         return self._expand(scores_unique, candidates, limit)
 
     def _note_sketch(self, accepted: bool) -> None:
-        self._sketch_accepts += 1 if accepted else 0
-        if accepted:
-            return
-        # Nothing accepted in the first few queries: on this corpus the bound
-        # can never be cleared. The nearest excluded neighbour sits ~37 bits
-        # away, which puts the cosine bound at 0.95 while the kept score is
-        # ~0.17 — clearing a 4-sigma margin (0.32) from there needs a cosine
-        # above 1. Every query would pay 5-9 ms of popcount for a shortcut
-        # that cannot fire, so stop after three honest attempts.
-        if self._sketch_tries >= 3 and self._sketch_accepts == 0:
-            self._sketch_mode = "off"
-        elif self._sketch_tries >= 12 and self._sketch_accepts * 2 < self._sketch_tries:
-            self._sketch_mode = "off"  # measured: the shortcut loses here
+        with self._sketch_lock:
+            self._sketch_tries += 1
+            self._sketch_accepts += 1 if accepted else 0
+            if accepted:
+                return
+            # Nothing accepted in the first few queries: on this corpus the
+            # bound can never be cleared. The nearest excluded neighbour sits
+            # ~37 bits away, which puts the cosine bound at 0.95 while the kept
+            # score is ~0.17 — clearing a 4-sigma margin (0.32) from there needs
+            # a cosine above 1. Every query would pay 5-9 ms of popcount for a
+            # shortcut that cannot fire, so stop after three honest attempts.
+            if self._sketch_tries >= 3 and self._sketch_accepts == 0:
+                self._sketch_mode = "off"
+            elif self._sketch_tries >= 12 and self._sketch_accepts * 2 < self._sketch_tries:
+                self._sketch_mode = "off"  # measured: the shortcut loses here
 
     def close(self) -> None:
         # Dropping the ndarray views first is what makes `mmap.close()` legal on
@@ -586,7 +594,11 @@ def build_pack(conn: sqlite3.Connection, db_path: str | Path, dim: int) -> Pack 
     unique_matrix = np.ascontiguousarray(matrix[positions])
     sketch_row = ((dim + 63) // 64) * 8
     sketches = np.zeros((unique_count, sketch_row), dtype=np.uint8)
-    sketches[:] = np.packbits(unique_matrix > 0, axis=1)
+    packed = np.packbits(unique_matrix > 0, axis=1)
+    # Only a multiple-of-64 dimension fills the padded row exactly; for others
+    # (e.g. dim=100 -> 13 bytes per row) write into the leading bytes and leave
+    # the lane padding zeroed, matching what _search_sketch reads back.
+    sketches[:, :packed.shape[1]] = packed
 
     # A unique temp name per build: a pack we kept serving from an earlier
     # failed replace is still mapped, and Windows will not let us open a mapped

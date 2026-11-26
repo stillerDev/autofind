@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --card: #24272b;
+    --border: #3a3f46;
+    --text: #e9eaec;
+    --muted: #a2a7ae;
+    --green: #10b981;
+    --ease: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    /* The window itself has no rounded region: paint the same colour as the
+       card so no white corner pixels can show through. */
+    background: var(--card); overflow: hidden; color: var(--text);
+    font: 500 12px/1.45 "Segoe UI", system-ui, sans-serif;
+  }
+  .card {
+    display: flex; align-items: flex-start; gap: 11px;
+    width: 100%; height: 100%; padding: 13px 13px 11px;
+    background: var(--card);
+    border: 1px solid var(--border); border-radius: 0;
+    box-shadow: none;
+    opacity: 0; transform: translateY(14px);
+    transition: transform 220ms var(--ease), opacity 170ms linear;
+  }
+  .card.in { opacity: 1; transform: none; }
+  .card.out { opacity: 0; transform: translateY(10px); }
+  .icon {
+    flex: none; width: 30px; height: 30px;
+    display: grid; place-items: center;
+  }
+  .icon img { width: 30px; height: 30px; display: block; }
+  .body { flex: 1; min-width: 0; }
+  .title { display: flex; align-items: center; gap: 8px; }
+  .title b { font-size: 12.5px; font-weight: 650; }
+  .pill {
+    font-size: 9px; font-weight: 700; letter-spacing: .04em;
+    color: var(--green); border: 1px solid rgba(16, 185, 129, .35);
+    background: rgba(16, 185, 129, .12); border-radius: 999px; padding: 1px 7px;
+  }
+  .message { margin: 3px 0 8px; color: var(--muted); font-size: 11.5px; }
+  .open {
+    appearance: none; min-height: 26px; padding: 5px 10px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: #f1f3f4; color: #24272b; font: 650 11px/1.2 inherit;
+    cursor: pointer;
+  }
+  .open:hover, .open:focus-visible { background: #fff; outline: none; }
+  .close {
+    flex: none; width: 26px; height: 26px; border: 0; border-radius: 7px;
+    background: transparent; color: var(--muted); font-size: 17px;
+    line-height: 1; cursor: pointer;
+  }
+  .close:hover, .close:focus-visible { background: #383d44; color: var(--text); outline: none; }
+  .progress {
+    position: absolute; left: 13px; right: 13px; bottom: 6px; height: 2px;
+    background: #383d44; border-radius: 2px; overflow: hidden;
+  }
+  .progress i {
+    display: block; width: 100%; height: 100%; background: var(--green);
+    transform-origin: left center;
+  }
+  .card.in .progress i { transform: scaleX(0); transition: transform 2500ms linear; }
+  .title, .message, .open {
+    opacity: 0; transform: translateY(3px);
+    transition: transform 200ms var(--ease), opacity 160ms linear;
+  }
+  .card.in .title { opacity: 1; transform: none; transition-delay: 30ms; }
+  .card.in .message { opacity: 1; transform: none; transition-delay: 60ms; }
+  .card.in .open { opacity: 1; transform: none; transition-delay: 90ms; }
+  @media (prefers-reduced-motion: reduce) {
+    .card, .title, .message, .open { transform: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="icon"><img src="{ICON_DATA}" alt=""></div>
+    <div class="body">
+      <div class="title"><b>AutoFind</b><span class="pill">в трее</span></div>
+      <p class="message">Приложение продолжает работать в системном трее</p>
+      <button class="open" id="open" type="button">Открыть приложение</button>
+    </div>
+    <button class="close" id="close" type="button" aria-label="Закрыть уведомление">×</button>
+    <div class="progress"><i></i></div>
+  </div>
+<script>
+  const card = document.getElementById('card');
+  const post = (m) => { try { window.ipc.postMessage(m); } catch (e) {} };
+  let closing = false;
+  let timer = 0;
+  function close() {
+    if (closing) return;
+    closing = true;
+    card.classList.remove('in');
+    card.classList.add('out');
+    setTimeout(() => post('close'), 180);
+  }
+  // The same WebView is shown again on the next collapse. Restart the card and
+  // its timer from the host instead of relying on a one-shot page load.
+  window.__afNotifyRestart = function () {
+    closing = false;
+    card.classList.remove('out');
+    clearTimeout(timer);
+    requestAnimationFrame(() => card.classList.add('in'));
+    timer = setTimeout(close, 2500);
+  };
+  document.getElementById('open').addEventListener('click', () => post('open'));
+  document.getElementById('close').addEventListener('click', close);
+  requestAnimationFrame(() => card.classList.add('in'));
+  timer = setTimeout(close, 2500);
+</script>
+</body>
+</html>

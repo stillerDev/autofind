@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AutoFind — 08 Retro Window 98</title>
+<!-- Style 08: retro desktop window. Structure: classic chrome (title bar, menu
+     bar, toolbar, sunken list view with column headers, status bar cells).
+     Canonical Win98 palette (teal desktop, #c0c7c8 chrome, navy title) is the
+     style's identity, stated as a constraint. -->
+<style>
+  :root{--desk:#3a6ea5;--chrome:#c0c7c8;--dark:#808080;--lite:#dfdfdf;--navy:#000080;
+        --white:#ffffff;--ink:#000000}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{background:var(--desk);font:12px/1.35 Tahoma,"MS Sans Serif","Segoe UI",sans-serif;color:var(--ink);
+       display:flex;align-items:center;justify-content:center}
+  .win{width:1240px;height:840px;background:var(--chrome);display:flex;flex-direction:column;
+       box-shadow:1px 1px 0 #000,2px 2px 0 #0a0a0a,3px 3px 0 #101010, 4px 4px 12px rgba(0,0,0,.45)}
+  .raised{border-top:2px solid var(--lite);border-left:2px solid var(--lite);
+          border-right:2px solid var(--dark);border-bottom:2px solid var(--dark)}
+  .sunken{border-top:2px solid var(--dark);border-left:2px solid var(--dark);
+          border-right:2px solid var(--lite);border-bottom:2px solid var(--lite)}
+  /* title */
+  .title{height:34px;background:linear-gradient(90deg,var(--navy),#1084d0);color:#fff;display:flex;
+         align-items:center;padding:0 6px;gap:8px;font-weight:700;font-size:13px;flex:none}
+  .title .ti{flex:1;display:flex;align-items:center;gap:8px}
+  .tbtn{width:22px;height:22px;background:var(--chrome);color:#000;font-weight:700;font-size:12px;
+        display:flex;align-items:center;justify-content:center;line-height:0}
+  /* menu */
+  .menu{height:28px;display:flex;align-items:center;padding:0 8px;gap:2px;flex:none;
+        border-top:1px solid var(--lite)}
+  .menu span{padding:5px 12px}
+  .menu span.u{text-decoration:underline}
+  /* toolbar + search */
+  .tool{padding:8px;display:flex;flex-direction:column;gap:8px;flex:none;border-top:1px solid var(--lite)}
+  .trow{display:flex;gap:6px;align-items:center}
+  .tbtn2{background:var(--chrome);padding:6px 12px;font-size:12px;display:flex;gap:6px;align-items:center}
+  .srow{display:flex;gap:8px;align-items:center;padding:4px 2px}
+  .srow label{font-weight:700}
+  .sfield{flex:1;height:28px;background:#fff;padding:0 8px;display:flex;align-items:center;font-size:13px;
+          font-family:Tahoma,sans-serif}
+  .caret{width:2px;height:16px;background:#000}
+  .gobtn{width:80px;height:30px;background:var(--chrome);font-weight:700;display:flex;align-items:center;justify-content:center}
+  /* list */
+  .listwrap{flex:1;margin:4px 8px;padding:2px;background:#fff;display:flex;flex-direction:column;min-height:0}
+  .cols{display:flex;background:var(--chrome);height:26px;align-items:center;font-weight:700;flex:none}
+  .cols div{padding:0 8px;border-right:1px solid var(--dark);border-bottom:2px solid var(--dark);
+            height:100%;display:flex;align-items:center}
+  .rows{flex:1;overflow:hidden;background:#fff}
+  .r{display:flex;height:30px;align-items:center;white-space:nowrap}
+  .r:nth-child(odd){background:#f2f6fb}
+  .r.sel{background:var(--navy);color:#fff}
+  .r div{padding:0 8px;overflow:hidden;text-overflow:ellipsis;flex:none}
+  .c1{width:340px}.c2{width:300px}.c3{width:90px}.c4{width:90px}.c5{flex:1}
+  .r .nm{display:flex;align-items:center;gap:7px}
+  .ic{width:16px;height:16px;flex:none;display:flex;align-items:center;justify-content:center;
+      font-size:9px;font-weight:700;color:#fff;background:#c94747;border:1px solid #000;font-family:Arial}
+  .ic.doc{background:#3f6fc4}.ic.xls{background:#2e7d54}.ic.py{background:#54586a}.ic.png{background:#3d8f5f}.ic.eml{background:#8a63b8}
+  .ocr{background:#ffd; color:#7a5200;border:1px solid #a80;padding:0 4px;font-size:10px;margin-left:6px}
+  /* status */
+  .status{height:30px;display:flex;gap:4px;padding:4px 8px;flex:none}
+  .cell{padding:4px 10px}
+  .foot-hint{margin:0 8px 8px;padding:5px 10px;font-size:11px;color:#222;background:var(--chrome)}
+</style>
+</head>
+<body>
+<div class="win">
+  <div class="title">
+    <span class="ti"><span style="background:#fff;color:#000;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-family:Arial;border:1px solid #000">AF</span> AutoFind — Поиск файлов</span>
+    <span class="tbtn">_</span><span class="tbtn">□</span><span class="tbtn" style="font-size:11px">✕</span>
+  </div>
+  <div class="menu raised" style="border-top-width:0">
+    <span><span class="u">Ф</span>айл</span><span><span class="u">П</span>равка</span>
+    <span><span class="u">В</span>ид</span><span><span class="u">С</span>ервис</span>
+    <span><span class="u">И</span>ндекс</span><span><span class="u">С</span>правка</span>
+  </div>
+  <div class="tool">
+    <div class="trow">
+      <span class="tbtn2 raised">◀ Назад</span><span class="tbtn2 raised">Вперёд ▶</span>
+      <span class="tbtn2 raised"> ⟳ Обновить</span><span class="tbtn2 raised">⌂ Старт</span>
+      <span style="margin-left:auto;color:#444">индекс: <b>128 430 файлов</b> · готово · 18 мс</span>
+    </div>
+    <div class="srow">
+      <label>Что искать:</label>
+      <span class="sfield sunken"><span style="font-weight:700">смета март</span><span class="caret"></span></span>
+      <span class="gobtn raised">Найти</span>
+    </div>
+    <div class="trow" style="gap:8px">
+      <span class="tbtn2 raised" style="font-weight:700">Все</span>
+      <span class="tbtn2">Документы</span><span class="tbtn2">Код</span><span class="tbtn2">PDF</span>
+      <span class="tbtn2">Скриншоты</span><span class="tbtn2">Почта</span><span class="tbtn2">Архивы</span>
+      <span style="margin-left:auto;color:#444">найдено: <b>7</b></span>
+    </div>
+  </div>
+
+  <div class="listwrap sunken">
+    <div class="cols"><div class="c1">Имя</div><div class="c2">В папке</div><div class="c3">Размер</div><div class="c4">Тип</div><div class="c5">Изменён</div></div>
+    <div class="rows">
+      <div class="r sel"><div class="c1 nm"><span class="ic">PDF</span>Смета_ремонта_март_2026.pdf</div><div class="c2">D:\Документы\Сметы</div><div class="c3">2 436 КБ</div><div class="c4">Документ PDF</div><div class="c5">12.11.2026 09:41</div></div>
+      <div class="r"><div class="c1 nm"><span class="ic doc">DOC</span>смета за март.docx</div><div class="c2">D:\Документы</div><div class="c3">184 КБ</div><div class="c4">Документ Word</div><div class="c5">10.11.2026 18:03</div></div>
+      <div class="r"><div class="c1 nm"><span class="ic png">PNG</span>скриншот 2026-03-28 14-02.png<span class="ocr">OCR</span></div><div class="c2">C:\Users\h1ile\Desktop</div><div class="c3">1 126 КБ</div><div class="c4">Изображение PNG</div><div class="c5">28.03.2026 14:02</div></div>
+      <div class="r"><div class="c1 nm"><span class="ic xls">XLS</span>Прайс_Март.xlsx</div><div class="c2">D:\Документы\Прайсы</div><div class="c3">96 КБ</div><div class="c4">Лист Excel</div><div class="c5">08.11.2026 12:44</div></div>
+      <div class="r"><div class="c1 nm"><span class="ic py">PY</span>budget_march.py</div><div class="c2">D:\Код\autofind</div><div class="c3">12 КБ</div><div class="c4">Файл Python</div><div class="c5">05.11.2026 22:10</div></div>
+      <div class="r"><div class="c1 nm"><span class="ic doc">DOC</span>Смета_март_финал_копия(2).docx</div><div class="c2">D:\Документы\Сметы</div><div class="c3">176 КБ</div><div class="c4">Документ Word</div><div class="c5">03.11.2026 10:27</div></div>
+      <div class="r"><div class="c1 nm"><span class="ic eml">EML</span>Март_отчёт.eml</div><div class="c2">Архив почты</div><div class="c3">42 КБ</div><div class="c4">Сообщение</div><div class="c5">01.11.2026 08:15</div></div>
+      <div class="r"><div class="c1 nm"><span class="ic">PDF</span>смета-март.pdf</div><div class="c2">D:\Архив\2025</div><div class="c3">2 254 КБ</div><div class="c4">Документ PDF</div><div class="c5">02.04.2025 16:38</div></div>
+    </div>
+  </div>
+
+  <div class="foot-hint sunken">Enter — открыть · Space — просмотр · Ctrl+C — копировать путь · F1 — справка</div>
+  <div class="status">
+    <span class="cell sunken" style="flex:1">Объектов: 7</span>
+    <span class="cell sunken" style="width:210px">Время поиска: 18 мс</span>
+    <span class="cell sunken" style="width:170px">Мой компьютер</span>
+  </div>
+</div>
+</body>
+</html>

@@ -7,13 +7,24 @@ scanned tree: scanning a folder must not modify it.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .privacy import DEFAULT_CATEGORIES
 
 APP_NAME = "autofind"
+_LOGGER = logging.getLogger(__name__)
+
+# Speed-first default. The hashing embedder needs neither a 96 MB model mmap
+# nor a 17 MB tokenizer parse: a warm server stays around 65 MB RSS instead of
+# 335 MB, and a one-shot CLI starts in ~280 ms instead of ~930 ms. The
+# higher-quality static-e5 channel is still available with
+# `AUTOFIND_EMBEDDER=auto` (server) or `--embedder auto` (CLI).
+os.environ.setdefault("AUTOFIND_EMBEDDER", "hashing")
 
 EXCLUDED_DIRS = frozenset(
     {
@@ -37,7 +48,6 @@ EXCLUDED_DIRS = frozenset(
         "System Volume Information",
         "AppData",
         ".cache",
-        ".workbuddy-ai",
     }
 )
 
@@ -129,6 +139,15 @@ class IndexConfig:
             self.privacy = prefs["enabled"]
         categories = prefs.get("categories")
         if isinstance(categories, list):
+            # A typo used to be silently dropped, quietly disabling protection
+            # for that category. Keep the historical behaviour (unknown names
+            # are not protected) but make the mistake visible.
+            unknown = [name for name in categories if name not in DEFAULT_CATEGORIES]
+            if unknown:
+                _LOGGER.warning(
+                    "privacy.json: ignoring unknown categories: %s",
+                    ", ".join(sorted(str(name) for name in unknown)),
+                )
             self.privacy_categories = frozenset(
                 name for name in categories if name in DEFAULT_CATEGORIES
             )
@@ -175,3 +194,172 @@ def save_privacy_prefs(config: "IndexConfig") -> None:
         )
     except OSError:
         pass
+
+
+# Per-root indexing rules and global ignore patterns live next to the index,
+# not in the scanned tree. They are user preferences (like privacy.json), so a
+# rebuilt index does not reset them and a backup of the home carries them.
+RULES_FILE = "index-rules.json"
+MAX_RULE_PATTERNS = 200
+MAX_PATTERN_CHARS = 256
+MAX_RULE_ROOTS = 200
+
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def normalise_patterns(values, *, field_name: str = "patterns") -> list[str]:
+    """Validate UI-supplied ignore globs. Bad entries are rejected, not dropped.
+
+    Patterns are glob fragments interpreted by `core.ignore`: `*.tmp`,
+    `**/node_modules`, `.git`, or `/build` (anchored to the indexed root).
+    Absolute drive/UNC paths, traversal segments and control characters would
+    let a page aim a rule outside the indexed tree, so they are refused.
+    """
+    if not isinstance(values, list):
+        raise ValueError(f"{field_name} must be a list")
+    result: list[str] = []
+    for raw in values:
+        if not isinstance(raw, str):
+            raise ValueError(f"{field_name} must contain only strings")
+        pattern = raw.strip().replace("\\", "/")
+        if not pattern:
+            continue
+        if len(pattern) > MAX_PATTERN_CHARS:
+            raise ValueError(f"{field_name} entries are limited to {MAX_PATTERN_CHARS} characters")
+        if any(char in pattern for char in ("\x00", "\r", "\n")):
+            raise ValueError(f"{field_name} entries cannot contain control characters")
+        if pattern.startswith("//") or _DRIVE_PREFIX.match(pattern):
+            raise ValueError(f"{field_name} must be relative to the indexed root")
+        if ".." in pattern.split("/"):
+            raise ValueError(f"{field_name} cannot contain '..' traversal")
+        if pattern not in result:
+            result.append(pattern)
+    if len(result) > MAX_RULE_PATTERNS:
+        raise ValueError(f"at most {MAX_RULE_PATTERNS} {field_name} are allowed")
+    return result
+
+
+def normalise_dir_names(values, *, field_name: str = "excluded_dirs") -> list[str]:
+    """Directory *names* for the scanner's exact-match `excluded_dirs` set."""
+    names = normalise_patterns(values, field_name=field_name)
+    for name in names:
+        if "/" in name or "*" in name or "?" in name:
+            raise ValueError(f"{field_name} must be plain directory names, not globs")
+    return names
+
+
+def empty_rules() -> dict:
+    return {"roots": {}, "exclusions": []}
+
+
+def read_index_rules(home: Path) -> dict:
+    """Read index-rules.json, tolerating a missing or damaged file.
+
+    Reads are defensive: a half-written file must never take the search UI
+    down. Writes go through `save_index_rules`, which validates strictly.
+    """
+    try:
+        data = json.loads((Path(home) / RULES_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return empty_rules()
+    if not isinstance(data, dict):
+        return empty_rules()
+    roots: dict[str, dict] = {}
+    raw_roots = data.get("roots")
+    if isinstance(raw_roots, dict):
+        for path, rule in list(raw_roots.items())[:MAX_RULE_ROOTS]:
+            if not isinstance(path, str) or not isinstance(rule, dict):
+                continue
+            key = str(Path(path).expanduser())
+            try:
+                exclusions = normalise_patterns(
+                    rule.get("exclusions") or [], field_name="root exclusions"
+                )
+                dirs = normalise_dir_names(rule.get("excluded_dirs") or [])
+            except ValueError:
+                continue
+            roots[key] = {
+                "enabled": rule.get("enabled") is not False,
+                "exclusions": exclusions,
+                "excluded_dirs": dirs,
+                "max_file_mb": _safe_int(rule.get("max_file_mb"), 0, 0, 1024),
+            }
+    try:
+        exclusions = normalise_patterns(data.get("exclusions") or [])
+    except ValueError:
+        exclusions = []
+    return {"roots": roots, "exclusions": exclusions}
+
+
+def _safe_int(value, default: int, lo: int, hi: int) -> int:
+    try:
+        return max(lo, min(hi, int(value or default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def save_index_rules(home: Path, payload) -> dict:
+    """Validate and persist per-root rules plus global exclusion patterns."""
+    if not isinstance(payload, dict):
+        raise ValueError("rules must be an object")
+    raw_roots = payload.get("roots", {})
+    if not isinstance(raw_roots, dict) or len(raw_roots) > MAX_RULE_ROOTS:
+        raise ValueError(f"at most {MAX_RULE_ROOTS} roots are allowed")
+    roots: dict[str, dict] = {}
+    for raw_path, rule in raw_roots.items():
+        if not isinstance(raw_path, str) or not isinstance(rule, dict):
+            raise ValueError("each root must map to a rule object")
+        path = str(Path(raw_path.strip()).expanduser())
+        if not path or len(path) > 1024:
+            raise ValueError("invalid root path")
+        raw_mb = rule.get("max_file_mb", 0)
+        if isinstance(raw_mb, bool) or not isinstance(raw_mb, (int, str)):
+            raise ValueError("max_file_mb must be an integer between 0 and 1024")
+        max_mb = _safe_int(raw_mb, 0, 0, 1024)
+        try:
+            parsed_mb = int(raw_mb)
+        except (TypeError, ValueError):
+            raise ValueError("max_file_mb must be an integer between 0 and 1024") from None
+        if parsed_mb != max_mb:
+            raise ValueError("max_file_mb must be an integer between 0 and 1024")
+        roots[path] = {
+            "enabled": bool(rule.get("enabled", True)),
+            "exclusions": normalise_patterns(rule.get("exclusions") or [],
+                                             field_name="root exclusions"),
+            "excluded_dirs": normalise_dir_names(rule.get("excluded_dirs") or []),
+            "max_file_mb": max_mb,
+        }
+    data = {
+        "roots": roots,
+        "exclusions": normalise_patterns(payload.get("exclusions") or []),
+    }
+    home = Path(home)
+    home.mkdir(parents=True, exist_ok=True)
+    target = home / RULES_FILE
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(target)
+    return data
+
+
+def portable_status(home: Path | None = None, executable: Path | None = None) -> dict:
+    """Is the index home a `data` folder sitting next to the executable?
+
+    A portable install carries its index with the app (`<exe dir>/data`), so
+    the panel must not imply the data lives in the user profile. The answer is
+    based on the *effective* home: an AUTOFIND_HOME override pointing anywhere
+    else is not portable, even when an EXE happens to sit beside a data dir.
+    """
+    override = os.environ.get("AUTOFIND_HOME")
+    effective = Path(home if home is not None else default_home()).expanduser().resolve()
+    exe = Path(executable or sys.executable).expanduser().resolve()
+    folder = exe.parent
+    candidates = {folder.resolve(), (folder / "data").resolve(), (folder / "Data").resolve()}
+    portable = bool(override) and effective in candidates
+    return {
+        "portable": portable,
+        "home": str(effective),
+        "executable": str(exe),
+        "data_dir": str(folder / "data"),
+        "env_override": bool(override),
+    }

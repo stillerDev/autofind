@@ -11,6 +11,9 @@ from pathlib import Path
 
 SHORTCUT_NAME = "AutoFind.lnk"
 
+# FOLDERID_Programs — the per-user Start Menu programs folder.
+_FOLDERID_PROGRAMS = "A4115719-D62E-491D-AA7C-E74B8BE3B067"
+
 
 def supported() -> bool:
     return sys.platform == "win32"
@@ -31,11 +34,59 @@ def _desktop_dirs() -> list[Path]:
     return [path] if path.is_dir() else []
 
 
+def _known_folder(folder_id: str) -> Path | None:
+    """SHGetKnownFolderPath for a FOLDERID GUID, or None when unavailable.
+
+    Known Folders are localized and redirectable (OneDrive, corporate profiles),
+    so a hard-coded `%USERPROFILE%/AppData/.../Start Menu/Programs` can point at a
+    directory the user's Start Menu no longer uses.
+    """
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    import uuid
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        # GUID's in-memory layout is the little-endian form of the UUID bytes.
+        _fields_ = [("data", ctypes.c_byte * 16)]
+
+    path_ref = ctypes.POINTER(wintypes.WCHAR)()
+    try:
+        guid = GUID.from_buffer_copy(uuid.UUID(folder_id).bytes_le)
+        shell32 = ctypes.windll.shell32
+        shell32.SHGetKnownFolderPath.argtypes = [
+            ctypes.POINTER(GUID),
+            wintypes.DWORD,
+            wintypes.HANDLE,
+            ctypes.POINTER(ctypes.POINTER(wintypes.WCHAR)),
+        ]
+        shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+        result = shell32.SHGetKnownFolderPath(
+            ctypes.byref(guid), 0, None, ctypes.byref(path_ref)
+        )
+        if result != 0 or not path_ref:
+            return None
+        value = path_ref.value
+        return Path(value) if value else None
+    except Exception:
+        return None
+    finally:
+        try:
+            ctypes.windll.ole32.CoTaskMemFree(path_ref)
+        except Exception:
+            pass
+
+
 def _start_menu() -> Path | None:
-    path = (
-        Path.home() / "AppData" / "Roaming" / "Microsoft" / "Windows"
-        / "Start Menu" / "Programs"
-    )
+    path = _known_folder(_FOLDERID_PROGRAMS)
+    if path is None:
+        # Older Windows, or a non-Windows test host: the classic per-user
+        # location is still better than writing nothing.
+        path = (
+            Path.home() / "AppData" / "Roaming" / "Microsoft" / "Windows"
+            / "Start Menu" / "Programs"
+        )
     return path if path.is_dir() else None
 
 
@@ -95,6 +146,9 @@ def create(where: str = "all") -> list[Path]:
 
 
 def remove(where: str = "all") -> list[Path]:
+    """Remove the shortcuts. `where` is 'desktop', 'startmenu' or 'all'."""
+    if not supported():
+        raise RuntimeError("shortcuts are Windows-only for now")
     removed: list[Path] = []
     for path in _wanted(where):
         try:

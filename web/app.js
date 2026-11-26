@@ -1,77 +1,23 @@
+/* AutoFind — glass aurora front-end.
+
+   The server (core/api.py) owns the data; this file owns the window. Sections:
+   helpers → hotkeys → theme/look → search → cards → idle → drawer panes →
+   duplicates → modals → onboarding → boot. Every user-visible string comes
+   from i18n.js via t(); nothing is written inline. */
+
+"use strict";
+
+/* ------------------------------------------------------------------ helpers */
+
 const $ = (id) => document.getElementById(id);
-const state = {
-  query: "", kind: "", folder: "", since: "", sort: "best", docdate: false,
-  timer: null, jobTimer: null, lastEnterHit: -1,
-  hits: [], total: 0, nextOffset: null, approx: false, selected: -1, chips: [],
-  stats: null, status: null, types: [], typesLoaded: false,
-  // Multi-select is a set of file ids, not row indexes: it survives "more"
-  // and a redraw, and a file that scrolls off the page stays selected.
-  picked: new Set(),
-  tags: [], collections: [], metaLoaded: false,
-  hotkeys: {}, hotkeyDefaults: {}, hotkeyConflicts: [],
-  preview: null,
-  dupMode: "images", dupGroups: [], dupCache: {},
-  watchAdded: -1, watchTimer: null,
-  searchSeq: 0,
-};
 
-// The three letters inside the file-type tile. Abbreviations of extensions, not
-// prose: they stay as they are in every language.
-const KIND_LABEL = {
-  pdf: "pdf", docx: "docx", code: "code", text: "txt", image: "img",
-  pptx: "pptx", xlsx: "xlsx", epub: "epub", odt: "odt", rtf: "rtf",
-  email: "eml", archive: "zip",
-};
-
-const WEEKDAYS = [
-  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-];
-
-function esc(text) {
-  return String(text ?? "").replace(/[&<>"']/g, (ch) => (
-    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
-  ));
-}
-
-function locale() {
-  const table = { ru: "ru-RU", zh: "zh-CN" };
-  return table[currentLang()] || "en-GB";
-}
-
-function dateLabel(seconds) {
-  return new Date(seconds * 1000).toLocaleDateString(locale());
-}
-
-function sizeLabel(bytes) {
-  const n = Number(bytes) || 0;
-  if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} ${t("unit.gb")}`;
-  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} ${t("unit.mb")}`;
-  if (n >= 1024) return `${Math.round(n / 1024)} ${t("unit.kb")}`;
-  return `${n} ${t("unit.b")}`;
-}
-
-function highlight(text, query) {
-  // Three ways this used to corrupt its own markup: a query term that is
-  // itself `mark`/`amp`/`lt`/`gt`/`quot` matched the entities the previous
-  // pass had just written, a repeated term re-marked inside a <mark>, and a
-  // case change mid-word split a match in two. Dedupe, skip the entity
-  // words, and let the regex run once over the already-escaped text.
-  const terms = [...new Set(String(query || "").toLowerCase().split(/\s+/))]
-    .filter((word) => word.length >= 3 && !/^(mark|amp|lt|gt|quot|nbsp|#39)$/.test(word));
-  if (!terms.length) return text;
-  const pattern = new RegExp(
-    `(${terms.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
-    "gi",
-  );
-  return String(text || "").replace(pattern, "<mark>$1</mark>");
-}
-
-function toast(message) {
-  const el = $("toast");
-  el.textContent = message;
-  el.classList.add("show");
-  clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.classList.remove("show"), 3200);
+function esc(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 async function api(path, options) {
@@ -84,11 +30,362 @@ async function api(path, options) {
   return response.json();
 }
 
-/* --------------------------------------------------------------- hotkeys */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function toast(message) {
+  const el = $("toast");
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.remove("show"), 3200);
+}
+
+function downloadUrl(url, name) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function basename(path) {
+  return String(path).split("\\").pop().split("/").pop();
+}
+
+function shortPath(path) {
+  const parts = String(path).split(/[\\/]/);
+  return parts.length > 3 ? `${parts[0]}\\…\\${parts.slice(-2).join("\\")}` : path;
+}
+
+function fmtSize(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1073741824) return `${(value / 1073741824).toFixed(1)} ${t("unit.gb")}`;
+  if (value >= 1048576) return `${(value / 1048576).toFixed(1)} ${t("unit.mb")}`;
+  if (value >= 1024) return `${Math.round(value / 1024)} ${t("unit.kb")}`;
+  return `${value} ${t("unit.b")}`;
+}
+
+/* The index size in the stat grid: two tiers are all a person reads — GB when
+   the index is heavy, MB when it is not. */
+function sizeLabel(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1073741824) return `${(value / 1073741824).toFixed(1)} ${t("unit.gb")}`;
+  return `${(value / 1048576).toFixed(1)} ${t("unit.mb")}`;
+}
+
+function fmtDate(timestamp) {
+  if (!timestamp) return "";
+  return new Date(Number(timestamp) * 1000).toLocaleDateString(undefined, {
+    day: "numeric", month: "short", year: "numeric",
+  });
+}
+
+const KIND_LABEL = {
+  docs: "DOC", docx: "DOC", pdf: "PDF", image: "IMG",
+  code: "PY", email: "EML", archive: "ZIP",
+};
+
+function ui(key, vars) {
+  return t(key, vars);
+}
+
+/* The snippet the server returns is already anchored on the first matched
+   term; this trims it to about ten words around that word so the card shows
+   the match in context instead of a paragraph. */
+function snippetWindow(text, query) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  if (words.length <= 11) return words.join(" ");
+  const terms = String(query || "").toLowerCase().split(/\s+/)
+    .filter((word) => word.length >= 3);
+  let index = -1;
+  for (let i = 0; i < words.length; i += 1) {
+    const word = words[i].toLowerCase();
+    if (terms.some((term) => word.includes(term))) { index = i; break; }
+  }
+  if (index === -1) index = 0;
+  let start = Math.max(0, index - 4);
+  const end = Math.min(words.length, start + 11);
+  start = Math.max(0, end - 11);
+  const prefix = start > 0 ? "… " : "";
+  const suffix = end < words.length ? " …" : "";
+  return prefix + words.slice(start, end).join(" ") + suffix;
+}
+
+function highlight(text, query, minLength = 3) {
+  // Escape here, not in the caller: every call site feeds raw indexed file
+  // content into this function, and its output goes straight into innerHTML.
+  const safe = esc(text);
+  const terms = [...new Set(String(query || "").toLowerCase().split(/\s+/).filter(Boolean))]
+    .filter((word) => word.length >= minLength);
+  if (!terms.length) return safe;
+  const pattern = new RegExp(
+    `(${terms.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+    "gi",
+  );
+  // Highlight only outside the entities esc() just created. A one-letter
+  // query must not turn `&amp;` into `&<mark>a</mark>mp;`.
+  return safe.split(/(&(?:amp|lt|gt|quot|nbsp|#39);)/).map((part) =>
+    /^&(?:amp|lt|gt|quot|nbsp|#39);$/.test(part)
+      ? part
+      : part.replace(pattern, "<mark>$1</mark>")
+  ).join("");
+}
+
+/* ------------------------------------------------- convenience: pure helpers */
+
+function fmtAge(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return "";
+  if (value < 60) return `${Math.round(value)}s`;
+  if (value < 3600) return `${Math.round(value / 60)}m`;
+  if (value < 86400) return `${Math.round(value / 3600)}h`;
+  return `${Math.round(value / 86400)}d`;
+}
+
+function storageGet(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : JSON.parse(raw);
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function storageSet(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (error) { /* session only */ }
+}
+
+function escapeRe(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const FILTER_TOKEN_RE = /(?:^|\s)((?:type|ext|in|path|name|content|modified|size|re|tag|collection|sym|from|subject|lang):)("[^"]*"|'[^']*'|\S+)/g;
+
+/* Every filter token in the query, with its exact span so a chip can remove
+   or select just that token without touching the free words around it. */
+function filterTokens(raw) {
+  const text = String(raw || "");
+  const tokens = [];
+  FILTER_TOKEN_RE.lastIndex = 0;
+  let match;
+  while ((match = FILTER_TOKEN_RE.exec(text))) {
+    const lead = /^\s/.test(match[0]) ? 1 : 0;
+    const start = match.index + lead;
+    let value = match[2];
+    if (/^["'].*["']$/.test(value)) value = value.slice(1, -1);
+    tokens.push({
+      kind: match[1].slice(0, -1),
+      value,
+      raw: match[1] + match[2],
+      start,
+      end: start + match[1].length + match[2].length,
+    });
+  }
+  return tokens;
+}
+
+/* Token autocomplete values. Folder/tag/collection values come from live
+   state so the suggestions match this machine, not a canned example. */
+const TOKEN_VALUES = {
+  type: ["docs", "code", "pdf", "image", "email", "archive"],
+  ext: ["py", "txt", "pdf", "docx", "png", "jpg", "md", "rs"],
+  name: ["report", "invoice", "photo", "notes"],
+  content: ["meeting", "budget", "TODO", "error"],
+  modified: ["<7d", "<30d", "7d..30d", ">30d"],
+  size: [">10mb", "<1mb", "1mb..10mb"],
+  re: ["error\\d+", "^TODO", "[A-Z]{2,}"],
+  sym: ["parse_query", "main", "index"],
+  from: ["@", "@company.com"],
+  subject: ["report", "invoice"],
+  lang: ["ru", "en", "zh"],
+};
+
+const TOKEN_KINDS = Object.keys(TOKEN_VALUES).concat([
+  "in", "path", "tag", "collection",
+]);
+
+function tokenValues(kind) {
+  if (kind === "in" || kind === "path") {
+    const folders = [state.folder, ...recentQueries().flatMap((item) =>
+      filterTokens(item).filter((token) => token.kind === kind).map((token) => token.value))]
+      .filter(Boolean);
+    return [...new Set(folders)].slice(0, 6);
+  }
+  if (kind === "tag") return (state.metaTags || []).slice(0, 8);
+  if (kind === "collection") return (state.metaCollections || []).map((item) => item.name || item.id).slice(0, 8);
+  return TOKEN_VALUES[kind] || [];
+}
+
+/* Given the whole input value, return completion rows for the word under the
+   caret. Both `type:` (values) and a half-typed `ty` (key names) are covered. */
+function tokenCompletions(value) {
+  const text = String(value || "");
+  const found = /(?:^|\s)(\S*)$/.exec(text);
+  if (!found) return [];
+  const word = found[1];
+  if (!word) return [];
+  const start = found.index + (/^\s/.test(found[0]) ? 1 : 0);
+  const end = start + word.length;
+  const keyMatch = word.match(/^([a-z]+):([\s\S]*)$/i);
+  const wrap = (insert) => ({ value: insert, label: insert, kind: ui("token.hint"), start, end });
+  if (keyMatch) {
+    const kind = keyMatch[1].toLowerCase();
+    if (!TOKEN_KINDS.includes(kind)) return [];
+    const tail = keyMatch[2].toLowerCase();
+    return tokenValues(kind)
+      .filter((item) => String(item).toLowerCase().startsWith(tail))
+      .map((item) => wrap(`${kind}:${item}`));
+  }
+  return TOKEN_KINDS
+    .filter((kind) => kind.startsWith(word.toLowerCase()))
+    .map((kind) => wrap(`${kind}:`));
+}
+
+const MONTH_NUMBERS = {
+  january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4,
+  may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8,
+  september: 9, sep: 9, sept: 9, october: 10, oct: 10, november: 11, nov: 11,
+  december: 12, dec: 12,
+  \u044f\u043d\u0432\u0430\u0440\u044f: 1, \u0444\u0435\u0432\u0440\u0430\u043b\u044f: 2, \u043c\u0430\u0440\u0442\u0430: 3, \u0430\u043f\u0440\u0435\u043b\u044f: 4, \u043c\u0430\u044f: 5, \u0438\u044e\u043d\u044f: 6, \u0438\u044e\u043b\u044f: 7,
+  \u0430\u0432\u0433\u0443\u0441\u0442\u0430: 8, \u0441\u0435\u043d\u0442\u044f\u0431\u0440\u044f: 9, \u043e\u043a\u0442\u044f\u0431\u0440\u044f: 10, \u043d\u043e\u044f\u0431\u0440\u044f: 11, \u0434\u0435\u043a\u0430\u0431\u0440\u044f: 12,
+};
+const MONTH_PATTERN = Object.keys(MONTH_NUMBERS).join("|");
+
+/* Turn plain phrases into the duration tokens the index understands. The
+   server already compiles relative phrases, but doing it here makes the
+   conversion visible in the query and covers absolute dates the grammar has
+   no rule for ("after 1 march", "\u043f\u043e\u0441\u043b\u0435 1 \u043c\u0430\u0440\u0442\u0430", "\u0434\u043e 2024-01-01"). */
+function naturalDateCompile(raw) {
+  const text = String(raw || "");
+  if (/(?:^|\s)(?:modified|in|path):/.test(text)) return { query: text, changes: [] };
+  const changes = [];
+  const apply = (start, end, phrase, token) => {
+    // A phrase like «\u043f\u043e\u0437\u0430\u0432\u0447\u0435\u0440\u0430» also contains «\u0432\u0447\u0435\u0440\u0430»: keep the first, longest
+    // match rather than writing two overlapping tokens into the query.
+    if (changes.some((item) => start < item.end && end > item.start)) return;
+    changes.push({ start, end, phrase, token });
+  };
+  // Day + month [+ year], optionally preceded by a direction word.
+  const absRe = new RegExp(
+    `(?:(after|before|since|\u043f\u043e\u0441\u043b\u0435|\u0434\u043e|\u0441)\\s+)?(\\d{1,2})\\s+(${MONTH_PATTERN})(?:\\s+(\\d{4}))?`,
+    "gi",
+  );
+  let match;
+  while ((match = absRe.exec(text))) {
+    const day = Number(match[2]);
+    const month = MONTH_NUMBERS[match[3].toLowerCase()];
+    const year = match[4] ? Number(match[4]) : new Date().getFullYear();
+    const target = new Date(year, month - 1, day).getTime();
+    if (!Number.isFinite(target)) continue;
+    const days = Math.max(0, Math.round((Date.now() - target) / 86400000));
+    const direction = (match[1] || "").toLowerCase();
+    const token = direction === "before" || direction === "\u0434\u043e"
+      ? `modified:<${days + 1}d`
+      : direction ? `modified:>${days}d`
+        : `modified:${days}d..${days + 1}d`;
+    apply(match.index, match.index + match[0].length, match[0], token);
+  }
+  // ISO date with or without a direction word.
+  const isoRe = /(?:(after|before|since|\u043f\u043e\u0441\u043b\u0435|\u0434\u043e|\u0441)\s+)?(\d{4}-\d{2}-\d{2})/gi;
+  while ((match = isoRe.exec(text))) {
+    const target = Date.parse(`${match[2]}T00:00:00`);
+    if (!Number.isFinite(target)) continue;
+    const days = Math.max(0, Math.round((Date.now() - target) / 86400000));
+    const direction = (match[1] || "").toLowerCase();
+    const token = direction === "before" || direction === "\u0434\u043e"
+      ? `modified:<${days + 1}d`
+      : direction ? `modified:>${days}d`
+        : `modified:${days}d..${days + 1}d`;
+    apply(match.index, match.index + match[0].length, match[0], token);
+  }
+  // Relative phrases: explicit tokens, so the query itself explains the filter.
+  // JS \w is ASCII-only, so Russian suffixes use an explicit Cyrillic class.
+  const RU = "[\u0430-\u044f\u0451\u0410-\u042f\u0401]";
+  const RELATIVE = [
+    [new RegExp(`(?:\u043f\u043e\u0437\u0430\u0432\u0447\u0435\u0440\u0430|day before yesterday)`, "gi"), "modified:2d..3d"],
+    [new RegExp(`(?:\u0432\u0447\u0435\u0440\u0430\u0448\u043d${RU}*|\u0432\u0447\u0435\u0440\u0430|yesterday)`, "gi"), "modified:1d..2d"],
+    [new RegExp(`(?:\u0441\u0435\u0433\u043e\u0434\u043d\u044f\u0448\u043d${RU}*|\u0441\u0435\u0433\u043e\u0434\u043d\u044f|today)`, "gi"), "modified:<1d"],
+    [new RegExp(`(?:\u0437\u0430|\u043d\u0430|\u0432)\\s+(?:\u043f\u043e\u0441\u043b\u0435\u0434\u043d${RU}*|\u043f\u0440\u043e\u0448\u043b${RU}*|\u044d\u0442${RU}*)?\\s*\u043d\u0435\u0434\u0435\u043b${RU}*|(?:last|this|past)\\s+week`, "gi"), "modified:<7d"],
+    [new RegExp(`(?:\u0437\u0430|\u043d\u0430|\u0432)\\s+(?:\u043f\u043e\u0441\u043b\u0435\u0434\u043d${RU}*|\u043f\u0440\u043e\u0448\u043b${RU}*|\u044d\u0442${RU}*)?\\s*\u043c\u0435\u0441\u044f\u0446${RU}*|(?:last|this|past)\\s+month`, "gi"), "modified:<30d"],
+    [new RegExp(`(?:\u0437\u0430|\u043d\u0430|\u0432)\\s+(?:\u043f\u043e\u0441\u043b\u0435\u0434\u043d${RU}*|\u043f\u0440\u043e\u0448\u043b${RU}*|\u044d\u0442${RU}*)?\\s*\u0433\u043e\u0434${RU}*|(?:last|this|past)\\s+year`, "gi"), "modified:<365d"],
+    [new RegExp(`(\\d{1,3})\\s*(?:\u0434\u043d${RU}*|\u0434\u043d\u0435\u0439|days?)\\s+\u043d\u0430\u0437\u0430\u0434|(\\d{1,3})\\s+days?\\s+ago`, "gi"), null],
+  ];
+  for (const [pattern, fixed] of RELATIVE) {
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(text))) {
+      const token = fixed || `modified:${Number(match[1] || match[2])}d..${Number(match[1] || match[2]) + 1}d`;
+      apply(match.index, match.index + match[0].length, match[0], token);
+    }
+  }
+  if (!changes.length) return { query: text, changes: [] };
+  // Longest phrases first so an overlapping match cannot eat a shorter one.
+  const ordered = changes.sort((a, b) => b.start - a.start || b.end - a.end);
+  let query = text;
+  for (const change of ordered) {
+    query = query.slice(0, change.start) + change.token + query.slice(change.end);
+  }
+  return { query: query.replace(/\s+/g, " ").trim(), changes: changes.reverse() };
+}
+
+/* Code tiles and the code preview share one renderer: escape, highlight, then
+   pad the numbers into a fixed gutter so the lines stay aligned. */
+function numberedCode(text, query, startLine = 1, minLength = 1) {
+  const lines = String(text || "").split(/\r?\n/);
+  return lines.map((line, index) => `
+    <div class="code-line"><span class="ln">${startLine + index}</span><span class="lc">${highlight(line, query, minLength) || "&nbsp;"}</span></div>`
+  ).join("");
+}
+
+/* ------------------------------------------------------------------ state */
+
+const state = {
+  query: "",
+  hits: [],
+  total: 0,
+  nextOffset: null,
+  approx: false,
+  chips: [],
+  facets: {},
+  timer: 0,
+  searchSeq: 0,
+  selected: -1,
+  picked: new Set(),
+  kind: "",
+  folder: "",
+  since: "",
+  docdate: false,
+  sort: "best",
+  types: [],
+  personal: null,
+  metaTags: [],
+  metaCollections: [],
+  hotkeys: {},
+  hotkeyDefaults: {},
+  hotkeyConflicts: [],
+  dupMode: "images",
+  dupCache: {},
+  watchTimer: 0,
+  watchAdded: -1,
+  seal: null,
+  // Convenience features (see FEATURE_ROADMAP.md). All local to the window.
+  withinText: "",
+  viewHits: [],
+  filterStack: [],
+  filterPos: -1,
+  queryLog: [],
+  hoverTimer: 0,
+  hoverId: 0,
+  freshness: null,
+  exclusions: [],
+  noteText: "",
+  previewId: 0,
+};
+
+/* ----------------------------------------------------------------- hotkeys */
 
 /* The defaults mirror `core/hotkeys.py`; the file on disk wins once it is
-   loaded. A shortcut is a chord in canonical order (`ctrl+shift+d`), which is
-   the same shape the server stores, so the two can be compared without guesswork. */
+   loaded. A shortcut is a chord in canonical order (`ctrl+shift+d`). */
 const FALLBACK_HOTKEYS = {
   focus: ["/"], search: ["ctrl+k"], settings: ["ctrl+,"], panel: ["ctrl+shift+i"],
   duplicates: ["ctrl+shift+d"], preview: ["space"], open: ["enter"],
@@ -112,755 +409,93 @@ function chordOfEvent(event) {
   if (event.altKey) mods.push("alt");
   if (event.shiftKey) mods.push("shift");
   if (event.metaKey) mods.push("meta");
-  return [...mods, key].join("+");
+  mods.push(key);
+  return mods.join("+");
 }
 
-function hotkeyLabel(chord) {
-  return chord.split("+").map((part) => (
-    part.length === 1 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1)
-  )).join(" + ");
-}
-
-function chordParts(chord) {
-  const parts = chord.split("+");
-  return [parts.slice(0, -1), parts[parts.length - 1]];
-}
-
-/* Mirror of `core/hotkeys.conflicts`: a duplicate is the same chord on two
-   actions; a similar pair is the same key with a modifier subset. The UI paints
-   both red because both are the pair people press by mistake. */
-function computeHotkeyConflicts(hotkeys) {
-  const flat = [];
-  for (const action of HOTKEY_ACTIONS) {
-    for (const chord of hotkeys[action] || []) flat.push({ action, chord });
-  }
-  const rows = [];
-  for (let i = 0; i < flat.length; i += 1) {
-    for (let j = i + 1; j < flat.length; j += 1) {
-      const first = flat[i];
-      const second = flat[j];
-      if (first.action === second.action) continue;
-      if (first.chord === second.chord) {
-        rows.push({ a: first, b: second, type: "duplicate" });
-        continue;
-      }
-      const [firstMods, firstKey] = chordParts(first.chord);
-      const [secondMods, secondKey] = chordParts(second.chord);
-      if (firstKey !== secondKey) continue;
-      const short = firstMods.length <= secondMods.length ? firstMods : secondMods;
-      const long = firstMods.length <= secondMods.length ? secondMods : firstMods;
-      if (short.every((mod) => long.includes(mod)) && short.length < long.length) {
-        rows.push({ a: first, b: second, type: "similar" });
-      }
-    }
-  }
-  return rows;
+function chordLabel(chord) {
+  return String(chord || "")
+    .split("+")
+    .map((part) => (part.length === 1 ? part.toUpperCase() : part))
+    .join("+");
 }
 
 async function loadHotkeys() {
   try {
     const data = await api("/api/hotkeys");
     state.hotkeys = data.hotkeys || {};
-    state.hotkeyDefaults = data.defaults || FALLBACK_HOTKEYS;
-    state.hotkeyConflicts = data.conflicts || computeHotkeyConflicts(state.hotkeys);
+    state.hotkeyDefaults = data.defaults || {};
+    state.hotkeyConflicts = data.conflicts || [];
+    renderHotkeys();
   } catch (error) {
-    state.hotkeys = JSON.parse(JSON.stringify(FALLBACK_HOTKEYS));
-    state.hotkeyDefaults = JSON.parse(JSON.stringify(FALLBACK_HOTKEYS));
-    state.hotkeyConflicts = computeHotkeyConflicts(state.hotkeys);
+    state.hotkeys = { ...FALLBACK_HOTKEYS };
   }
 }
 
-function hotkeyActionFor(chord) {
-  if (!chord) return null;
+function actionForChord(chord) {
+  if (!chord) return "";
   for (const action of HOTKEY_ACTIONS) {
     if ((state.hotkeys[action] || []).includes(chord)) return action;
   }
-  return null;
+  return "";
 }
 
-function focusHotkeyConflict() {
-  const slot = document.querySelector("#hotkeys-list .hk-slot.clash");
-  if (!slot) return;
-  slot.scrollIntoView({ block: "center" });
-  slot.focus({ preventScroll: true });
+function runHotkey(action) {
+  switch (action) {
+    case "focus": $("q").focus(); return true;
+    case "search": $("q").focus(); $("q").select(); return true;
+    case "settings": setSettings(true); return true;
+    case "panel": setPanel(!$("panel").classList.contains("open")); return true;
+    case "duplicates": setDups(!$("dups-drawer").classList.contains("open")); return true;
+    case "export": openExport(true); return true;
+    default: return false;
+  }
 }
 
 function renderHotkeys() {
   const host = $("hotkeys-list");
   if (!host) return;
-  const clashes = new Set();
-  for (const row of state.hotkeyConflicts) {
-    clashes.add(`${row.a.action}|${row.a.chord}`);
-    clashes.add(`${row.b.action}|${row.b.chord}`);
-  }
-  host.innerHTML = HOTKEY_ACTIONS.map((action) => {
-    const chords = (state.hotkeys[action] || []).filter(Boolean).slice();
-    const slots = chords.map((chord, index) => `
-      <button type="button" class="hk-slot${clashes.has(`${action}|${chord}`) ? " clash" : ""}"
-              data-hk-action="${action}" data-hk-index="${index}"
-              title="${esc(t("hotkeys.clearHint"))}">${esc(hotkeyLabel(chord))}</button>`).join("");
-    // The trailing empty slot is where the next chord goes. It is the "press
-    // more keys and another field appears" behaviour, made visible.
-    return `<div class="hk-row" data-hk-row="${action}">
-      <span class="hk-label">${esc(t(`hotkeys.action.${action}`))}</span>
-      <div class="hk-slots">
-        ${slots}
-        <button type="button" class="hk-slot hk-empty"
-                data-hk-action="${action}" data-hk-index="${chords.length}"
-                title="${esc(t("hotkeys.recordHint"))}"
-                aria-label="${esc(t("hotkeys.recordHint"))}">+</button>
-      </div>
-    </div>`;
-  }).join("");
-
+  host.innerHTML = HOTKEY_ACTIONS.map((action) => `
+    <div class="hotkey-row">
+      <span class="hk-name">${esc(t(`hotkeys.action.${action}`))}</span>
+      <input data-hotkey="${action}" value="${esc((state.hotkeys[action] || []).join(", "))}"
+             spellcheck="false" aria-label="${esc(t(`hotkeys.action.${action}`))}">
+    </div>`).join("");
   const status = $("hotkeys-status");
   if (status) {
-    status.textContent = state.hotkeyConflicts.length ? t("hotkeys.conflict") : "";
-    status.classList.toggle("bad", state.hotkeyConflicts.length > 0);
+    status.textContent = state.hotkeyConflicts.length
+      ? t("hotkeys.conflict")
+      : "";
+    status.classList.toggle("conflict", Boolean(state.hotkeyConflicts.length));
   }
 }
-
-let hotkeyTimer = null;
 
 async function saveHotkeys() {
-  state.hotkeyConflicts = computeHotkeyConflicts(state.hotkeys);
-  renderHotkeys();
-  if (state.hotkeyConflicts.length) setTimeout(focusHotkeyConflict, 0);
-  clearTimeout(hotkeyTimer);
-  hotkeyTimer = setTimeout(async () => {
-    try {
-      const data = await api("/api/hotkeys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hotkeys: state.hotkeys }),
-      });
-      state.hotkeys = data.hotkeys || state.hotkeys;
-      state.hotkeyDefaults = data.defaults || state.hotkeyDefaults;
-      state.hotkeyConflicts = data.conflicts || [];
-      renderHotkeys();
-      if (state.hotkeyConflicts.length) focusHotkeyConflict();
-    } catch (error) {
-      toast(t("toast.failed", { error: error.message }));
-    }
-  }, 300);
-}
-
-/* Recording: the focused slot swallows the next chord. Modifier-only presses
-   are ignored so the user can hold Ctrl before the letter without the slot
-   committing to "ctrl" alone. Backspace clears a binding. */
-function recordHotkey(slot, event) {
-  const action = slot.dataset.hkAction;
-  const index = Number(slot.dataset.hkIndex);
-  if (event.key === "Backspace" || event.key === "Delete" || event.key === "Escape") {
-    const list = (state.hotkeys[action] || []).slice();
-    list.splice(index, 1);
-    state.hotkeys[action] = list.filter(Boolean);
-    saveHotkeys();
-    return;
+  const parsed = {};
+  for (const input of document.querySelectorAll("[data-hotkey]")) {
+    const chords = input.value.split(",").map((c) => c.trim().toLowerCase()).filter(Boolean);
+    parsed[input.dataset.hotkey] = chords;
   }
-  const chord = chordOfEvent(event);
-  if (!chord) return;
-  const list = (state.hotkeys[action] || []).slice();
-  while (list.length < index) list.push("");
-  list[index] = chord;
-  state.hotkeys[action] = list.filter(Boolean);
-  saveHotkeys();
-  // Focus the slot that is about to become the next empty one.
-  setTimeout(() => {
-    const next = document.querySelector(
-      `#hotkeys-list [data-hk-action="${action}"][data-hk-index="${state.hotkeys[action].length}"]`,
-    );
-    next?.focus({ preventScroll: true });
-  }, 0);
-}
-
-/* --------------------------------------------------------- why found/tags */
-
-const CHANNEL_REASON = {
-  bm25: "why.text", vector: "why.semantic", fuzzy: "why.name", cjk: "why.cjk",
-  tri: "why.typo", regex: "why.regex", symbol: "why.definition", filter: "why.filter",
-};
-
-function whyFound(hit) {
-  if (!hit) return [];
-  const reasons = [];
-  for (const channel of hit.channels || []) {
-    reasons.push(t(CHANNEL_REASON[channel] || "why.text"));
-  }
-  if (hit.pinned) reasons.push(t("why.pinned"));
-  if (hit.tags && hit.tags.length) reasons.push(t("why.tagged", { tags: hit.tags.join(", ") }));
-  if (hit.opens) reasons.push(t("why.opened", { n: hit.opens }));
-  if (hit.last_open) reasons.push(t("why.lastOpen", { date: dateLabel(hit.last_open) }));
-  if (hit.group_size > 1) reasons.push(t("why.grouped", { n: hit.group_size }));
-  if (!reasons.length) reasons.push(t("why.listed"));
-  return reasons;
-}
-
-function showWhy(button) {
-  const card = button.closest(".card");
-  const hit = state.hits[Number(card?.dataset.index)];
-  if (!card || !hit) return;
-  const existing = card.querySelector(".why-list");
-  if (existing) { existing.remove(); button.classList.remove("open"); return; }
-  button.classList.add("open");
-  card.insertAdjacentHTML("beforeend",
-    `<ul class="why-list">${whyFound(hit).map((reason) => `<li>${esc(reason)}</li>`).join("")}</ul>`);
-}
-
-/* ------------------------------------------------------- tags/collections */
-
-async function loadMeta(force = false) {
-  if (state.metaLoaded && !force) return;
   try {
-    const [tags, collections] = await Promise.all([api("/api/tags"), api("/api/collections")]);
-    state.tags = tags.tags || [];
-    state.collections = collections.collections || [];
-    state.metaLoaded = true;
-  } catch (error) {
-    /* the personal layer must never break the screen */
-  }
-}
-
-function runToken(token) {
-  const base = $("q").value.trim();
-  $("q").value = base.includes(token) ? base : (base ? `${base} ${token}` : token);
-  clearTimeout(state.timer);
-  runSearch();
-  $("q").focus();
-}
-
-function runTag(tag) { runToken(`tag:"${tag}"`); }
-function runCollection(name) { runToken(`collection:"${name}"`); }
-
-const ANNOTATE = { kind: "tag", ids: [] };
-
-function openAnnotate(kind, ids) {
-  const list = [...new Set(ids.map(Number).filter(Boolean))];
-  if (!list.length) { toast(t("bulk.nothing")); return; }
-  ANNOTATE.kind = kind;
-  ANNOTATE.ids = list;
-  const isTag = kind === "tag";
-  $("annotate-title").textContent = t(isTag ? "annotate.tagTitle" : "annotate.collectionTitle", { n: list.length });
-  const chips = isTag
-    ? (state.tags || []).map((item) => `
-        <button type="button" class="annotate-chip" data-annotate-tag="${esc(item.tag)}">
-          #${esc(item.tag)} <b>${item.count}</b></button>`).join("")
-    : (state.collections || []).map((item) => `
-        <button type="button" class="annotate-chip" data-annotate-collection="${item.id}">
-          ${esc(item.name)} <b>${item.count}</b></button>`).join("");
-  $("annotate-body").innerHTML = `
-    <div class="annotate-add">
-      <input id="annotate-input" autocomplete="off" spellcheck="false"
-             placeholder="${esc(t(isTag ? "annotate.tagPlaceholder" : "annotate.collectionPlaceholder"))}">
-      <button class="btn mini primary" type="button" id="annotate-add">${esc(t("annotate.add"))}</button>
-    </div>
-    <div class="annotate-chips">${chips || `<p class="settings-note">${esc(t("annotate.empty"))}</p>`}</div>
-    <p class="annotate-note" data-i18n="${isTag ? "annotate.tagNote" : "annotate.collectionNote"}"></p>`;
-  applyStaticText();
-  $("annotate").hidden = false;
-  $("annotate-input")?.focus();
-}
-
-function closeAnnotate() {
-  $("annotate").hidden = true;
-}
-
-async function applyTag(tag, ids) {
-  const clean = String(tag || "").trim();
-  if (!clean) { $("annotate-input")?.focus(); return; }
-  try {
-    await api("/api/tag", {
+    const data = await api("/api/hotkeys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tag: clean, ids, on: true }),
+      body: JSON.stringify({ hotkeys: parsed }),
     });
-    for (const id of ids) {
-      const hit = state.hits.find((item) => item.file_id === id);
-      if (hit) hit.tags = [...new Set([...(hit.tags || []), clean])].sort();
-    }
-    await loadMeta(true);
-    refreshResults();
-    paintPersonal();
-    closeAnnotate();
-    toast(t("annotate.tagged", { tag: clean, n: ids.length }));
+    state.hotkeys = data.hotkeys || state.hotkeys;
+    state.hotkeyDefaults = data.defaults || state.hotkeyDefaults;
+    state.hotkeyConflicts = data.conflicts || [];
+    renderHotkeys();
   } catch (error) {
     toast(t("toast.failed", { error: error.message }));
   }
 }
 
-async function applyCollection(collectionId, name, ids) {
-  try {
-    let id = Number(collectionId) || 0;
-    if (!id) {
-      const created = await api("/api/collections", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create", name }),
-      });
-      id = Number(created.id) || 0;
-    }
-    if (!id) return;
-    await api("/api/collections", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "add", id, ids }),
-    });
-    await loadMeta(true);
-    paintPersonal();
-    closeAnnotate();
-    toast(t("annotate.added", { n: ids.length }));
-  } catch (error) {
-    toast(t("toast.failed", { error: error.message }));
-  }
-}
-
-/* ------------------------------------------------------------- multi-select */
-
-function paintBulk() {
-  const bar = $("bulk-bar");
-  if (!bar) return;
-  const count = state.picked.size;
-  bar.hidden = count === 0;
-  $("bulk-count").textContent = t("bulk.count", { n: count });
-}
-
-function togglePick(fileId, wanted) {
-  const id = Number(fileId);
-  const on = wanted === undefined ? !state.picked.has(id) : Boolean(wanted);
-  if (on) state.picked.add(id); else state.picked.delete(id);
-  document.querySelectorAll(`[data-pick="${id}"]`).forEach((box) => { box.checked = on; });
-  document.querySelectorAll(`.card[data-file="${id}"]`).forEach((card) => {
-    card.classList.toggle("picked", on);
-  });
-  paintBulk();
-}
-
-function clearPicks() {
-  state.picked.clear();
-  document.querySelectorAll("[data-pick]").forEach((box) => { box.checked = false; });
-  document.querySelectorAll(".card.picked").forEach((card) => card.classList.remove("picked"));
-  paintBulk();
-}
-
-function pickedHits() {
-  return state.hits.filter((hit) => state.picked.has(hit.file_id));
-}
-
-/* --------------------------------------------------------------- filters */
-
-function stripTokens(text, tokens) {
-  let out = String(text || "");
-  for (const token of tokens) out = out.split(token).join(" ");
-  return out.replace(/\s+/g, " ").trim();
-}
-
-function paintFilters() {
-  const type = $("f-type");
-  if (!type) return;
-  // Custom types are a kind tab, not a grammar token; they still belong in the
-  // builder because that is where a person looks for "only my kind of file".
-  const current = type.value;
-  type.querySelectorAll("[data-custom-option]").forEach((node) => node.remove());
-  for (const custom of state.types || []) {
-    if (!custom.id || !custom.name) continue;
-    const option = document.createElement("option");
-    option.value = `custom:${custom.id}`;
-    option.textContent = custom.name;
-    option.dataset.customOption = "1";
-    type.appendChild(option);
-  }
-  if (current) type.value = current;
-
-  const tagList = $("filter-tag-list");
-  if (tagList) {
-    tagList.innerHTML = (state.tags || [])
-      .map((item) => `<option value="${esc(item.tag)}"></option>`).join("");
-  }
-  const collections = $("f-collection");
-  if (collections) {
-    const value = collections.value;
-    collections.querySelectorAll("[data-dynamic-option]").forEach((node) => node.remove());
-    for (const item of state.collections || []) {
-      const option = document.createElement("option");
-      option.value = item.name;
-      option.textContent = `${item.name} (${item.count})`;
-      option.dataset.dynamicOption = "1";
-      collections.appendChild(option);
-    }
-    if (value) collections.value = value;
-  }
-  syncFilterPickers();
-}
-
-function builtFilterTokens() {
-  const tokens = [];
-  const type = $("f-type")?.value || "";
-  if (type && !type.startsWith("custom:")) tokens.push(`type:${type}`);
-  const folder = $("f-folder")?.value.trim();
-  if (folder) tokens.push(`in:"${folder.replace(/"/g, "")}"`);
-  const min = Number($("f-size-min")?.value);
-  const max = Number($("f-size-max")?.value);
-  const minUnit = $("f-size-min-unit")?.value || "mb";
-  const maxUnit = $("f-size-max-unit")?.value || "mb";
-  if (min > 0) tokens.push(`size:>=${min}${minUnit}`);
-  if (max > 0) tokens.push(`size:<${max}${maxUnit}`);
-  const period = $("f-period")?.value;
-  if (period) tokens.push(`modified:${period}`);
-  const tag = $("f-tag")?.value.trim();
-  if (tag) tokens.push(`tag:"${tag.replace(/"/g, "")}"`);
-  const collection = $("f-collection")?.value;
-  if (collection) tokens.push(`collection:"${collection.replace(/"/g, "")}"`);
-  return tokens;
-}
-
-function paintFilterPreview() {
-  const preview = $("filter-preview");
-  if (!preview) return;
-  preview.textContent = builtFilterTokens().join(" ");
-}
-
-function openFilters(open) {
-  const box = $("filter-builder");
-  if (!box) return;
-  box.hidden = !open;
-  $("filters-btn").setAttribute("aria-expanded", String(open));
-  if (open) {
-    box.style.left = "";
-    box.style.top = "";
-    box.style.right = "";
-    paintFilters();
-    paintFilterPreview();
-  } else {
-    document.querySelectorAll(".unit-picker").forEach((picker) => setUnitMenu(picker, false));
-    document.querySelectorAll(".filter-picker").forEach((picker) => setFilterPicker(picker, false));
-  }
-}
-
-function applyFilters() {
-  const custom = $("f-type")?.value || "";
-  if (custom.startsWith("custom:")) {
-    // A custom type is a tab, not a grammar token; select the tab so the same
-    // filter can also be seen and undone in the header.
-    state.kind = custom;
-    state.filterCustom = custom;
-    document.querySelectorAll(".menu .chip").forEach((chip) => {
-      chip.classList.toggle("active", chip.dataset.kind === state.kind);
-    });
-  } else if (state.filterCustom) {
-    // Switching the builder away from a custom type must not leave its tab
-    // filtering the results behind a `type:` token that says otherwise.
-    if (state.kind === state.filterCustom) {
-      state.kind = "";
-      document.querySelectorAll(".menu .chip").forEach((chip) => {
-        chip.classList.toggle("active", chip.dataset.kind === "");
-      });
-    }
-    state.filterCustom = null;
-  }
-  const tokens = builtFilterTokens();
-  const base = stripTokens($("q").value, state.filterTokens || []);
-  $("q").value = [base, ...tokens].filter(Boolean).join(" ");
-  state.filterTokens = tokens;
-  $("save-btn").classList.toggle("show", Boolean($("q").value.trim()));
-  openFilters(false);
-  runSearch();
-  $("q").focus();
-}
-
-function clearFilters() {
-  $("f-type").value = "";
-  $("f-folder").value = "";
-  $("f-size-min").value = "";
-  $("f-size-max").value = "";
-  $("f-size-min-unit").value = "mb";
-  $("f-size-max-unit").value = "mb";
-  document.querySelectorAll(".unit-picker").forEach(paintUnit);
-  $("f-period").value = "";
-  $("f-tag").value = "";
-  $("f-collection").value = "";
-  syncFilterPickers();
-  $("q").value = stripTokens($("q").value, state.filterTokens || []);
-  state.filterTokens = [];
-  if (state.filterCustom && state.kind === state.filterCustom) {
-    state.kind = "";
-    document.querySelectorAll(".menu .chip").forEach((chip) => {
-      chip.classList.toggle("active", chip.dataset.kind === "");
-    });
-  }
-  state.filterCustom = null;
-  $("save-btn").classList.toggle("show", Boolean($("q").value.trim()));
-  paintFilterPreview();
-  if ($("q").value.trim()) runSearch(); else renderIdle();
-}
-
-/* ---------------------------------------------------------------- export */
-
-function downloadUrl(url, filename) {
-  const link = document.createElement("a");
-  link.href = url;
-  if (filename) link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-}
-
-function exportResults(format) {
-  const query = (state.query || $("q").value).trim();
-  if (!query) { toast(t("export.empty")); return; }
-  const params = new URLSearchParams({ q: query, format });
-  if (state.kind) params.set("kind", state.kind);
-  if (state.folder) params.set("folder", state.folder);
-  if (state.since) params.set("since", state.since);
-  if (state.docdate) params.set("docdate", "1");
-  if (state.sort && state.sort !== "best") params.set("sort", state.sort);
-  downloadUrl(`/api/export?${params}`);
-  $("export-menu").hidden = true;
-  $("export-btn").setAttribute("aria-expanded", "false");
-  toast(t("export.started"));
-}
-
-function exportPicked() {
-  const hits = pickedHits();
-  if (!hits.length) { toast(t("bulk.nothing")); return; }
-  const rows = [["name", "path", "kind", "size", "modified", "score", "tags"]];
-  for (const hit of hits) {
-    rows.push([
-      hit.name, hit.path, hit.kind, hit.size,
-      new Date(hit.mtime * 1000).toISOString(),
-      Number(hit.score || 0).toFixed(6),
-      (hit.tags || []).join("; "),
-    ]);
-  }
-  // A file name is user-typed data; a cell that opens with = + - @ would
-  // run as a formula the moment Excel opens the export.
-  const safe = (cell) => {
-    let text = String(cell ?? "").replace(/"/g, '""');
-    if (/^[=+\-@]/.test(text)) text = `'${text}`;
-    return `"${text}"`;
-  };
-  const csv = rows.map((row) => row.map(safe).join(",")).join("\r\n");
-  const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  downloadUrl(url, "autofind-selection.csv");
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
-}
-
-/* ----------------------------------------------------------------- calendar */
-
-/* The "since" filter used to be `<input type="date">`. A native date input
-   draws its ghost text and its popup in the OS locale and cannot be told
-   otherwise from script — an English interface on a Russian Windows still said
-   "дд.мм.гггг" and opened a Russian calendar. This one is ours: rounded, grey,
-   and it speaks the interface language because its month and weekday names come
-   from the same dictionary as everything else. */
-const CAL = { open: false, year: 0, month: 0 };
-
-function pad2(number) {
-  return String(number).padStart(2, "0");
-}
-
-function isoDate(date) {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
-}
-
-function parseIso(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
-  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
-}
-
-function calWords(key) {
-  return t(key).split(",").map((word) => word.trim());
-}
-
-function paintSince() {
-  const label = $("since-label");
-  if (!label) return;
-  const date = parseIso(state.since);
-  label.textContent = date
-    ? date.toLocaleDateString(locale(), { day: "numeric", month: "short", year: "numeric" })
-    : t("tools.any");
-  $("since-btn").classList.toggle("set", Boolean(date));
-}
-
-function openCalendar(open) {
-  const box = $("calendar");
-  if (!box) return;
-  CAL.open = open;
-  box.hidden = !open;
-  $("since-btn").setAttribute("aria-expanded", String(open));
-  if (!open) return;
-  const anchor = parseIso(state.since) || new Date();
-  CAL.year = anchor.getFullYear();
-  CAL.month = anchor.getMonth();
-  renderCalendar();
-}
-
-function renderCalendar() {
-  const months = calWords("cal.months");
-  $("cal-title").textContent = t("cal.monthYear", {
-    month: months[CAL.month], year: CAL.year,
-  });
-  $("cal-week").innerHTML = calWords("cal.weekdays")
-    .map((name) => `<span>${esc(name)}</span>`).join("");
-
-  // Monday first, which is what the rest of the interface assumes: the week
-  // starts on Monday in the locale this was written for, and a Sunday-first
-  // grid next to a Monday-first hint row is a bug waiting to be reported.
-  const start = (new Date(CAL.year, CAL.month, 1).getDay() + 6) % 7;
-  const days = new Date(CAL.year, CAL.month + 1, 0).getDate();
-  const today = isoDate(new Date());
-  const cells = [];
-  for (let blank = 0; blank < start; blank += 1) cells.push("<span></span>");
-  for (let day = 1; day <= days; day += 1) {
-    const value = isoDate(new Date(CAL.year, CAL.month, day));
-    const classes = ["cal-day"];
-    if (value === state.since) classes.push("sel");
-    if (value === today) classes.push("today");
-    cells.push(`<button type="button" class="${classes.join(" ")}" data-day="${value}">${day}</button>`);
-  }
-  $("cal-grid").innerHTML = cells.join("");
-}
-
-function setSince(value) {
-  state.since = value;
-  paintSince();
-  openCalendar(false);
-  // The day button that was just clicked is gone with the popup; focus goes
-  // back to the trigger so the keyboard is not stranded on a hidden element.
-  $("since-btn").focus();
-  if (state.query) runSearch();
-}
-
-/* ------------------------------------------------------------------ search */
-
-function scheduleSearch() {
-  clearTimeout(state.timer);
-  state.timer = setTimeout(runSearch, 150);
-}
-
-async function runSearch(options = {}) {
-  const append = Boolean(options.append);
-  const query = $("q").value.trim();
-  state.query = query;
-  // The bookmark only exists while there is something to save.
-  $("save-btn").classList.toggle("show", Boolean(query));
-  if (!query) {
-    state.hits = [];
-    state.total = 0;
-    state.nextOffset = null;
-    clearPicks();
-    renderIdle();
-    $("meta").textContent = "";
-    return;
-  }
-  const offset = append ? (state.nextOffset ?? 0) : 0;
-  // "show more" is the request's own UI: it leaves the moment it is clicked,
-  // and the appended page puts a fresh one back at the bottom. If the request
-  // fails there is nothing new below, so the old button returns where it was.
-  const moreBtn = append ? $("more-btn") : null;
-  if (moreBtn) moreBtn.remove();
-  // A slow response must never overwrite a newer one: every search gets a
-  // sequence number and only the latest may paint.
-  document.querySelectorAll(".suggestion").forEach((el) => el.remove());
-  const seq = ++state.searchSeq;
-  const params = new URLSearchParams({ q: query, limit: "12", offset: String(offset) });
-  if (state.kind) params.set("kind", state.kind);
-  if (state.folder) params.set("folder", state.folder);
-  if (state.since) params.set("since", state.since);
-  if (state.docdate) params.set("docdate", "1");
-  if (state.sort && state.sort !== "best") params.set("sort", state.sort);
-
-  try {
-    const data = await api(`/api/search?${params}`);
-    if (seq !== state.searchSeq) return;
-    state.hits = append ? state.hits.concat(data.hits) : data.hits;
-    state.total = data.total ?? data.hits.length;
-    state.nextOffset = data.next_offset ?? null;
-    state.approx = Boolean(data.approx);
-    state.chips = data.chips || [];
-    state.facets = data.facets || {};
-    if (!append) { rememberQuery(query); clearPicks(); }
-    renderResults(data, append);
-    const shown = state.hits.length;
-    $("meta").textContent = shown
-      ? t("search.meta", {
-        shown, total: state.total, ms: data.ms, sign: state.approx ? "≈" : "",
-      })
-      : `${data.ms} ${t("unit.ms")}`;
-    const suggestion = data.suggestion;
-    if (suggestion) {
-      const hint = document.createElement("button");
-      hint.type = "button";
-      hint.className = "suggestion";
-      hint.textContent = t("hint.did_you_mean", { value: suggestion });
-      hint.addEventListener("click", () => {
-        $("q").value = suggestion;
-        scheduleSearch();
-        hint.remove();
-      });
-      $("meta").after(hint);
-    }
-  } catch (error) {
-    if (moreBtn) $("content").appendChild(moreBtn);
-    toast(t("search.failed", { error: error.message }));
-  }
-}
-
-function clearChip(source) {
-  const input = $("q");
-  if (!source) return;
-  input.value = input.value.replace(source, " ").replace(/\s+/g, " ").trim();
-  clearTimeout(state.timer);
-  runSearch();
-  input.focus();
-}
-
-function renderIdle() {
-  // The kind tabs live outside #content, so replacing the page does not touch
-  // them: without this the last search's facet numbers stay glued to the tabs
-  // after the query is cleared.
-  paintFacets({});
-  $("content").innerHTML = `
-    <div class="empty">
-      <div class="empty-body">
-        <div class="empty-card">
-          <h2>${esc(t("idle.title"))}</h2>
-          <p>${esc(t("idle.body"))}</p>
-          <p class="empty-tip">${esc(t("idle.tip"))}</p>
-        </div>
-        <div class="personal" id="personal" hidden></div>
-        <div class="recent" id="recent" hidden></div>
-      </div>
-    </div>`;
-  Promise.all([loadPersonal(), loadMeta()]).then(paintPersonal);
-  loadRecent();
-}
-
-/* Re-render the cards from the data already in `state`, without refetching:
-   a tag added on the page shows up immediately and the scroll position stays. */
-function refreshResults() {
-  if (!state.hits.length) { renderIdle(); return; }
-  renderResults({
-    query: state.query,
-    chips: state.chips || [],
-    facets: state.facets || {},
-    images: [],
-  }, false);
-}
-
-/* ------------------------------------------------------------------ theme */
+/* -------------------------------------------------------------- theme/look */
 
 /* The window is a photo with an interface on top of it, so the interface cannot
-   have one fixed palette: a blue-grey panel on a warm sand photo reads as a
-   mistake. Everything is derived from a single hue, `--hue`, and a background
-   brings its own: the presets carry theirs, and a picture chosen by hand is
-   measured with a canvas — the circular mean of its saturated pixels, which is
-   the colour the eye remembers rather than the average RGB (which is almost
-   always grey).
-
-   The choice lives in `localStorage`, the picture itself on the server: a 4 MB
-   photo does not belong in a 5 MB storage quota, and `~/.autofind` travels with
-   a backup while a cache clear would take the wallpaper with it. */
+   have one fixed palette: everything is derived from a single hue, `--hue`.
+   The choice lives in `localStorage`, the picture itself on the server. */
 const WALL_KEY = "autofind.wall";
 const WALL_MAX_MB = 12;
 
@@ -872,13 +507,6 @@ const WALLS = [
   { id: "ocean", wall: "linear-gradient(155deg,#0f3a44 0%,#0a1b20 52%,#050b0d 100%)", hue: 191, sat: 12 },
 ];
 
-// A chosen picture is framed after upload in its own editor: drag puts the
-// focus point where the eye should land, the slider (or the wheel) pushes in.
-// The focus is a fraction of the picture (fx, fy) that always sits at the same
-// fraction of the screen, so zooming never drags the subject off its spot. The
-// presets are gradients, so the editor means nothing for them and its button is
-// hidden. Scale starts at 1: anything below lets the layer shrink away from the
-// screen edges and show the void behind it.
 const WALL_ZOOM_MIN = 1;
 const WALL_ZOOM_MAX = 2.5;
 
@@ -892,12 +520,9 @@ function clampScale(value) {
 
 let theme = WALLS[0];
 
-/* --------------------------------------------------------- look (appearance) */
-
 /* The second half of Appearance: everything the wallpaper does not decide.
-   Where the theme picks a palette from one photo, the look governs how the
-   glass over it behaves — tint override, blur, translucency, dimming, corner
-   radius — all as CSS variables, all persisted together in localStorage. */
+   Tint override, blur, translucency, dimming, corner radius — all CSS
+   variables, all persisted together. */
 const LOOK_KEY = "autofind.look";
 
 const DEFAULT_LOOK = {
@@ -948,9 +573,6 @@ function saveLook() {
 
 function applyLook() {
   const root = document.documentElement;
-  // The tint override is the one setting that argues with the theme: by
-  // default the wallpaper decides the palette, and the sliders win only
-  // when "follow the wallpaper" is switched off.
   root.style.setProperty("--hue", look.tintAuto
     ? String(Math.round(theme.hue))
     : String(Math.round(look.hue)));
@@ -993,7 +615,6 @@ function renderLook() {
   set("tint-sat", look.sat);
   const auto = $("tint-auto");
   if (auto) auto.checked = look.tintAuto;
-  // Custom sliders only answer when they own the colour.
   const locked = look.tintAuto;
   ["tint-hue", "tint-sat"].forEach((id) => {
     const node = $(id);
@@ -1035,8 +656,6 @@ function loadTheme() {
     saved = null;
   }
   if (saved && typeof saved.wall === "string" && Number.isFinite(saved.hue)) {
-    // Saves from the three-button era carry `pos` as a word; it maps onto the
-    // vertical focus and keeps the picture where the user last put it.
     const legacyY = { top: 0, center: 0.5, bottom: 1 }[saved.pos];
     applyTheme({
       id: saved.id || "custom",
@@ -1052,14 +671,19 @@ function loadTheme() {
   applyTheme(WALLS[0]);
 }
 
+function renderWallEdit() {
+  const edit = $("wall-edit");
+  // The controls only make sense for a picture the user chose, not a gradient.
+  if (edit) edit.hidden = theme.id !== "custom";
+}
+
 function renderWalls() {
   const row = $("wall-row");
   if (!row) return;
   row.querySelectorAll("[data-wall]").forEach((tile) => {
     const preset = WALLS.find((item) => item.id === tile.dataset.wall);
     // Only the image, never the `background` shorthand: the shorthand would
-    // reset `cover` and the tile would show the top-left corner of the photo
-    // instead of the picture as it will actually be laid out.
+    // reset `cover` and the tile would show the top-left corner of the photo.
     if (preset) tile.style.backgroundImage = preset.wall;
     const active = theme.id === tile.dataset.wall;
     tile.classList.toggle("on", active);
@@ -1071,87 +695,6 @@ function renderWalls() {
   custom.classList.toggle("on", active);
   custom.style.backgroundImage = active ? theme.wall : "";
   renderWallEdit();
-}
-
-function renderWallEdit() {
-  const edit = $("wall-edit");
-  // The controls only make sense for a picture the user chose, not a gradient.
-  if (edit) edit.hidden = theme.id !== "custom";
-}
-
-/* ------------------------------------------------------------ wall editor */
-
-/* The editor preview is painted by the same four variables as the real layer
-   (`--wall`, `--wall-pos`, `--wall-scale`), so there is no second way to draw a
-   wallpaper that could drift from the first. Math for the drag: the composite
-   of `background-position: fx fy` and a `scale(s)` about the same point is
-   identical to a picture drawn at `cover * s` with the focus fraction (fx, fy)
-   of the image hidden off the left/top by fx/fy of the slack — so dragging the
-   picture by dx pixels simply moves fx by dx over that slack. */
-const editor = {
-  open: false,
-  image: null, // natural size of the current picture, for the slack math
-  url: null,
-};
-
-function wallImageUrl() {
-  const match = theme.wall.match(/^url\("(.*)"\)$/);
-  return match ? match[1] : null;
-}
-
-async function openWallEditor() {
-  if (theme.id !== "custom") return;
-  const url = wallImageUrl();
-  if (!url) return;
-  editor.open = true;
-  $("wall-editor").classList.add("open");
-  syncWallZoom();
-  if (editor.url === url && editor.image) return;
-  editor.url = url;
-  editor.image = null;
-  try {
-    editor.image = await loadImage(url);
-  } catch (error) {
-    editor.image = null; // the drag needs the natural size; without it, no drag
-  }
-}
-
-function closeWallEditor() {
-  editor.open = false;
-  $("wall-editor").classList.remove("open");
-}
-
-function syncWallZoom() {
-  $("wall-zoom").value = String(clampScale(theme.scale));
-}
-
-function editWall(next) {
-  applyTheme({ ...theme, ...next });
-  saveTheme(theme);
-  renderWalls();
-}
-
-function stageCover(stage, image) {
-  // The drawn size of the picture before the zoom slider: `cover` on the stage.
-  const factor = Math.max(stage.clientWidth / image.naturalWidth,
-                          stage.clientHeight / image.naturalHeight);
-  return {
-    width: image.naturalWidth * factor,
-    height: image.naturalHeight * factor,
-  };
-}
-
-function setWallFocus(fx, fy) {
-  editWall({ fx: clamp01(fx), fy: clamp01(fy) });
-}
-
-function setWallZoom(scale) {
-  editWall({ scale: clampScale(scale) });
-}
-
-function resetWallFrame() {
-  editWall({ fx: 0.5, fy: 0.5, scale: 1 });
-  syncWallZoom();
 }
 
 function chooseWall(id) {
@@ -1188,13 +731,8 @@ function rgbToHsl(red, green, blue) {
   return [(hue * 60 + 360) % 360, saturation, lightness];
 }
 
-/* One hue for the whole window, taken from the picture itself.
-
-   A plain average of the pixels is always grey — a photo has as much red as
-   blue and the mean lands in the middle. So each pixel votes weighted by how
-   saturated and how mid-toned it is, and the votes are averaged as angles,
-   which is the only correct way to average a hue (350° and 10° are 20° apart,
-   not 340°). A grey picture returns null and the default blue-grey stays. */
+/* One hue for the whole window, taken from the picture itself: each pixel
+   votes weighted by saturation and midness, votes averaged as angles. */
 function hueOfImage(image) {
   const canvas = document.createElement("canvas");
   canvas.width = 32;
@@ -1221,8 +759,6 @@ function hueOfImage(image) {
     weight += vote;
   }
   if (weight < 0.6) return null;
-  // One decimal is all a palette needs, and `20.000000000000284` in storage
-  // reads like a bug the next time somebody opens the dev tools.
   const degrees = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
   return Math.round(degrees * 10) / 10;
 }
@@ -1265,374 +801,446 @@ async function useWallFile(file) {
   }
 }
 
-/* --------------------------------------------------------------- personal */
+/* ------------------------------------------------------------ wall editor */
 
-/* Pins, saved searches and the dictionary are the three things a person brings
-   with them from another search app, so they get the prime screen: the empty
-   screen is where you decide whether an app is worth keeping. They live in the
-   same database as the index, which is what makes `autofind import kensaku` a
-   copy rather than a retyping.
+const editor = {
+  open: false,
+  image: null,
+  url: null,
+};
 
-   The list is fetched once and cached. Every mutation refetches it, because a
-   star that stays lit while the idle screen still shows the old list is the
-   kind of half-truth that makes people distrust the whole app. */
-let personal = null;
+function wallImageUrl() {
+  const match = theme.wall.match(/^url\("(.*)"\)$/);
+  return match ? match[1] : null;
+}
 
-async function loadPersonal(force = false) {
-  if (personal && !force) return personal;
+async function openWallEditor() {
+  if (theme.id !== "custom") return;
+  const url = wallImageUrl();
+  if (!url) return;
+  editor.open = true;
+  $("wall-editor").classList.add("open");
+  syncWallZoom();
+  if (editor.url === url && editor.image) return;
+  editor.url = url;
+  editor.image = null;
   try {
-    personal = await api("/api/personal");
+    editor.image = await loadImage(url);
   } catch (error) {
-    personal = null; // the personal layer must never break the screen
-  }
-  return personal;
-}
-
-function paintPersonal() {
-  const host = $("personal");
-  if (!host || !personal) return;
-  const pins = personal.pins || [];
-  const saved = personal.saved || [];
-  // An empty block is not hidden: the empty screen is the one place where a
-  // feature nobody has used yet can explain itself in a line, and "nothing
-  // pinned yet" is how a star on a result becomes a thing people know about.
-  const blocks = [
-    `<div class="personal-block">
-        <h3>${esc(t("idle.pinned"))}</h3>
-        ${pins.length
-          ? `<div class="pin-list">${pins.map(pinRow).join("")}</div>`
-          : `<p class="personal-empty">${esc(t("idle.pinsEmpty"))}</p>`}
-      </div>`,
-    `<div class="personal-block">
-        <h3>${esc(t("idle.saved"))}</h3>
-        ${saved.length
-          ? `<div class="saved-list">${saved.map(savedChip).join("")}</div>`
-          : `<p class="personal-empty">${esc(t("idle.savedEmpty"))}</p>`}
-      </div>`,
-    `<div class="personal-block">
-        <h3>${esc(t("idle.tags"))}</h3>
-        ${(state.tags || []).length
-          ? `<div class="tag-cloud">${state.tags.map((item) => `
-              <button class="tag-chip" type="button" data-tag-run="${esc(item.tag)}">
-                #${esc(item.tag)} <b>${item.count}</b></button>`).join("")}</div>`
-          : `<p class="personal-empty">${esc(t("idle.tagsEmpty"))}</p>`}
-      </div>`,
-    `<div class="personal-block">
-        <h3>${esc(t("idle.collections"))}</h3>
-        ${(state.collections || []).length
-          ? `<div class="tag-cloud">${state.collections.map((item) => `
-              <button class="tag-chip" type="button" data-collection-run="${esc(item.name)}">
-                ${esc(item.name)} <b>${item.count}</b></button>`).join("")}</div>`
-          : `<p class="personal-empty">${esc(t("idle.collectionsEmpty"))}</p>`}
-      </div>`,
-  ];
-  host.innerHTML = blocks.join("");
-  host.hidden = false;
-}
-
-function pinRow(item) {
-  const icon = item.is_image && item.thumb
-    ? `<img class="pin-thumb" src="${item.thumb}" alt="" loading="lazy">`
-    : `<span class="pin-kind k-${item.kind}">${esc(KIND_LABEL[item.kind] || item.kind)}</span>`;
-  // Titles on markup that is built after `applyStaticText` ran are written from
-  // `t()` directly: a `data-i18n-title` here would never be read, and the button
-  // would end up with no tooltip at all.
-  return `<div class="pin-row">
-      <button class="pin-star on" type="button" data-pin="${item.file_id}"
-              aria-pressed="true" title="${esc(t("card.unpin"))}">★</button>
-      ${icon}
-      <button class="pin-name" type="button" data-open="${item.file_id}">${esc(item.name)}</button>
-      <span class="pin-path" title="${esc(item.path)}">${esc(item.path)}</span>
-    </div>`;
-}
-
-function savedChip(item) {
-  return `<span class="saved-chip">
-      <button class="saved-run" type="button" data-run="${esc(item.query)}">${esc(item.label)}</button>
-      <button class="saved-x" type="button" data-forget="${item.id}"
-              title="${esc(t("saved.forget"))}" aria-label="${esc(t("saved.forget"))}">×</button>
-    </span>`;
-}
-
-/* One star, three places it can appear: a result card, a pinned row on the
-   empty screen, and a second window. They all go through here so they cannot
-   disagree. */
-async function togglePin(fileId, wanted) {
-  const id = Number(fileId);
-  try {
-    const data = await api("/api/pin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(wanted === undefined ? { id } : { id, pinned: wanted }),
-    });
-    const hit = state.hits.find((item) => item.file_id === id);
-    if (hit) hit.pinned = data.pinned;
-    document.querySelectorAll(`[data-pin="${id}"]`).forEach((star) => {
-      star.classList.toggle("on", data.pinned);
-      star.setAttribute("aria-pressed", String(data.pinned));
-    });
-    await loadPersonal(true);
-    paintPersonal();
-    toast(t(data.pinned ? "pin.added" : "pin.removed"));
-  } catch (error) {
-    toast(t("toast.failed", { error: error.message }));
+    editor.image = null;
   }
 }
 
-/* Saving is a promise, so the bookmark answers at once: a small hop and a gold
-   glow. The class is dropped on a timer rather than `animationend` so a second
-   click restarts the whole motion instead of inheriting a finished one. */
-let saveTimer = 0;
-
-function pulseSave() {
-  const button = $("save-btn");
-  if (!button) return;
-  button.classList.remove("saved");
-  void button.offsetWidth;  // restart the keyframes from frame zero
-  button.classList.add("saved");
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => button.classList.remove("saved"), 1400);
+function closeWallEditor() {
+  editor.open = false;
+  $("wall-editor").classList.remove("open");
 }
 
-async function saveSearch() {
-  const query = $("q").value.trim();
-  if (!query) return;
-  pulseSave();
+function syncWallZoom() {
+  $("wall-zoom").value = String(clampScale(theme.scale));
+}
+
+function editWall(next) {
+  applyTheme({ ...theme, ...next });
+  saveTheme(theme);
+  renderWalls();
+}
+
+function stageCover(stage, image) {
+  const factor = Math.max(stage.clientWidth / image.naturalWidth,
+                          stage.clientHeight / image.naturalHeight);
+  return {
+    width: image.naturalWidth * factor,
+    height: image.naturalHeight * factor,
+  };
+}
+
+function setWallFocus(fx, fy) {
+  editWall({ fx: clamp01(fx), fy: clamp01(fy) });
+}
+
+function resetWallFrame() {
+  editWall({ fx: 0.5, fy: 0.5, scale: 1 });
+  syncWallZoom();
+}
+
+/* ------------------------------------------------------------------ search */
+
+const RECENT_KEY = "af.recent-queries";
+
+function recentQueries() {
   try {
-    await api("/api/saved", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-    });
-    await loadPersonal(true);
-    paintPersonal();
-    toast(t("saved.done", { query }));
+    return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
   } catch (error) {
-    toast(t("saved.failed", { error: error.message }));
+    return [];
   }
 }
 
-async function forgetSearch(savedId) {
+function rememberQuery(query) {
+  const clean = String(query || "").trim();
+  if (!clean) return;
+  const list = recentQueries().filter((item) => item !== clean);
+  list.unshift(clean);
   try {
-    await api("/api/saved/drop", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: Number(savedId) }),
-    });
-    await loadPersonal(true);
-    paintPersonal();
-    toast(t("saved.forgotten"));
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8)));
   } catch (error) {
-    toast(t("toast.failed", { error: error.message }));
+    /* private mode loses the memory, nothing else breaks */
   }
 }
 
-function renderAliases() {
-  const host = $("alias-list");
-  if (!host) return;
-  const rows = (personal && personal.aliases) || [];
-  host.innerHTML = rows.length
-    ? rows.map((item) => `<div class="alias-row">
-        <b>${esc(item.alias)}</b>
-        <span class="alias-arrow">→</span>
-        <span class="alias-means">${esc(item.expand)}</span>
-        <button class="alias-x" type="button" data-unalias="${esc(item.alias)}"
-                title="${esc(t("saved.forget"))}" aria-label="${esc(t("saved.forget"))}">×</button>
-      </div>`).join("")
-    : `<p class="settings-note" id="alias-empty">${esc(t("alias.empty"))}</p>`;
+function scheduleSearch() {
+  clearTimeout(state.timer);
+  state.timer = setTimeout(runSearch, 150);
 }
 
-let aliasBusy = false;
+function searchParams(offset) {
+  const params = new URLSearchParams({ q: state.query, limit: "12", offset: String(offset) });
+  if (state.kind) params.set("kind", state.kind);
+  if (state.folder) params.set("folder", state.folder);
+  if (state.since) params.set("since", state.since);
+  if (state.docdate) params.set("docdate", "1");
+  if (state.sort && state.sort !== "best") params.set("sort", state.sort);
+  return params;
+}
 
-async function addAlias() {
-  // One click, one entry: the flag closes the gap between the request and the
-  // fields being cleared, where a double click (or double Enter) used to add
-  // the same pair twice.
-  if (aliasBusy) return;
-  const alias = $("alias-word").value.trim();
-  const expand = $("alias-means").value.trim();
-  if (!alias || !expand) { toast(t("alias.need")); return; }
-  aliasBusy = true;
-  try {
-    await api("/api/alias", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ alias, expand }),
-    });
-    $("alias-word").value = "";
-    $("alias-means").value = "";
-    await loadPersonal(true);
-    renderAliases();
-    toast(t("alias.added", { alias, expand }));
-  } catch (error) {
-    toast(t("toast.failed", { error: error.message }));
-  } finally {
-    aliasBusy = false;
+async function runSearch(options = {}) {
+  const append = Boolean(options.append);
+  const rawQuery = $("q").value.trim();
+  state.query = rawQuery;
+  // Plain-language dates become the duration tokens the index understands;
+  // the query itself is rewritten so the filter is visible and removable.
+  const compiled = naturalDateCompile(state.query);
+  state.query = compiled.query;
+  if (compiled.changes.length && !append) {
+    $("q").value = state.query;
+    noteNaturalDate(compiled.changes);
   }
-}
-
-async function removeAlias(alias) {
-  try {
-    await api("/api/alias/drop", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ alias }),
-    });
-    await loadPersonal(true);
-    renderAliases();
-    toast(t("alias.removed", { alias }));
-  } catch (error) {
-    toast(t("toast.failed", { error: error.message }));
-  }
-}
-
-/* Custom file types: a name and any number of filename masks, edited in the
-   settings card and shown as extra tabs in the header. The catalog file is the
-   server's; this block keeps the DOM and `state.types` in step with it. */
-let typesTimer = null;
-
-async function loadTypes(force = false) {
-  if (state.typesLoaded && !force) return state.types;
-  try {
-    const data = await api("/api/types");
-    state.types = data.types || [];
-    state.typesLoaded = true;
-  } catch (error) {
-    state.types = state.types || []; // a bad catalog must not hide the settings
-  }
-  return state.types;
-}
-
-function collectTypes() {
-  const host = $("types-list");
-  if (!host) return;
-  state.types = [...host.querySelectorAll(".type-card")].map((card) => ({
-    id: card.dataset.type || "",
-    name: (card.querySelector(".type-name")?.value || "").trim(),
-    masks: [...card.querySelectorAll(".type-mask")]
-      .map((input) => input.value.trim())
-      .filter(Boolean),
-  }));
-}
-
-function renderTypes() {
-  const host = $("types-list");
-  if (!host) return;
-  const types = state.types || [];
-  if (!types.length) {
-    host.innerHTML = `<p class="settings-note" id="types-empty">${esc(t("types.empty"))}</p>`;
+  $("save-btn").classList.toggle("show", Boolean(state.query));
+  if (!state.query) {
+    state.hits = [];
+    state.total = 0;
+    state.nextOffset = null;
+    clearPicks();
+    state.withinText = "";
+    renderIdle();
+    const chips = $("query-chips");
+    if (chips) chips.hidden = true;
+    $("meta").textContent = "";
     return;
   }
-  host.innerHTML = types.map((type) => {
-    const masks = type.masks && type.masks.length ? type.masks : [""];
-    return `<div class="type-card" data-type="${esc(type.id || "")}">
-      <input class="type-name" data-type-name value="${esc(type.name || "")}"
-             placeholder="${esc(t("types.name"))}" autocomplete="off" spellcheck="false">
-      <div class="type-masks">
-        <button class="type-addmask" type="button" data-type-addmask
-                title="${esc(t("types.addMask"))}"
-                aria-label="${esc(t("types.addMask"))}">+</button>
-        <div class="type-mask-list">
-          ${masks.map((mask) => `<div class="type-mask-row">
-            <input class="type-mask" data-type-mask value="${esc(mask)}"
-                   placeholder="${esc(t("types.mask"))}" autocomplete="off" spellcheck="false">
-            <button class="type-x" type="button" data-type-rmmask
-                    title="${esc(t("types.removeMask"))}"
-                    aria-label="${esc(t("types.removeMask"))}">×</button>
-          </div>`).join("")}
+  const offset = append ? (state.nextOffset ?? 0) : 0;
+  const moreBtn = append ? $("more-btn") : null;
+  if (moreBtn) moreBtn.remove();
+  // A slow response must never overwrite a newer one: every search gets a
+  // sequence number and only the latest may paint.
+  document.querySelectorAll(".suggestion-inline").forEach((el) => el.remove());
+  const seq = ++state.searchSeq;
+  try {
+    const data = await api(`/api/search?${searchParams(offset)}`);
+    if (seq !== state.searchSeq) return;
+    state.hits = append ? state.hits.concat(data.hits) : data.hits;
+    state.total = data.total ?? data.hits.length;
+    state.nextOffset = data.next_offset ?? null;
+    state.approx = Boolean(data.approx);
+    state.chips = data.chips || [];
+    state.facets = data.facets || {};
+    if (!append) {
+      rememberQuery(rawQuery || state.query);
+      clearPicks();
+      state.withinText = "";
+      pushFilterHistory(rawQuery || state.query);
+    }
+    renderResults(data, append);
+    recordHistory(rawQuery || state.query, state.total);
+    const shown = visibleHits().length;
+    $("meta").textContent = shown
+      ? t("search.meta", {
+        shown, total: state.total, ms: data.ms, sign: state.approx ? "≈" : "",
+      })
+      : `${data.ms} ${t("unit.ms")}`;
+    if (data.suggestion && !append) {
+      const hint = document.createElement("button");
+      hint.type = "button";
+      hint.className = "suggestion-inline";
+      hint.textContent = t("hint.did_you_mean", { value: data.suggestion });
+      hint.addEventListener("click", () => {
+        $("q").value = data.suggestion;
+        scheduleSearch();
+        hint.remove();
+      });
+      $("meta").after(hint);
+    }
+  } catch (error) {
+    if (moreBtn) $("content").appendChild(moreBtn);
+    toast(t("search.failed", { error: error.message }));
+  }
+}
+
+function clearChip(source) {
+  const input = $("q");
+  if (!source) return;
+  input.value = input.value.replace(source, " ").replace(/\s+/g, " ").trim();
+  clearTimeout(state.timer);
+  runSearch();
+  input.focus();
+}
+
+/* -------------------------------------------------------------- result card */
+
+function thumbZone(hit) {
+  if (hit.is_image && hit.thumb) {
+    return `<div class="gthumb">
+      <img src="${hit.thumb}" alt="" loading="lazy">
+      <div class="ocr-boxes" data-q="${esc(state.query)}"></div>
+      ${kindBadges(hit)}
+    </div>`;
+  }
+  // Text-bearing kinds get a live page: the first lines of the real extracted
+  // text, hydrated below from the same preview endpoint Quick Look uses.
+  const inner = {
+    pdf: `<div class="sheet page" data-text-id="${hit.file_id}" style="--sheet-accent:#c94747"></div>`,
+    docs: `<div class="sheet page" data-text-id="${hit.file_id}" style="--sheet-accent:#3f6fc4"></div>`,
+    docx: `<div class="sheet page" data-text-id="${hit.file_id}" style="--sheet-accent:#3f6fc4"></div>`,
+    text: `<div class="sheet page" data-text-id="${hit.file_id}"></div>`,
+    code: `<div class="term page is-code" data-text-id="${hit.file_id}"></div>`,
+    email: `<div class="sheet page" data-text-id="${hit.file_id}" style="--sheet-accent:#8a63b8"></div>`,
+    archive: `<div class="pack"></div>`,
+  }[hit.kind] || `<div class="sheet"></div>`;
+  return `<div class="gthumb">
+    <div class="kind-tile" data-snippet="${esc(hit.snippet || "")}">${inner}</div>
+    ${kindBadges(hit)}
+  </div>`;
+}
+
+/* Fill the document tiles with their real text. One request per file, cached
+   for the session: a re-render (tag added, language switch) must not refetch. */
+const TEXT_CACHE = new Map();
+
+async function hydrateDocThumbs() {
+  const hosts = document.querySelectorAll("[data-text-id]:not([data-hydrated])");
+  if (!hosts.length) return;
+  for (const host of hosts) {
+    const id = Number(host.dataset.textId);
+    if (!id) continue;
+    host.dataset.hydrated = "1";
+    try {
+      let text = TEXT_CACHE.get(id);
+      if (text === undefined) {
+        // 520 characters hid matches that live further down a file. Read a
+        // real window so the tile can show and mark the matching line.
+        const data = await api(`/api/preview?id=${id}&chars=4000`);
+        text = String(data.text || "");
+        TEXT_CACHE.set(id, text);
+      }
+      if (!text) continue;
+      const terms = String(state.query || "").toLowerCase().split(/\s+/)
+        .filter((word) => word.length >= 2);
+      const matches = (value) => terms.some((word) => value.toLowerCase().includes(word));
+      let all = text.split(/\s*\n\s*/).map((line) => line.trim()).filter(Boolean);
+      if (!all.some(matches) && host.parentElement?.dataset.snippet) {
+        // The server snippet is anchored on the match: use it when a long
+        // file's matching line is beyond the preview window.
+        all = String(host.parentElement.dataset.snippet).split(/\s*\n\s*/)
+          .map((line) => line.trim()).filter(Boolean);
+      }
+      const first = Math.max(0, all.findIndex(matches));
+      const lines = all.slice(first, first + 12)
+        .map((line) => (line.length > 60 ? `${line.slice(0, 60)}…` : line));
+      // The code tile is a tiny preview of the real file. Number the lines
+      // and mark the query there too — the user is looking at the tile.
+      host.innerHTML = host.classList.contains("is-code")
+        ? numberedCode(lines.join("\n"), state.query, 1, 1)
+        : highlight(lines.join("\n"), state.query, 1);
+    } catch (error) {
+      /* a failed hydration keeps the static tile */
+    }
+  }
+}
+
+function kindBadges(hit) {
+  const badges = (hit.channels || [])
+    .filter((channel) => channel === "ocr")
+    .map((channel) => `<span class="gbadge b-${channel}">${channel}</span>`)
+    .join("");
+  return badges;
+}
+
+function card(hit, index, order = 0) {
+  const delay = Math.min(order, 12) * 38;
+  const picked = state.picked.has(hit.file_id);
+  const snippetText = snippetWindow(hit.snippet, state.query);
+  const snippet = snippetText
+    ? `<div class="gsnippet">${highlight(snippetText, state.query)}</div>` : "";
+  const tags = (hit.tags || []).map((tag) => `
+    <button class="tag-chip" type="button" data-tag-run="${esc(tag)}">#${esc(tag)}</button>`
+  ).join("");
+  const similar = `<button class="gact" data-similar="${hit.file_id}">${esc(t("card.similar"))}</button>`;
+  const group = hit.group_size > 1
+    ? `<button class="badge b-group" data-group="${hit.file_id}"
+         title="${esc(t("card.showAll", { n: hit.group_size }))}">${hit.group_size}×</button>`
+    : "";
+  const channels = (hit.channels || [])
+    .filter((channel) => channel !== "ocr")
+    .map((channel) => `<span class="badge b-${esc(channel)}">${esc(channel)}</span>`)
+    .join("");
+  const freq = Number(hit.opens) > 0
+    ? `<span class="freq-badge" title="${esc(t("preview.opened", { n: hit.opens }))}">${esc(ui("freq", { n: hit.opens }))}</span>`
+    : "";
+  const pinBest = index === 0
+    ? `<button class="gact pin-best" type="button" data-pin-best="${hit.file_id}"
+            title="${esc(ui("pinBest"))}">★ ${esc(ui("pinBest"))}</button>` : "";
+  return `
+    <div class="gcard${picked ? " picked" : ""}" data-index="${index}" data-file="${hit.file_id}"
+         draggable="true" data-drag-file="${hit.file_id}"
+         style="--enter-delay:${delay}ms">
+      <label class="card-pick-wrap" title="${esc(t("card.select"))}">
+        <input type="checkbox" class="card-pick" data-pick="${hit.file_id}"
+               aria-label="${esc(t("card.select"))}"${picked ? " checked" : ""}>
+      </label>
+      ${thumbZone(hit)}
+      <div class="gbody">
+        <div class="gtitle">
+          <a class="gname" data-open="${hit.file_id}" title="${esc(hit.path)}">${esc(hit.name)}</a>
+          <span class="badge">${esc(hit.kind)}</span>
+          ${channels}
+          ${group}
+          ${hit.symbol ? `<span class="badge b-def" title="${esc(t("card.symbol"))}">${esc(hit.symbol)}</span>` : ""}
+          <button class="pin-star${hit.pinned ? " on" : ""}" type="button"
+                  data-pin="${hit.file_id}" aria-pressed="${hit.pinned ? "true" : "false"}"
+                  title="${esc(t(hit.pinned ? "card.unpin" : "card.pin"))}">★</button>
+        </div>
+        <div class="gpath" title="${esc(hit.path)}">${esc(shortPath(hit.path))} · ${fmtSize(hit.size)} · ${fmtDate(hit.mtime)}${freq}</div>
+        ${tags ? `<div class="gtags">${tags}</div>` : ""}
+        ${snippet}
+        <div class="gactions">
+          <button class="gact" data-open="${hit.file_id}">${esc(t("card.open"))}</button>
+          <button class="gact" data-reveal="${hit.file_id}">${esc(t("card.folder"))}</button>
+          <button class="gact" data-preview="${hit.file_id}">${esc(t("card.preview"))}</button>
+          <button class="gact" data-tag-add="${hit.file_id}">${esc(t("card.tag"))}</button>
+          <button class="gact" data-tag-menu="${hit.file_id}" aria-expanded="false">${esc(t("card.tag"))} ▾</button>
+          <button class="gact" data-collection-add="${hit.file_id}">${esc(t("card.collection"))}</button>
+          <button class="gact" data-why="${hit.file_id}">${esc(t("card.why"))}</button>
+          ${pinBest}
+          ${similar}
         </div>
       </div>
-      <button class="type-x type-remove" type="button" data-type-remove
-              title="${esc(t("types.remove"))}"
-              aria-label="${esc(t("types.remove"))}">×</button>
     </div>`;
-  }).join("");
 }
 
-function addType() {
-  collectTypes();
-  // A double click must not stack two blank cards: while the last one is
-  // still empty it *is* the card to fill in, so just put the cursor there.
-  const last = state.types[state.types.length - 1];
-  if (last && !last.id && !last.name && (!last.masks || last.masks.every((mask) => !mask))) {
-    renderTypes();
-    const existing = $("types-list").querySelectorAll(".type-name");
-    existing[existing.length - 1]?.focus();
-    return;
+function renderResults(data, append) {
+  const host = $("content");
+  const grid = document.createElement("div");
+  grid.className = "results-grid";
+  const view = visibleHits();
+  const start = append ? state.hits.length - data.hits.length : 0;
+  grid.innerHTML = view.map((hit, index) =>
+    card(hit, index, append ? index - start : index)).join("");
+  if (append) {
+    const old = host.querySelector(".results-grid");
+    if (old) {
+      while (grid.firstChild) old.appendChild(grid.firstChild);
+      grid.remove();
+    } else {
+      host.innerHTML = "";
+      host.appendChild(grid);
+    }
+  } else {
+    host.innerHTML = "";
+    host.appendChild(grid);
   }
-  state.types.push({ id: "", name: "", masks: [""] });
-  renderTypes();
-  const names = $("types-list").querySelectorAll(".type-name");
-  names[names.length - 1]?.focus();
+  if (state.nextOffset !== null) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.id = "more-btn";
+    more.className = "more-btn";
+    more.textContent = t("results.more");
+    more.addEventListener("click", () => runSearch({ append: true }));
+    host.appendChild(more);
+  }
+  paintFacets();
+  paintOcrBoxes();
+  hydrateDocThumbs();
+  renderQueryChips();
+  renderWithinBar();
 }
 
-function renderTypeTabs() {
-  const menu = document.querySelector(".menu");
-  if (!menu) return;
-  menu.querySelectorAll("[data-custom-kind]").forEach((chip) => chip.remove());
-  const types = (state.types || []).filter(
-    (type) => type.id && type.name && type.masks && type.masks.length,
-  );
-  types.forEach((type) => {
-    const chip = document.createElement("button");
-    chip.className = "chip";
-    chip.dataset.kind = `custom:${type.id}`;
-    chip.dataset.customKind = "1";
-    chip.textContent = type.name;
-    if (state.kind === chip.dataset.kind) chip.classList.add("active");
-    menu.appendChild(chip);
+/* The "search within results" filter is client-side: the server page stays
+   untouched, only the cards on screen are narrowed. Index lookup helpers use
+   this same view so keyboard actions stay aligned with what is painted. */
+function visibleHits() {
+  const term = state.withinText.trim().toLowerCase();
+  if (!term) return state.hits;
+  return state.hits.filter((hit) => [hit.name, hit.path, hit.snippet, ...(hit.tags || [])]
+    .some((value) => String(value || "").toLowerCase().includes(term)));
+}
+
+function paintFacets() {
+  const facets = state.facets || {};
+  document.querySelectorAll(".chip[data-kind]").forEach((chip) => {
+    const kind = chip.dataset.kind;
+    const count = kind === "" ? (facets.all ?? (state.total || null)) : facets[kind];
+    const base = chip.dataset.base || (chip.dataset.base = chip.textContent);
+    chip.textContent = count != null ? `${base} · ${count}` : base;
   });
-  // A deleted type must not leave a tab pointing at nothing selected.
-  if (state.kind.startsWith("custom:") && !menu.querySelector(`[data-kind="${state.kind}"]`)) {
-    state.kind = "";
-    menu.querySelectorAll(".chip").forEach((chip) => {
-      chip.classList.toggle("active", chip.dataset.kind === "");
-    });
+}
+
+function clearPicks() {
+  state.picked.clear();
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const bar = $("bulk-bar");
+  const count = state.picked.size;
+  bar.hidden = count === 0;
+  if (count) $("bulk-count").textContent = t("bulk.count", { n: count });
+}
+
+/* -------------------------------------------------------- ocr boxes on cards */
+
+async function paintOcrBoxes() {
+  const holders = document.querySelectorAll(".ocr-boxes[data-q]");
+  if (!holders.length) return;
+  for (const holder of holders) {
+    const imageId = Number(holder.closest("[data-file]")?.dataset.file || 0);
+    const query = holder.dataset.q;
+    if (!imageId || !query) continue;
+    try {
+      const data = await api(`/api/ocr-boxes?id=${imageId}&q=${encodeURIComponent(query)}`);
+      if (!data.boxes?.length || !data.width || !data.height) continue;
+      holder.innerHTML = data.boxes.map((box) => {
+        const left = (box.x / data.width) * 100;
+        const top = (box.y / data.height) * 100;
+        const width = (box.w / data.width) * 100;
+        const height = (box.h / data.height) * 100;
+        return `<span class="ocr-box" style="left:${left}%;top:${top}%;width:${width}%;height:${height}%"></span>`;
+      }).join("");
+    } catch (error) {
+      /* a failed overlay must never break the card */
+    }
   }
 }
 
-function saveTypesSoon() {
-  collectTypes();
-  clearTimeout(typesTimer);
-  typesTimer = setTimeout(saveTypes, 650);
+/* ------------------------------------------------------------------- idle */
+
+function renderIdle() {
+  paintFacets();
+  $("content").innerHTML = `
+    <div class="empty">
+      <div class="empty-body">
+        <div class="empty-card">
+          <h2>${esc(t("idle.title"))}</h2>
+          <p>${esc(t("idle.body"))}</p>
+          <p class="empty-tip">${esc(t("idle.tip"))}</p>
+        </div>
+        <div class="personal" id="personal" hidden></div>
+        <div class="recent" id="recent" hidden></div>
+      </div>
+    </div>`;
+  Promise.all([loadPersonal(), loadMeta()]).then(paintPersonal);
+  loadRecent();
 }
 
-async function saveTypes() {
-  clearTimeout(typesTimer);
-  typesTimer = null;
-  collectTypes();
-  const rows = state.types.filter((type) => type.name);
-  try {
-    const data = await api("/api/types", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ types: rows }),
-    });
-    // The server sanitises masks and assigns ids. Copy the ids onto the cards
-    // in place so typing is not interrupted by a redraw.
-    const ids = (data.types || []).map((type) => type.id);
-    const cards = [...$("types-list").querySelectorAll(".type-card")];
-    let next = 0;
-    state.types.forEach((type, index) => {
-      if (!type.name) return;
-      if (ids[next]) {
-        type.id = ids[next];
-        if (cards[index]) cards[index].dataset.type = type.id;
-      }
-      next += 1;
-    });
-    renderTypeTabs();
-  } catch (error) {
-    toast(t("toast.failed", { error: error.message }));
-  }
-}
-
-/* The idle screen used to be one small plate on a very large photo, which read
-   as a half-empty page. Six recent screenshots give the space a floor: the eye
-   lands on something real and the whole column stops looking unfinished.
-
-   The list is cached, not the rendering: switching language redraws the idle
-   screen, and refetching six thumbnails to change one word would be silly. */
 let recentImages = null;
 
 async function loadRecent() {
@@ -1644,8 +1252,15 @@ async function loadRecent() {
     recentImages = (data.images || []).slice(0, 6);
     if ($("recent")) paintRecent($("recent"));
   } catch (error) {
-    recentImages = null; // a decoration must never break the idle screen
+    recentImages = null;
   }
+}
+
+function shot(item) {
+  return `<div class="shot" data-preview="${item.file_id}" title="${esc(item.path)}">
+    <img src="${item.thumb}" alt="" loading="lazy">
+    <div class="ocr-boxes" data-q="${esc(state.query)}"></div>
+  </div>`;
 }
 
 function paintRecent(host) {
@@ -1655,541 +1270,219 @@ function paintRecent(host) {
   host.hidden = false;
 }
 
-function card(hit, query, index, order = 0) {
-  // Results arrive in a short cascade: the delay lives on the card so the CSS
-  // animation stays declarative, and it is capped so a full page still settles
-  // in about half a second. `order` is the card's place in *this* batch, which
-  // means "show more" starts its own cascade instead of inheriting the page's.
-  const delay = Math.min(order, 12) * 38;
-  const label = KIND_LABEL[hit.kind] || hit.kind;
-  const icon = hit.is_image && hit.thumb
-    ? `<div class="icon k-image" data-image-id="${hit.file_id}">
-         <img src="${hit.thumb}" alt="" loading="lazy">
-         <div class="ocr-boxes" data-q="${esc(state.query)}"></div>
-       </div>`
-    : `<div class="icon k-${hit.kind}">${esc(label)}</div>`;
-  const badges = hit.channels
-    .map((channel) => `<span class="badge b-${channel}">${channel}</span>`)
-    .join("");
-  const similar = hit.is_image
-    ? `<button class="act" data-similar="${hit.file_id}">${esc(t("card.similar"))}</button>` : "";
-  // A group is a fact about the result, not decoration: "3 versions" tells you
-  // the row you are looking at is the one the ranker picked out of three files.
-  const reason = hit.group_reason === "burst" ? "snapshot"
-    : hit.group_reason === "copy" ? "copy" : "version";
-  const group = hit.group_size > 1
-    ? `<button class="badge b-group" data-group="${hit.file_id}"
-         title="${esc(t("card.showAll", { n: hit.group_size }))}">${
-         hit.group_size} ${esc(plural(hit.group_size, `group.${reason}`))
-       }</button>`
-    : "";
-  const picked = state.picked.has(hit.file_id);
-  const tags = (hit.tags || []).map((tag) => `
-    <button class="tag-chip small" type="button" data-tag-run="${esc(tag)}">#${esc(tag)}</button>`
-  ).join("");
-  return `
-    <div class="card${picked ? " picked" : ""}" data-index="${index}" data-file="${hit.file_id}"
-         style="--enter-delay:${delay}ms">
-      <label class="card-pick-wrap" title="${esc(t("card.select"))}">
-        <input type="checkbox" class="card-pick" data-pick="${hit.file_id}"
-               aria-label="${esc(t("card.select"))}"${picked ? " checked" : ""}>
-      </label>
-      ${icon}
-      <div>
-        <div class="title-row">
-          <a class="name" data-open="${hit.file_id}">${esc(hit.name)}</a>
-          <span class="badge">${esc(hit.kind)}</span>
-          ${badges}
-          ${group}
-          ${hit.symbol ? `<span class="badge b-def" title="${esc(t("card.symbol"))}">${esc(hit.symbol)}</span>` : ""}
-          <!-- A pin is the cheapest promise an app can make: "this will still be
-               here tomorrow". It sits with the name, not in the action row, so
-               it reads as a property of the file rather than a command. -->
-          <button class="pin-star${hit.pinned ? " on" : ""}" type="button"
-                  data-pin="${hit.file_id}" aria-pressed="${hit.pinned ? "true" : "false"}"
-                  title="${esc(t(hit.pinned ? "card.unpin" : "card.pin"))}">★</button>
-        </div>
-        <div class="path" title="${esc(hit.path)}">${esc(hit.path)}</div>
-        ${tags ? `<div class="card-tags">${tags}</div>` : ""}
-        <div class="snippet">${highlight(hit.snippet, query)}</div>
-        <div class="actions">
-          <button class="act" data-open="${hit.file_id}">${esc(t("card.open"))}</button>
-          <button class="act" data-reveal="${hit.file_id}">${esc(t("card.folder"))}</button>
-          <button class="act" data-preview="${hit.file_id}">${esc(t("card.preview"))}</button>
-          <button class="act" data-tag-add="${hit.file_id}">${esc(t("card.tag"))}</button>
-          <button class="act" data-collection-add="${hit.file_id}">${esc(t("card.collection"))}</button>
-          <button class="act why-btn" data-why="${hit.file_id}">${esc(t("card.why"))}</button>
-          ${similar}
-        </div>
-      </div>
-    </div>`;
-}
-
-/* Expanding a group is a lazy fetch, not a server-side expansion: the collapsed
-   row already carries the member ids, and asking for one preview each keeps the
-   search response small on a query that groups twenty screenshots. */
-async function toggleGroup(button) {
-  const card = button.closest(".card");
-  const existing = card.querySelector(".group-list");
-  if (existing) { existing.remove(); button.classList.remove("open"); return; }
-
-  const hit = state.hits[Number(card.dataset.index)];
-  if (!hit || !hit.group_members || !hit.group_members.length) return;
-  button.classList.add("open");
-
-  const rows = await Promise.all(
-    hit.group_members.slice(0, 12).map((id) =>
-      api(`/api/preview?id=${id}`).catch(() => null)
-    )
-  );
-  // For a copy group the folder is the only thing that tells the rows apart,
-  // so it belongs in the row; for versions the folder is identical by
-  // definition and printing it four times is noise.
-  const loaded = rows.filter(Boolean);
-  const showWhere = hit.group_reason === "copy";
-  const folders = showWhere
-    ? relativeFolders([hit.path, ...loaded.map((row) => row.path)]) : [];
-  const items = loaded.map((row, index) => `
-    <div class="group-item">
-      <a data-open="${row.file_id}">${esc(row.name)}</a>
-      <span class="group-meta">${
-        showWhere && folders[index + 1] ? `${esc(folders[index + 1])} · ` : ""}${
-        sizeLabel(row.size)} · ${dateLabel(row.mtime)}</span>
-    </div>`).join("");
-  card.insertAdjacentHTML("beforeend",
-    `<div class="group-list">${items || `<div class="group-item">${esc(t("group.failed"))}</div>`}</div>`);
-}
-
-/* A chip arrives from the server as a kind plus a value, because the words
-   around it are a property of the interface and not of the search engine. */
-function chipLabel(chip) {
-  let value = chip.value ?? "";
-  if (chip.kind === "weekday") {
-    const name = WEEKDAYS[Number(value)];
-    if (name) value = t(`weekday.${name}`);
-  } else if (chip.kind === "sort") {
-    value = t(`sort.${value}`);
-  } else if (chip.kind === "type") {
-    const key = `typeVal.${value}`;
-    const named = t(key);
-    if (named !== key) value = named;
+async function loadPersonal(force) {
+  if (state.personal && !force) return state.personal;
+  try {
+    state.personal = await api("/api/personal");
+  } catch (error) {
+    state.personal = null;
   }
-  const key = `chip.${chip.kind}`;
-  const rendered = t(key, { value });
-  // An unknown kind must still say something true rather than print a key.
-  return rendered === key ? (chip.label || value) : rendered;
+  return state.personal;
 }
 
-/* The chips row is the contract of the natural-language compiler: every filter
-   it inferred is shown with the words that produced it, and one click takes it
-   back. Without this the query language would feel like a guess. */
-function chipRow(chips) {
-  if (!chips.length) return "";
-  const items = chips.map((chip) => `
-    <button class="ichip" data-chip="${esc(chip.source)}"
-            title="${esc(t("chip.remove", { source: chip.source }))}">
-      <span>${esc(chipLabel(chip))}</span><b>×</b>
-    </button>`).join("");
-  return `<div class="ichips">${items}</div>`;
+async function loadMeta(force) {
+  try {
+    const [tags, collections] = await Promise.all([
+      force ? api("/api/tags") : Promise.resolve(state.metaTags.length ? null : api("/api/tags")),
+      force ? api("/api/collections") : Promise.resolve(state.metaCollections.length ? null : api("/api/collections")),
+    ]);
+    if (tags) state.metaTags = tags.tags || [];
+    if (collections) state.metaCollections = collections.collections || [];
+  } catch (error) {
+    /* filters keep whatever they had */
+  }
 }
 
-/* Facet counts on the kind tabs: numbers over every candidate that survived
-   the filters, not just the twelve on the page. A tab without matches fades —
-   the same honesty the results list has. */
-function paintFacets(facets) {
-  const counts = facets || {};
-  // Mirrors KIND_MAP.docs on the server: which internal kinds a tab covers.
-  const DOCS_KINDS = ["text", "code", "pdf", "docx", "pptx", "xlsx", "epub", "odt", "rtf"];
-  document.querySelectorAll(".menu .chip").forEach((chip) => {
-    const kind = chip.dataset.kind;
-    let count = 0;
-    if (kind === "") {
-      count = Object.values(counts).reduce((a, b) => a + b, 0);
-    } else if (kind === "docs") {
-      count = DOCS_KINDS.reduce((a, k) => a + (counts[k] || 0), 0);
-    } else {
-      count = counts[kind] || 0;
-    }
-    let badge = chip.querySelector(".count");
-    if (!count) {
-      if (badge) badge.remove();
-      return;
-    }
-    if (!badge) {
-      badge = document.createElement("b");
-      badge.className = "count";
-      chip.appendChild(badge);
-    }
-    badge.textContent = count > 999 ? "999+" : String(count);
+function paintPersonal() {
+  const host = $("personal");
+  if (!host || !state.personal) return;
+  const pins = state.personal.pins || [];
+  const saved = state.personal.saved || [];
+  const aliases = state.personal.aliases || [];
+  const sections = [];
+  if (pins.length) {
+    sections.push(`<section><h3>${esc(t("idle.pinned"))}</h3>${pins.map((pin) => `
+      <div class="pin-row" data-open="${pin.file_id}" title="${esc(pin.path)}">
+        <span class="p-name">${esc(pin.name)}</span>
+        <span class="p-meta">${fmtSize(pin.size)}</span>
+        <button class="row-x" data-unpin="${pin.file_id}" aria-label="${esc(t("card.unpin"))}">×</button>
+      </div>`).join("")}</section>`);
+  }
+  if (saved.length) {
+    sections.push(`<section><h3>${esc(t("idle.saved"))}</h3>${saved.map((item) => `
+      <div class="saved-row" data-saved-run="${esc(item.query)}">
+        <span class="s-q">${esc(item.label)}</span>
+        <span class="s-used">${item.used || 0}</span>
+        <button class="row-x" data-saved-drop="${item.id}" aria-label="${esc(t("saved.forget"))}">×</button>
+      </div>`).join("")}</section>`);
+  }
+  if (aliases.length) {
+    sections.push(`<section><h3>${esc(t("alias.title"))}</h3>${aliases.map((item) => `
+      <div class="alias-row"><span>${esc(item.alias)}</span><span>→ ${esc(item.expand)}</span></div>`).join("")}</section>`);
+  }
+  if (!sections.length) { host.hidden = true; renderSmartCollections(); return; }
+  host.innerHTML = sections.join("");
+  host.hidden = false;
+  renderSmartCollections();
+}
+
+/* ---------------------------------------------------------------- drawer */
+
+const DRAWER_TITLES = {
+  index: "rail.indexShort", privacy: "rail.privacyShort", encryption: "rail.encryptionShort",
+  search: "rail.searchShort", keys: "rail.keysShort", appearance: "rail.appearanceShort",
+};
+
+function setPanel(open, tab) {
+  const drawer = $("panel");
+  drawer.classList.toggle("open", Boolean(open));
+  drawer.setAttribute("aria-hidden", String(!open));
+  $("scrim").classList.toggle("show", Boolean(open) && !$("dups-drawer").classList.contains("open"));
+  $("panel-btn").classList.toggle("on", Boolean(open));
+  if (open && tab) setDrawerTab(tab);
+  updateActionButtons();
+}
+
+function setDrawerTab(tab) {
+  document.querySelectorAll(".drawer-tab").forEach((node) => {
+    node.classList.toggle("active", node.dataset.drawerTab === tab);
   });
-}
-
-function renderResults(data, append) {
-  const parts = [];
-  if (!append) parts.push(chipRow(data.chips || []));
-  if (!append && data.hints && data.hints.length) {
-    parts.push(`<div class="hints">${data.hints.map((hint) => {
-      const key = `hint.${hint.kind}`;
-      const text = t(key, { value: hint.value ?? "" });
-      const shown = esc(text === key ? (hint.text || hint.kind) : text);
-      // A spelling suggestion is an action, not a remark: click it and the
-      // search reruns on the corrected word.
-      const clickable = hint.kind === "did_you_mean" && hint.value
-        ? `<button class="hint-link" data-suggest="${esc(hint.value)}">${shown}</button>`
-        : `<span>${shown}</span>`;
-      return clickable;
-    }).join("")}</div>`);
-  }
-  if (!append) paintFacets(data.facets);
-
-  // "show more" appends one page to the list already on screen. Mapping all of
-  // `state.hits` again would duplicate every card, and restarting the indexes
-  // at 0 would make the new rows collide with the old ones in `data-index`
-  // (selection and Quick Look key off it).
-  const fresh = append ? state.hits.slice(state.hits.length - (data.hits || []).length) : state.hits;
-  const first = state.hits.length - fresh.length;
-  const cards = fresh.map((hit, index) => card(hit, data.query, first + index, index)).join("");
-
-  if (append) {
-    // Insert into the existing list instead of a new `.results` block: two
-    // flex columns would lose the 10px gap between the last old card and the
-    // first new one.
-    const list = $("content").querySelector(".results");
-    if (list) list.insertAdjacentHTML("beforeend", cards);
-    else if (cards) parts.push(`<div class="results">${cards}</div>`);
-  } else if (cards) {
-    parts.push(`<div class="results">${cards}</div>`);
-  }
-
-  if (data.next_offset !== null && data.next_offset !== undefined) {
-    parts.push(`<button class="more" id="more-btn">${esc(t("results.more"))}</button>`);
-  }
-
-  if (!append && data.images && data.images.length) {
-    parts.push(`<div class="section-title">${esc(t("results.similarImages"))}</div>
-      <div class="grid">${data.images.map(shot).join("")}</div>`);
-  }
-  if (!parts.length && !append) {
-    parts.push(`<div class="empty"><div>
-        <h2>${esc(t("results.nothing"))}</h2>
-        <p>${esc(t("results.nothingHint"))}</p>
-      </div></div>`);
-  }
-
-  if (parts.length) {
-    if (append) {
-      $("content").insertAdjacentHTML("beforeend", parts.join(""));
-    } else {
-      $("content").innerHTML = parts.join("");
-    }
-  }
-  if (!append) {
-    state.selected = -1;
-    state.lastEnterHit = -1;
-  }
-  paintSelection();
-  paintBulk();
-}
-
-function paintSelection() {
-  document.querySelectorAll(".card.sel").forEach((node) => node.classList.remove("sel"));
-  const node = document.querySelector(`.card[data-index="${state.selected}"]`);
-  if (node) {
-    node.classList.add("sel");
-    node.scrollIntoView({ block: "nearest" });
+  document.querySelectorAll(".drawer-pane").forEach((node) => {
+    node.classList.toggle("active", node.dataset.drawerPane === tab);
+  });
+  $("drawer-title").textContent = t(DRAWER_TITLES[tab] || "rail.indexShort");
+  if (tab === "search") {
+    loadServerHistory();
+    renderSmartCollections();
+    renderCollectionTargets();
   }
 }
 
-function moveSelection(delta) {
-  if (!state.hits.length) return;
-  const next = state.selected + delta;
-  state.selected = Math.max(0, Math.min(state.hits.length - 1, next));
-  state.lastEnterHit = -1;  // the Enter pairing follows one row only
-  paintSelection();
+function updateActionButtons() {
+  $("dups-btn").classList.toggle("on", $("dups-drawer").classList.contains("open"));
+  $("panel-btn").classList.toggle("on", $("panel").classList.contains("open"));
+  const trash = $("dups-delete");
+  if (trash) trash.disabled = selectedDups().length === 0;
 }
 
-/* Quick Look: images get the thumbnail, everything else the indexed text, so a
-   PDF previews without being parsed again. */
-async function openPreview(fileId) {
-  try {
-    const data = await api(`/api/preview?id=${fileId}`);
-    state.preview = data;
-    const meta = [
-      sizeLabel(data.size),
-      dateLabel(data.mtime),
-      data.opens ? t("preview.opened", { n: data.opens }) : t("preview.never"),
-      data.exists ? "" : t("preview.missing"),
-    ].filter(Boolean).join(" · ");
-    const hit = state.hits.find((item) => item.file_id === data.file_id);
-    const reasons = hit ? whyFound(hit) : [t("why.preview")];
-    const body = data.image
-      ? `<img class="preview-img" src="${data.image.thumb}" alt="">
-         ${data.image.ocr
-           ? `<pre class="preview-text" id="preview-ocr">${esc(data.image.ocr)}</pre>`
-           : `<pre class="preview-text">${esc(t("preview.noText"))}</pre>`}`
-      : `<pre class="preview-text">${esc(data.text || t("preview.noText"))}</pre>`;
-    const copyOcr = data.image && data.image.ocr
-      ? `<button class="act" data-copy-ocr type="button">${esc(t("preview.copyOcr"))}</button>`
-      : "";
-    $("preview-body").innerHTML = `
-      <div class="preview-head">
-        <div>
-          <div class="preview-name">${esc(data.name)}</div>
-          <div class="preview-path">${esc(data.path)}</div>
-          <div class="preview-meta">${esc(meta)}</div>
-        </div>
-      </div>
-      ${body}
-      <div class="preview-why">
-        <b>${esc(t("why.title"))}</b>
-        <ul class="why-list">${reasons.map((reason) => `<li>${esc(reason)}</li>`).join("")}</ul>
-      </div>
-      <div class="preview-foot">
-        <button class="act" data-open="${data.file_id}">${esc(t("card.open"))}</button>
-        <button class="act" data-reveal="${data.file_id}">${esc(t("card.folder"))}</button>
-        ${copyOcr}
-      </div>`;
-    $("preview").classList.add("open");
-  } catch (error) {
-    toast(t("preview.failed", { error: error.message }));
-  }
-}
+/* ------------------------------------------------------------------ stats */
 
-async function copyPreviewOcr() {
-  const text = state.preview?.image?.ocr || "";
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    toast(t("preview.copiedOcr"));
-  } catch (error) {
-    toast(t("ctx.copyFailed"));
-  }
-}
-
-function shot(image) {
-  return `<div class="shot" data-similar="${image.file_id}" title="${esc(image.path)}">
-      <img src="${image.thumb}" alt="" loading="lazy">
-      <div class="cap">${esc(image.name)}</div>
-    </div>`;
-}
-
-/* -------------------------------------------------------------- side panel */
-
-/* Draw highlight boxes on screenshot thumbnails where the search term
-   appears (from OCR bounding box data). Each box is a semi-transparent
-   rectangle positioned over the thumbnail, scaled to match. */
-async function drawOcrHighlights() {
-  const boxes = document.querySelectorAll(".ocr-boxes[data-q]");
-  if (!boxes.length) return;
-  for (const holder of boxes) {
-    const query = holder.dataset.q?.trim().toLowerCase();
-    if (!query) continue;
-    const img = holder.parentElement?.querySelector("img");
-    if (!img || !img.complete) continue;
-    const imageId = holder.parentElement?.dataset.imageId;
-    if (!imageId) continue;
-    try {
-      const data = await api(`/api/ocr-boxes?id=${imageId}&q=${encodeURIComponent(query)}`);
-      if (!data.boxes?.length || !data.width || !data.height) continue;
-      const w = img.clientWidth || img.naturalWidth;
-      const h = img.clientHeight || img.naturalHeight;
-      if (!w || !h) continue;
-      const sx = w / data.width, sy = h / data.height;
-      holder.innerHTML = data.boxes.map((box) =>
-        `<div style="position:absolute;left:${box.x * sx}px;top:${box.y * sy}px;` +
-        `width:${box.w * sx}px;height:${box.h * sy}px;` +
-        `background:rgba(122,162,247,.25);border:1.5px solid #7aa2f7;` +
-        `border-radius:2px;pointer-events:none"></div>`
-      ).join("");
-    } catch (e) { /* silently skip */ }
+function setStatusPill(stats) {
+  const dot = $("status-dot");
+  const text = $("status-text");
+  if (stats && stats.files) {
+    text.textContent = plural(stats.files, "status.files");
+    dot.style.background = "var(--teal)";
+    dot.classList.add("live");
+  } else {
+    text.textContent = t("status.empty");
+    dot.style.background = "var(--acc)";
+    dot.classList.remove("live");
   }
 }
 
 async function loadStats() {
   try {
-    // Only /api/stats decides whether the server is alive; a failure in a
-    // side panel (watch, privacy) must degrade that panel alone, not blank
-    // every counter behind a "server is down" message.
-    const [stats, status, privacy, watch, seal] = await Promise.all([
-      api("/api/stats"), api("/api/status"),
-      api("/api/privacy").catch(() => null),
-      api("/api/watch").catch(() => null),
-      api("/api/seal").catch(() => null),
-    ]);
-    state.stats = stats;
-    state.status = status;
-    $("s-files").textContent = stats.files ?? 0;
-    $("s-chunks").textContent = stats.chunks ?? 0;
-    $("s-images").textContent = stats.images ?? 0;
-    $("s-ocr").textContent = stats.ocr_images ?? 0;
-    $("s-size").textContent = `${((stats.db_bytes || 0) / 1048576).toFixed(1)} ${t("unit.mb")}`;
-    // The definition count is the only place the app says out loud that it
-    // indexes symbols, so it is worth a stat of its own.
-    loadPersonal().then((data) => {
-      if (data && $("s-symbols")) $("s-symbols").textContent = data.symbols ?? 0;
-    });
-    $("status-text").textContent = stats.files
-      ? plural(stats.files, "status.files")
-      : t("status.empty");
-    $("status-dot").style.background = stats.files ? "var(--teal)" : "var(--accent)";
-    $("status-dot").classList.toggle("live", Boolean(stats.files));
-
-    if (privacy) renderPrivacy(privacy);
-    if (watch) renderWatch(watch);
-    if (seal) renderSeal(seal);
-    // extra data for the index tab
-    const set = (id, value) => { const el = $(id); if (el) el.textContent = value; };
-    set("s-texts", stats.texts ?? 0);
-    set("s-sealed", stats.texts_sealed ?? 0);
-
-      // Draw OCR highlight boxes on screenshot thumbnails that match the query
-    requestAnimationFrame(() => drawOcrHighlights());
-    if (!$("roots").value.trim() && status.default_roots?.length) {
-      $("roots").value = status.default_roots.join("\n");
-    }
-    if ($("settings").classList.contains("open")) renderAbout();
+    const [stats, status] = await Promise.all([api("/api/stats"), api("/api/status")]);
+    setStatusPill(stats);
+    const put = (id, value) => { const node = $(id); if (node) node.textContent = value; };
+    put("s-files", stats.files ?? 0);
+    put("s-chunks", stats.chunks ?? 0);
+    put("s-images", stats.images ?? 0);
+    put("s-ocr", stats.ocr_images ?? 0);
+    put("s-size", sizeLabel(stats.db_bytes));
+    put("s-symbols", stats.symbols ?? 0);
+    put("s-symbols2", stats.symbols ?? 0);
+    put("s-texts", stats.texts ?? 0);
+    put("s-sealed", stats.texts_sealed ?? 0);
+    return { stats, status };
   } catch (error) {
     $("status-text").textContent = t("status.down");
-    $("status-dot").style.background = "var(--red, #e24b4a)";
-    $("status-dot").classList.remove("live");
+    return null;
   }
 }
 
-/* The privacy guard is a set of switches, not one bit: SSH keys and browser
-   sessions are different risks, and the panel lets each group be turned off
-   on its own. The list comes from the server so a new group needs no HTML. */
-const PRIVACY_KEY = "privacy.";
+/* --------------------------------------------------------- index + watch */
 
-function privacyLabel(id) {
-  return t(PRIVACY_KEY + id);
-}
-
-function renderPrivacy(privacy) {
-  const catalog = privacy.categories || [];
-  const host = $("privacy-filters-list");
-  const signature = catalog.map((item) => item.id).join(",");
-  if (host.dataset.signature !== signature) {
-    host.innerHTML = catalog.map((item, index) => `
-      <label class="privacy-filter" style="--i:${index}">
-        <input type="checkbox" data-privacy="${esc(item.id)}">
-        <span>${esc(privacyLabel(item.id))}</span>
-      </label>`).join("");
-    host.dataset.signature = signature;
-  }
-  for (const box of host.querySelectorAll("[data-privacy]")) {
-    const item = catalog.find((entry) => entry.id === box.dataset.privacy);
-    box.checked = Boolean(item && item.enabled);
-    box.disabled = !privacy.enabled;
-  }
-  $("privacy-enabled").checked = Boolean(privacy.enabled);
-  $("p-enabled").textContent = privacy.enabled ? t("panel.on") : t("panel.off");
-  $("p-count").textContent = privacy.count ?? 0;
-  $("purge-btn").disabled = !privacy.count;
-
-  const chosen = catalog.filter((item) => item.enabled).length;
-  $("privacy-summary").textContent = !privacy.enabled
-    ? t("panel.privacyOff")
-    : chosen === catalog.length
-      ? t("panel.privacyAll")
-      : t("panel.privacySome", { n: chosen, total: catalog.length });
-}
-
-/* Paranoid mode: one (un)seal at a time on the server, polled for the bar.
-   The button flips meaning with the state; while the worker runs it is
-   disabled and the bar takes over. */
-function renderSeal(seal) {
-  state.seal = seal;
-  const button = $("seal-btn");
-  $("seal-state").textContent = seal.sealed ? t("panel.sealed") : t("panel.notSealed");
-  button.textContent = seal.sealed ? t("panel.unsealBtn") : t("panel.sealBtn");
-  button.disabled = Boolean(seal.working);
-  const bar = $("seal-progress");
-  const total = seal.total || 1;
-  // 100% показывается только когда воркер закончил - reseal поискового
-  // индекса входит в job, поэтому до его завершения максимум 99%.
-  const percent = Math.min(seal.working ? 99 : 100,
-    Math.round(((seal.done || 0) / total) * 100));
-  if (seal.working) {
-    bar.hidden = false;
-    $("seal-progress-fill").style.width = `${percent}%`;
-    const stageKey = "panel.sealStage" + String(seal.stage || "").replace(
-      /^(.)/, (c) => c.toUpperCase()
-    );
-    const stage = t(stageKey) !== stageKey ? t(stageKey) : seal.stage || "";
-    $("seal-progress-label").textContent = t("panel.sealWorking", { percent, stage });
-    $("seal-warn").hidden = true;
-    return;
-  }
-  bar.hidden = true;
-  $("seal-progress-fill").style.width = "100%";
-  if (seal.error) {
-    $("seal-warn").hidden = false;
-    $("seal-warn").textContent = seal.error;
-    return;
-  }
-  $("seal-warn").hidden = !seal.sealed;
-  if (seal.sealed) $("seal-warn").textContent = t("panel.sealWarn");
-  // live extra data for the encryption tab
-  const texts = state.stats || {};
-  const sealedTexts = $("s-sealed");
-  if (sealedTexts && typeof seal.texts_total === "number") {
-    sealedTexts.textContent = `${seal.texts_sealed ?? 0}/${seal.texts_total}`;
-  }
-}
-
-async function pollSeal() {
-  for (;;) {
-    let seal = null;
-    try {
-      seal = await api("/api/seal");
-      renderSeal(seal);
-      if (!seal.working) {
-        loadStats();
-        return;
-      }
-    } catch (error) {
-      // A dropped poll must not leave the switch dark forever.
-      $("seal-btn").disabled = false;
-      return;
+function pollJob() {
+  api("/api/progress").then((job) => {
+    paintJob(job);
+    // A failed run paints the bar red, never the success color.
+    if (job.error) $("bar").style.background = "var(--red)";
+    if (job.running) setTimeout(pollJob, 450);
+    else {
+      $("index-btn").disabled = false;
+      loadStats();
     }
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  }
+  }).catch(() => {});
 }
 
-$("seal-btn").addEventListener("click", async () => {
-  const button = $("seal-btn");
-  // One click, one job: the button goes dark before the request leaves, and
-  // pollSeal keeps it in step with the worker from here on.
-  if (button.disabled) return;
-  button.disabled = true;
-  const action = state.seal && state.seal.sealed ? "off" : "on";
-  try {
-    await api("/api/seal", { method: "POST", body: JSON.stringify({ action }) });
-  } catch (error) {
-    button.disabled = false;
-    toast(t("toast.failed", { error: error.message }));
-    return;
+function paintJob(job) {
+  const done = job.total ? Math.round((job.position / job.total) * 100) : 0;
+  const bar = $("bar");
+  if (job.error) {
+    bar.style.width = "0";
+    bar.style.background = "var(--red)";
+  } else {
+    bar.style.background = "";
+    bar.style.width = `${job.running ? done : 100}%`;
   }
-  pollSeal();
-});
+  $("progress-label").textContent = job.running
+    ? `${job.position}/${job.total} · ${shortPath(job.path)}`
+    : (job.result
+      ? t("panel.ready")
+      : (job.error || t("panel.ready")));
+  $("job-stage").textContent = job.running
+    ? `${job.status || ""} ${job.position}/${job.total}`
+    : (job.error ? job.error : t("panel.jobIdle"));
+  const jobBar = $("job-bar");
+  if (jobBar) jobBar.style.width = `${job.running ? done : (job.result ? 100 : 0)}%`;
+}
 
-async function savePrivacy(patch) {
+function indexNow() {
+  const roots = $("roots").value.split("\n").map((line) => line.trim()).filter(Boolean);
+  $("index-btn").disabled = true;
+  api("/api/index", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ roots, prune: $("prune").checked }),
+  }).then(() => {
+    pollJob();
+  }).catch((error) => {
+    toast(error.message);
+    $("index-btn").disabled = false;
+    api("/api/progress").then((job) => { if (job.running) pollJob(); });
+  });
+}
+
+async function toggleWatch() {
+  const on = Boolean(state.watchRunning);
   try {
-    const privacy = await api("/api/privacy", {
+    const watch = await api("/api/watch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify({ enabled: !on, roots: $("roots").value.split("\n").map((l) => l.trim()).filter(Boolean) }),
     });
-    renderPrivacy(privacy);
-    toast(t("toast.privacySaved"));
+    renderWatch(watch);
+    toast(watch.running ? t("toast.watchOn") : t("toast.watchOff"));
   } catch (error) {
     toast(t("toast.failed", { error: error.message }));
   }
 }
 
-/* The watcher already knows every batch it applied; the window only has to
-   compare the running total so a new file announces itself instead of waiting
-   for the next search to reveal it. */
+function renderWatch(watch) {
+  state.watchRunning = Boolean(watch && watch.running);
+  const on = state.watchRunning;
+  $("watch-btn").classList.toggle("primary", on);
+  $("watch-label").textContent = on
+    ? t("panel.watchOn", {
+      added: watch.added, removed: watch.removed, batch: watch.last_batch,
+    })
+    : (watch && watch.last_error
+      ? t("panel.watchError", { error: watch.last_error })
+      : t("panel.watchingOff"));
+}
+
 function startWatchPoll() {
   clearInterval(state.watchTimer);
   state.watchTimer = setInterval(async () => {
@@ -2207,1083 +1500,282 @@ function startWatchPoll() {
   }, 6000);
 }
 
-function renderWatch(watch) {
-  const on = Boolean(watch && watch.running);
-  $("watch-btn").classList.toggle("primary", on);
-  $("watch-label").textContent = on
-    ? t("panel.watchOn", {
-      added: watch.added, removed: watch.removed, batch: watch.last_batch,
-    })
-    : (watch && watch.last_error
-      ? t("panel.watchError", { error: watch.last_error })
-      : t("panel.watchingOff"));
+/* --------------------------------------------------------------- privacy */
+
+const PRIVACY_KEY = "privacy.";
+
+function renderPrivacy(privacy) {
+  const catalog = privacy.categories || [];
+  const host = $("privacy-filters-list");
+  const signature = catalog.map((item) => item.id).join(",");
+  if (host.dataset.signature !== signature) {
+    host.innerHTML = catalog.map((item) => `
+      <label class="stat-row">
+        <span>${esc(t(PRIVACY_KEY + item.id))}</span>
+        <input type="checkbox" data-privacy="${esc(item.id)}">
+      </label>`).join("");
+    host.dataset.signature = signature;
+  }
+  for (const box of host.querySelectorAll("[data-privacy]")) {
+    const item = catalog.find((entry) => entry.id === box.dataset.privacy);
+    box.checked = Boolean(item && item.enabled);
+    box.disabled = !privacy.enabled;
+  }
+  $("privacy-enabled").checked = Boolean(privacy.enabled);
+  $("p-enabled").textContent = privacy.enabled ? t("panel.on") : t("panel.off");
+  $("p-count").textContent = privacy.count ?? 0;
+  $("purge-btn").disabled = !privacy.count;
+  const chosen = catalog.filter((item) => item.enabled).length;
+  $("privacy-summary").textContent = !privacy.enabled
+    ? t("panel.privacyOff")
+    : chosen === catalog.length
+      ? t("panel.privacyAll")
+      : t("panel.privacySome", { n: chosen, total: catalog.length });
 }
 
-async function toggleWatch() {
-  const button = $("watch-btn");
-  const on = button.classList.contains("primary");
-  const roots = readRoots();
-  $("roots").value = roots.join("\n");
-  // One toggle per click: the switch is off while the request travels, so a
-  // double click cannot turn watching off again straight after turning it on.
-  button.disabled = true;
+async function refreshPrivacy() {
+  const privacy = await api("/api/privacy").catch(() => null);
+  if (privacy) renderPrivacy(privacy);
+  return privacy;
+}
+
+async function savePrivacy(patch) {
   try {
-    const watch = await api("/api/watch", {
+    const privacy = await api("/api/privacy", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: !on, roots }),
+      body: JSON.stringify(patch),
     });
-    renderWatch(watch);
-    toast(watch.running ? t("toast.watchOn") : t("toast.watchOff"));
-  } catch (error) {
-    toast(t("toast.failed", { error: error.message }));
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function purgePrivate() {
-  try {
-    const result = await api("/api/privacy/purge", { method: "POST", body: "{}" });
-    toast(t("toast.purged", { n: result.removed }));
-    loadStats();
+    renderPrivacy(privacy);
+    toast(t("toast.privacySaved"));
   } catch (error) {
     toast(t("toast.failed", { error: error.message }));
   }
 }
 
-/* The folder list is user input, so it can hold the same folder twice — a line
-   pasted twice, or a folder and its subfolder listed side by side, which walks
-   the same files twice. Every button reads through here: repeats are dropped
-   (Windows paths are case-insensitive) and a folder an earlier line already
-   covers goes with them, so what is on screen is what the scan will walk. */
-function readRoots() {
-  const norm = (path) => path.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
-  const seen = new Set();
-  const roots = [];
-  for (const raw of $("roots").value.split("\n")) {
-    let folder = raw.trim();
-    if (!folder) continue;
-    // A drive root ("C:\") must keep its trailing slash; longer paths lose it.
-    if (folder.length > 3) folder = folder.replace(/[\\/]+$/, "");
-    const key = norm(folder);
-    if (seen.has(key)) continue;
-    if (roots.some((root) => key.startsWith(norm(root) + "\\"))) continue;
-    seen.add(key);
-    roots.push(folder);
-  }
-  return roots;
-}
-
-function startJob() {
-  const roots = readRoots();
-  if (!roots.length) { toast(t("toast.needRoots")); return; }
-  // The cleaned list goes back into the box: the user sees the folders the
-  // run will actually walk, without the repeated or nested lines.
-  $("roots").value = roots.join("\n");
-  // One click, one job: the button switches off before the request leaves, so
-  // a second quick click cannot start a second run; pollJob turns it back on.
-  $("index-btn").disabled = true;
-  api("/api/index", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ roots, prune: $("prune").checked }),
-  }).then(() => {
-    pollJob();
-  }).catch((error) => {
-    toast(error.message);
-    // A 409 here means a run is already going: follow it instead of guessing.
-    pollJob();
-  });
-}
-
-function pollJob() {
-  clearTimeout(state.jobTimer);
-  api("/api/progress").then((job) => {
-    const done = job.total ? Math.round((job.position / job.total) * 100) : 0;
-      if (job.error) {
-        $("bar").style.width = "0%";
-        $("bar").style.background = "var(--red, #e24b4a)";
-      } else {
-        $("bar").style.width = `${job.running ? done : 100}%`;
-        $("bar").style.background = "";
-      }
-    $("progress-label").textContent = job.running
-      ? `${job.position}/${job.total} · ${shortPath(job.path)}`
-      : (job.result
-        ? t("toast.jobDone", {
-          seconds: job.result.seconds,
-          files: plural(job.result.indexed, "unit.files"),
-        })
-        : (job.error || t("panel.ready")));
-    if (job.running) {
-      state.jobTimer = setTimeout(pollJob, 400);
-    } else {
-      $("index-btn").disabled = false;
-      if (job.result) state.dupCache = {};
-  recentImages = null;
-      loadStats();
-      if (job.result && job.result.indexed) runSearch();
-    }
-  }).catch(() => { $("index-btn").disabled = false; });
-}
-
-function shortPath(path) {
-  if (!path) return "";
-  const parts = path.split(/[\\/]/);
-  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
-}
-
-/* Two copies of one file differ at the *front* of the path, which is exactly
-   what shortPath throws away. Strip what they share and show what is left:
-   "openWallpaper\bin\steamcmd\public" against "zz\bin\steamcmd\public". */
-function relativeFolders(paths) {
-  const split = paths.map((path) => String(path).split(/[\\/]/));
-  let depth = 0;
-  while (split.every((parts) => parts.length > depth + 1)) {
-    const segment = split[0][depth].toLowerCase();
-    if (!split.every((parts) => parts[depth].toLowerCase() === segment)) break;
-    depth += 1;
-  }
-  return split.map((parts) => parts.slice(depth, -1).join("\\"));
-}
-
-/* ------------------------------------------------------------------ modal */
-
-async function openSimilar(fileId) {
-  try {
-    const data = await api(`/api/similar?id=${fileId}`);
-    $("modal-grid").innerHTML = data.images.length
-      ? data.images.map(shot).join("")
-      : `<div class="empty" style="min-height:120px"><p>${esc(t("results.noSimilar"))}</p></div>`;
-    $("modal").classList.add("open");
-  } catch (error) {
-    toast(error.message);
-  }
-}
-
-/* --------------------------------------------------------- drawer + settings */
-
-/* The index panel is a drawer, not a column. Two consequences worth naming:
-   it slides over the results instead of reflowing them, and the scrim behind it
-   is the close button for people who do not aim at small targets. */
-function updateRailActive() {
-  // The lit circle follows the open function: the drawer's tab while the
-  // drawer is out, duplicates while their drawer is out, nothing when both
-  // are shut — and never two circles at once.
-  const map = { index: "rail-index", privacy: "rail-privacy",
-                encryption: "rail-seal", search: "rail-search", keys: "rail-keys",
-                appearance: "rail-appearance" };
-  const lit = $("panel").classList.contains("open") ? map[state.drawerTab] : null;
-  ["rail-index", "rail-privacy", "rail-seal", "rail-search", "rail-keys",
-   "rail-appearance"].forEach((id) => {
-    const button = $(id);
-    if (button) button.classList.toggle("active", button.id === lit);
-  });
-  const dups = $("rail-dups");
-  if (dups) dups.classList.toggle("active", $("dups-drawer").classList.contains("open"));
-}
-
-function setPanel(open) {
-  if (open) setDups(false);  // the two drawers are mutually exclusive
-  const drawer = $("panel");
-  $("panel").classList.toggle("open", open);
-  $("scrim").classList.toggle("show", open);
-  drawer.setAttribute("aria-hidden", String(!open));
-  updateRailActive();
-}
-
-function setSettings(open) {
-  $("settings").classList.toggle("open", open);
-  if (open) {
-    renderAbout();
-    paintLang();
-    loadMeta().then(paintFilters);
-    setSettingsTab(document.querySelector("#settings-tabs .settings-tab.active")?.dataset.tab || "general");
-    // Focus the card, not the close button: a ring on "close" is the first
-    // thing the eye lands on, and it is not what the dialog is about.
-    $("settings").querySelector(".settings-card").focus();
-  }
-}
-
-let settingsGrow = null;
-
-function growSettingsCard(from) {
-  const card = document.querySelector("#settings .settings-card");
-  if (!card || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const start = typeof from === "number" ? from : card.getBoundingClientRect().height;
-  if (settingsGrow) {
-    const previous = settingsGrow;
-    settingsGrow = null;
-    previous.cancel();
-  }
-  card.style.overflow = "";
-  const end = card.getBoundingClientRect().height;
-  if (Math.abs(end - start) < 1) return;
-  card.style.overflow = "hidden";
-  const anim = card.animate(
-    [{ height: `${start}px` }, { height: `${end}px` }],
-    { duration: 420, easing: "cubic-bezier(0.22, 0.72, 0.2, 1)" }
-  );
-  settingsGrow = anim;
-  const settle = () => {
-    if (settingsGrow !== anim) return;
-    settingsGrow = null;
-    card.style.overflow = "";
-  };
-  anim.addEventListener("finish", settle);
-  anim.addEventListener("cancel", settle);
-}
-
-function setSettingsTab(name) {
-  const tabs = [...document.querySelectorAll("#settings-tabs .settings-tab")];
-  const panes = [...document.querySelectorAll("#settings .settings-pane")];
-  const active = tabs.find((button) => button.classList.contains("active"));
-  const card = document.querySelector("#settings .settings-card");
-  const growFrom = active && active.dataset.tab !== name && card
-    ? card.getBoundingClientRect().height
-    : 0;
-
-  tabs.forEach((button) => {
-    button.classList.toggle("active", button.dataset.tab === name);
-    button.setAttribute("aria-selected", String(button.dataset.tab === name));
-  });
-  panes.forEach((pane) => {
-    pane.classList.toggle("active", pane.dataset.pane === name);
-  });
-
-  if (name === "keys") renderHotkeys();
-  if (name === "data") {
-    const done = loadAudit();
-    if (growFrom) {
-      done.then(() => {
-        const shown = document.querySelector("#settings .settings-pane.active");
-        if ($("settings").classList.contains("open") && shown?.dataset.pane === name) {
-          growSettingsCard();
-        }
-      });
-    }
-  }
-
-  if (!growFrom) return;
-  growSettingsCard(growFrom);
-  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    const pane = document.querySelector(`#settings .settings-pane[data-pane="${name}"]`);
-    if (pane) pane.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: "ease" });
-  }
-}
-
-async function loadAudit() {
-  const host = $("audit-list");
-  if (!host) return;
-  try {
-    const data = await api("/api/audit");
-    const mb = (bytes) => `${(Number(bytes || 0) / 1048576).toFixed(2)} ${t("unit.mb")}`;
-    const personal = data.personal || {};
-    const rows = [
-      [t("audit.path"), data.db || "—"],
-      [t("audit.size"), mb(data.total_bytes)],
-      [t("audit.files"), String(data.files ?? 0)],
-      [t("audit.chunks"), String(data.chunks ?? 0)],
-      [t("audit.images"), String(data.images ?? 0)],
-      [t("audit.vectors"), String(data.vectors ?? 0)],
-      [t("audit.pins"), String(personal.pins ?? 0)],
-      [t("audit.saved"), String(personal.saved ?? 0)],
-      [t("audit.aliases"), String(personal.aliases ?? 0)],
-      [t("audit.tags"), String(personal.tags ?? 0)],
-      [t("audit.collections"), String(personal.collections ?? 0)],
-      [t("audit.encrypted"), data.encrypted ? t("audit.yes") : t("audit.no")],
-      [t("audit.privacy"), data.sensitive?.enabled
-        ? t("audit.privacyOn", { n: data.sensitive.count ?? 0 })
-        : t("audit.privacyOff")],
-    ];
-    host.innerHTML = rows.map(([label, value]) => `
-      <div class="audit-row">
-        <span>${esc(label)}</span>
-        <b title="${esc(value)}">${esc(value)}</b>
-      </div>`).join("");
-    const warn = $("audit-warn");
-    if (warn) {
-      warn.textContent = data.encrypted ? "" : t("audit.unencrypted");
-      warn.classList.toggle("on", !data.encrypted);
-    }
-  } catch (error) {
-    host.innerHTML = `<p class="settings-note">${esc(t("toast.failed", { error: error.message }))}</p>`;
-  }
-}
-
-function paintLang() {
-  document.querySelectorAll("#lang-switch button").forEach((button) => {
-    button.setAttribute("aria-checked", String(button.dataset.lang === currentLang()));
-  });
-  syncFilterPickers();
-}
-
-function renderAbout() {
-  const host = $("about");
-  if (!host) return;
-  const stats = state.stats || {};
-  const status = state.status || {};
-  const ocr = status.ocr || {};
-  const rows = [
-    ["settings.aboutFiles",
-      `${plural(stats.files || 0, "unit.files")} · ${plural(stats.chunks || 0, "unit.chunks")}`],
-    ["settings.aboutSize",
-      `${((stats.db_bytes || 0) / 1048576).toFixed(1)} ${t("unit.mb")}`],
-    ["settings.aboutLanguages", String(ocr.supported_languages ?? "—")],
-    ["settings.aboutEmbedder", status.text_embedder || "—"],
-    ["settings.aboutImages", status.visual_embedder || "—"],
-    ["settings.aboutOcr", (ocr.available || []).join(", ") || t("panel.notFound")],
-    ["settings.aboutVersion", status.version || "—"],
-  ];
-  host.innerHTML = rows
-    .map(([key, value]) => `<dt>${esc(t(key))}</dt><dd>${esc(value)}</dd>`)
-    .join("");
-}
-
-/* ----------------------------------------------------------------- events */
-
-document.addEventListener("click", async (event) => {
-  const chip = event.target.closest("[data-chip]");
-  if (chip) { clearChip(chip.dataset.chip); return; }
-
-  const tagRun = event.target.closest("[data-tag-run]");
-  if (tagRun) { runTag(tagRun.dataset.tagRun); return; }
-
-  const collectionRun = event.target.closest("[data-collection-run]");
-  if (collectionRun) { runCollection(collectionRun.dataset.collectionRun); return; }
-
-  const tagAdd = event.target.closest("[data-tag-add]");
-  if (tagAdd) { openAnnotate("tag", [Number(tagAdd.dataset.tagAdd)]); return; }
-
-  const collectionAdd = event.target.closest("[data-collection-add]");
-  if (collectionAdd) {
-    openAnnotate("collection", [Number(collectionAdd.dataset.collectionAdd)]);
-    return;
-  }
-
-  const why = event.target.closest("[data-why]");
-  if (why) { showWhy(why); return; }
-
-  if (event.target.closest("[data-copy-ocr]")) { copyPreviewOcr(); return; }
-
-  if (event.target.closest("#more-btn")) { runSearch({ append: true }); return; }
-
-  const star = event.target.closest("[data-pin]");
-  if (star) {
-    event.preventDefault();
-    event.stopPropagation();
-    // A star knows its own state, so the click says what it wants instead of
-    // asking the server to guess: two windows must not flip each other twice.
-    togglePin(star.dataset.pin, !star.classList.contains("on"));
-    return;
-  }
-
-  const run = event.target.closest("[data-run]");
-  if (run) {
-    $("q").value = run.dataset.run;
-    clearTimeout(state.timer);
-    runSearch();
-    $("q").focus();
-    return;
-  }
-
-  const forget = event.target.closest("[data-forget]");
-  if (forget) { forgetSearch(forget.dataset.forget); return; }
-
-  const unalias = event.target.closest("[data-unalias]");
-  if (unalias) { removeAlias(unalias.dataset.unalias); return; }
-
-  const suggest = event.target.closest("[data-suggest]");
-  if (suggest) {
-    $("q").value = suggest.dataset.suggest;
-    runSearch();
-    $("q").focus();
-    return;
-  }
-
-  const group = event.target.closest("[data-group]");
-  if (group) { toggleGroup(group); return; }
-
-  const preview = event.target.closest("[data-preview]");
-  if (preview) { openPreview(Number(preview.dataset.preview)); return; }
-
-  const target = event.target.closest("[data-open],[data-reveal],[data-similar]");
-  if (!target) {
-    // Clicking anywhere on a card selects it, so the keyboard continues from
-    // the row the user just pointed at.
-    const card = event.target.closest(".card");
-    if (card) {
-      if (event.ctrlKey || event.metaKey) { togglePick(card.dataset.file); return; }
-      state.selected = Number(card.dataset.index);
-      state.lastEnterHit = -1;
-      paintSelection();
-    }
-    return;
-  }
-  if (target.dataset.similar) { openSimilar(target.dataset.similar); return; }
-  const id = target.dataset.open || target.dataset.reveal;
-  const route = target.dataset.open ? "open" : "reveal";
-  try {
-    await api(`/api/${route}?id=${id}`);
-    $("preview").classList.remove("open");
-  } catch (error) {
-    toast(t("toast.failed", { error: error.message }));
-  }
-});
-
-document.querySelector(".menu").addEventListener("click", (event) => {
-  const chip = event.target.closest(".chip");
-  if (!chip) return;
-  document.querySelectorAll(".menu .chip").forEach((item) => item.classList.remove("active"));
-  chip.classList.add("active");
-  state.kind = chip.dataset.kind;
-  if (state.query) runSearch();
-});
-
-/* ------------------------------------------------------------ suggestions */
-
-/* Recent queries live in localStorage, saved searches in the personal layer;
-   both are closer than retyping. The dropdown opens under the box while you
-   type, follows the typed text, and ↑↓ + Enter run a row without the mouse. */
-const RECENT_KEY = "af.recent-queries";
-const SUGGEST = { items: [], index: -1 };
-
-function recentQueries() {
-  try {
-    const list = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
-    return Array.isArray(list) ? list.filter((item) => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function rememberQuery(query) {
-  const clean = String(query || "").trim();
-  if (!clean) return;
-  const list = recentQueries().filter((item) => item !== clean);
-  list.unshift(clean);
-  try {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8)));
-  } catch {
-    /* private mode loses the memory, nothing else breaks */
-  }
-}
-
-function suggestItems(text) {
-  const needle = text.trim().toLowerCase();
-  const saved = ((personal && personal.saved) || [])
-    .map((item) => ({ label: item.query, kind: "saved" }));
-  const recent = recentQueries().map((label) => ({ label, kind: "recent" }));
-  const seen = new Set();
-  const rows = [];
-  for (const item of [...saved, ...recent]) {
-    if (!item.label || seen.has(item.label)) continue;
-    if (needle && !item.label.toLowerCase().includes(needle)) continue;
-    seen.add(item.label);
-    rows.push(item);
-  }
-  return rows.slice(0, 8);
-}
-
-function paintSuggest() {
-  // data-suggest-index, not data-suggest: the document click delegate reads
-  // [data-suggest] as a query string, and these buttons carry a row number —
-  // a click here used to replace the query with "0".."7".
-  $("suggest").innerHTML = SUGGEST.items.map((item, index) => `
-    <button type="button" class="suggest-item${index === SUGGEST.index ? " active" : ""}"
-            data-suggest-index="${index}">
-      <span class="suggest-kind">${esc(t(item.kind === "saved" ? "suggest.saved" : "suggest.recent"))}</span>
-      <span class="suggest-label">${esc(item.label)}</span>
-    </button>`).join("");
-}
-
-function openSuggest() {
-  SUGGEST.items = suggestItems($("q").value);
-  SUGGEST.index = -1;
-  if (!SUGGEST.items.length) { closeSuggest(); return; }
-  paintSuggest();
-  $("suggest").hidden = false;
-}
-
-function closeSuggest() {
-  SUGGEST.items = [];
-  SUGGEST.index = -1;
-  $("suggest").hidden = true;
-}
-
-function moveSuggest(delta) {
-  if (!SUGGEST.items.length) return;
-  const next = SUGGEST.index + delta;
-  SUGGEST.index = next >= SUGGEST.items.length ? 0
-    : next < 0 ? SUGGEST.items.length - 1 : next;
-  paintSuggest();
-}
-
-function acceptSuggest() {
-  const item = SUGGEST.items[SUGGEST.index];
-  if (!item) return false;
-  $("q").value = item.label;
-  closeSuggest();
-  clearTimeout(state.timer);
-  runSearch();
-  return true;
-}
-
-$("q").addEventListener("input", () => {
-  scheduleSearch();
-  if (personal) openSuggest();
-  else loadPersonal().then(() => { if (!$("suggest").hidden || $("q").value) openSuggest(); });
-});
-
-$("q").addEventListener("keydown", (event) => {
-  const suggestOpen = !$("suggest").hidden;
-  if (event.key === "Enter") {
-    clearTimeout(state.timer);
-    if (!(suggestOpen && SUGGEST.index >= 0 && acceptSuggest())) runSearch();
-    closeSuggest();
-  } else if (event.key === "Escape") {
-    if (suggestOpen) closeSuggest();
-    else { $("q").value = ""; runSearch(); }
-  } else if (event.key === "ArrowDown") {
-    event.preventDefault();
-    if (!suggestOpen) openSuggest();
-    moveSuggest(1);
-  } else if (event.key === "ArrowUp") {
-    event.preventDefault();
-    moveSuggest(-1);
-  }
-});
-
-$("suggest").addEventListener("mousedown", (event) => {
-  event.preventDefault(); // keep the input focused; click runs the query
-  const button = event.target.closest("[data-suggest-index]");
-  if (!button) return;
-  SUGGEST.index = Number(button.dataset.suggestIndex);
-  acceptSuggest();
-});
-
-document.addEventListener("click", (event) => {
-  if (!event.target.closest(".find")) closeSuggest();
-});
-function paintSort() {
-  const value = $("sort-value");
-  if (value) {
-    value.dataset.i18n = `sort.${state.sort}`;
-    value.textContent = t(`sort.${state.sort}`);
-  }
-  document.querySelectorAll("#sort-menu [data-sort]").forEach((button) => {
-    button.setAttribute("aria-selected", String(button.dataset.sort === state.sort));
-  });
-}
-
-function placePanel(panel, anchor) {
-  if (!panel || !anchor) return;
-  const host = panel.offsetParent || document.querySelector(".tools");
-  if (!host) return;
-  panel.style.left = "";
-  panel.style.right = "";
-  panel.style.top = "";
-  const target = anchor.getBoundingClientRect();
-  const frame = host.getBoundingClientRect();
-  const width = panel.offsetWidth;
-  const left = Math.max(6, Math.min(target.right - frame.left - width, host.clientWidth - width - 6));
-  panel.style.left = `${left}px`;
-  panel.style.top = `${host.clientHeight - 4}px`;
-  panel.style.right = "auto";
-}
-
-function setSortMenu(open) {
-  const menu = $("sort-menu");
-  const field = document.querySelector(".sort-field");
-  if (!menu || !field) return;
-  menu.hidden = !open;
-  field.classList.toggle("open", open);
-  $("sort-btn").setAttribute("aria-expanded", String(open));
-  if (open) placePanel(menu, field);
-}
-
-$("sort-btn").addEventListener("click", () => setSortMenu($("sort-menu").hidden));
-$("sort-menu").addEventListener("click", (event) => {
-  const option = event.target.closest("[data-sort]");
-  if (!option) return;
-  state.sort = option.dataset.sort;
-  paintSort();
-  setSortMenu(false);
-  $("sort-btn").focus();
-  if (state.query) runSearch();
-});
-$("sort-btn").addEventListener("keydown", (event) => {
-  if (event.key === "Escape") { setSortMenu(false); return; }
-  if (event.key === "ArrowDown" && $("sort-menu").hidden) {
-    event.preventDefault();
-    setSortMenu(true);
-    $("sort-menu").querySelector("[data-sort]")?.focus();
-  }
-});
-$("sort-menu").addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    setSortMenu(false);
-    $("sort-btn").focus();
-    return;
-  }
-  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-  const options = [...$("sort-menu").querySelectorAll("[data-sort]")];
-  const at = options.indexOf(document.activeElement);
-  const next = event.key === "ArrowDown"
-    ? options[(at + 1) % options.length]
-    : options[(at - 1 + options.length) % options.length];
-  event.preventDefault();
-  next?.focus();
-});
-paintSort();
-
-/* Unit pickers are small custom menus so their list can fade in rounded and
-   match the rest of the builder. A hidden input keeps the lowercase token
-   value (`b`, `kb`, `mb`, `gb`) the query parser expects. */
-function paintUnit(picker) {
-  if (!picker) return;
-  const hidden = picker.querySelector('input[type="hidden"]');
-  const label = picker.querySelector(".unit-value");
-  if (!hidden || !label) return;
-  const unit = hidden.value || "mb";
-  label.dataset.i18n = `unit.${unit}`;
-  label.textContent = t(`unit.${unit}`);
-  picker.querySelectorAll("[data-unit]").forEach((option) => {
-    option.setAttribute("aria-selected", String(option.dataset.unit === unit));
-  });
-}
-
-function setUnitMenu(picker, open) {
-  if (!picker) return;
-  const menu = picker.querySelector(".unit-menu");
-  const trigger = picker.querySelector(".unit-trigger");
-  if (!menu || !trigger) return;
-  menu.hidden = !open;
-  picker.classList.toggle("open", open);
-  trigger.setAttribute("aria-expanded", String(open));
-  if (open) {
-    const active = menu.querySelector('[aria-selected="true"]') || menu.querySelector("[data-unit]");
-    active?.focus();
-  }
-}
-
-document.querySelectorAll(".unit-picker").forEach((picker) => {
-  const trigger = picker.querySelector(".unit-trigger");
-  const menu = picker.querySelector(".unit-menu");
-  const hidden = picker.querySelector('input[type="hidden"]');
-  trigger.addEventListener("click", (event) => {
-    event.stopPropagation();
-    document.querySelectorAll(".unit-picker").forEach((other) => {
-      if (other !== picker) setUnitMenu(other, false);
-    });
-    document.querySelectorAll(".filter-picker.open").forEach((other) => setFilterPicker(other, false));
-    setUnitMenu(picker, menu.hidden);
-  });
-  menu.addEventListener("click", (event) => {
-    const option = event.target.closest("[data-unit]");
-    if (!option) return;
-    hidden.value = option.dataset.unit;
-    paintUnit(picker);
-    setUnitMenu(picker, false);
-    trigger.focus();
-    paintFilterPreview();
-  });
-  picker.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !menu.hidden) {
-      event.preventDefault();
-      setUnitMenu(picker, false);
-      trigger.focus();
-      return;
-    }
-    if (menu.hidden) {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        setUnitMenu(picker, true);
-      }
-      return;
-    }
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    const options = [...menu.querySelectorAll("[data-unit]")];
-    const at = options.indexOf(document.activeElement);
-    const next = event.key === "ArrowDown"
-      ? options[(at + 1) % options.length]
-      : options[(at - 1 + options.length) % options.length];
-    event.preventDefault();
-    next?.focus();
-  });
-  paintUnit(picker);
-});
-
-/* Type and collection reuse the same pattern. Their <select> stays in the DOM
-   (hidden) so the query code can keep reading `.value`; the menu is rebuilt
-   from its options every time it opens, which is how custom kinds and
-   collections added at runtime appear without extra bookkeeping. */
-function syncFilterPicker(picker) {
-  const select = document.getElementById(picker.dataset.picker);
-  const label = picker.querySelector(".filter-picker-value");
-  if (!select || !label) return;
-  const option = select.selectedOptions[0];
-  label.textContent = option ? option.textContent : "";
-  if (option?.dataset.i18n) label.dataset.i18n = option.dataset.i18n;
-  else delete label.dataset.i18n;
-}
-
-function syncFilterPickers() {
-  document.querySelectorAll(".filter-picker").forEach(syncFilterPicker);
-}
-
-function paintFilterMenu(picker) {
-  const select = document.getElementById(picker.dataset.picker);
-  const menu = picker.querySelector(".filter-menu");
-  if (!select || !menu) return;
-  menu.innerHTML = [...select.options].map((option) => {
-    const chosen = option.value === select.value ? ' aria-selected="true"' : "";
-    return `<button type="button" role="option" data-value="${esc(option.value)}"${chosen}>${esc(option.textContent)}</button>`;
-  }).join("");
-}
-
-function setFilterPicker(picker, open) {
-  if (!picker) return;
-  const menu = picker.querySelector(".filter-menu");
-  const trigger = picker.querySelector(".filter-picker-btn");
-  if (!menu || !trigger) return;
-  if (open) paintFilterMenu(picker);
-  menu.hidden = !open;
-  picker.classList.toggle("open", open);
-  trigger.setAttribute("aria-expanded", String(open));
-  if (open) {
-    const active = menu.querySelector('[aria-selected="true"]') || menu.querySelector("[data-value]");
-    active?.focus();
-  }
-}
-
-document.querySelectorAll(".filter-picker").forEach((picker) => {
-  const trigger = picker.querySelector(".filter-picker-btn");
-  const menu = picker.querySelector(".filter-menu");
-  const select = document.getElementById(picker.dataset.picker);
-  trigger.addEventListener("click", (event) => {
-    event.stopPropagation();
-    document.querySelectorAll(".filter-picker").forEach((other) => {
-      if (other !== picker) setFilterPicker(other, false);
-    });
-    document.querySelectorAll(".unit-picker").forEach((other) => setUnitMenu(other, false));
-    setFilterPicker(picker, menu.hidden);
-  });
-  menu.addEventListener("click", (event) => {
-    const option = event.target.closest("[data-value]");
-    if (!option) return;
-    select.value = option.dataset.value;
-    syncFilterPicker(picker);
-    setFilterPicker(picker, false);
-    trigger.focus();
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-  picker.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !menu.hidden) {
-      event.preventDefault();
-      setFilterPicker(picker, false);
-      trigger.focus();
-      return;
-    }
-    if (menu.hidden) {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        setFilterPicker(picker, true);
-      }
-      return;
-    }
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    const options = [...menu.querySelectorAll("[data-value]")];
-    const at = options.indexOf(document.activeElement);
-    const next = event.key === "ArrowDown"
-      ? options[(at + 1) % options.length]
-      : options[(at - 1 + options.length) % options.length];
-    event.preventDefault();
-    next?.focus();
-  });
-  syncFilterPicker(picker);
-});
-
-$("folder").addEventListener("change", () => { state.folder = $("folder").value.trim(); if (state.query) runSearch(); });
-$("since-btn").addEventListener("click", (event) => {
-  event.stopPropagation();
-  openCalendar(!CAL.open);
-});
-$("calendar").addEventListener("click", (event) => {
-  event.stopPropagation();
-  const action = event.target.closest("[data-cal]");
-  if (action) {
-    const name = action.dataset.cal;
-    if (name === "clear") { setSince(""); return; }
-    if (name === "docdate") {
-      state.docdate = !state.docdate;
-      $("doc-date-toggle").classList.toggle("set", state.docdate);
-      if (state.query) runSearch();
-      return;
-    }
-    if (name === "today") { setSince(isoDate(new Date())); return; }
-    const step = name === "prev" ? -1 : 1;
-    const next = new Date(CAL.year, CAL.month + step, 1);
-    CAL.year = next.getFullYear();
-    CAL.month = next.getMonth();
-    renderCalendar();
-    return;
-  }
-  const day = event.target.closest("[data-day]");
-  if (day) setSince(day.dataset.day);
-});
-/* Right-click on a result: open, show in folder, copy path — the three
-   things kensaku's context menu does, drawn as our own card so it follows the
-   theme instead of the browser's. */
-let ctxMenu = null;
-
-document.addEventListener("contextmenu", (event) => {
-  const card = event.target.closest(".card");
-  if (!card || !state.hits[Number(card.dataset.index)]) return;
-  event.preventDefault();
-  closeCtxMenu();
-  const hit = state.hits[Number(card.dataset.index)];
-  ctxMenu = document.createElement("div");
-  ctxMenu.className = "ctx-menu";
-  ctxMenu.innerHTML = `
-    <button data-act="open">${esc(t("ctx.open"))}</button>
-    <button data-act="reveal">${esc(t("ctx.reveal"))}</button>
-    <button data-act="copy">${esc(t("ctx.copy"))}</button>`;
-  ctxMenu.style.left = `${Math.min(event.clientX, window.innerWidth - 190)}px`;
-  ctxMenu.style.top = `${Math.min(event.clientY, window.innerHeight - 120)}px`;
-  document.body.appendChild(ctxMenu);
-  ctxMenu.addEventListener("click", async (menuEvent) => {
-    const button = menuEvent.target.closest("[data-act]");
-    if (!button) return;
-    closeCtxMenu();
-    if (button.dataset.act === "copy") {
-      try { await navigator.clipboard.writeText(hit.path); toast(t("ctx.copied")); }
-      catch { toast(t("search.failed", { error: "clipboard" })); }
-      return;
-    }
-    api(`/api/${button.dataset.act === "open" ? "open" : "reveal"}?id=${hit.file_id}`)
-      .catch((error) => toast(t("toast.failed", { error: error.message })));
-  });
-});
-
-function closeCtxMenu() {
-  if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
-}
-
-document.addEventListener("click", (event) => {
-  if (ctxMenu && !event.target.closest(".ctx-menu")) closeCtxMenu();
-});
-document.addEventListener("scroll", closeCtxMenu, true);
-
-// A click anywhere else closes the popup, the way a menu behaves.
-document.addEventListener("click", (event) => {
-  if (!CAL.open) return;
-  if (event.target.closest("#calendar") || event.target.closest("#since-btn")) return;
-  openCalendar(false);
-});
-$("clear").addEventListener("click", () => {
-  $("q").value = "";
-  clearTimeout(state.timer);
-  runSearch();
-  $("q").focus();
-});
-$("save-btn").addEventListener("click", saveSearch);
-$("alias-add").addEventListener("click", addAlias);
-$("types-add").addEventListener("click", addType);
-$("types-list").addEventListener("click", (event) => {
-  const host = $("types-list");
-  const card = event.target.closest(".type-card");
-  if (!card) return;
-  const index = [...host.querySelectorAll(".type-card")].indexOf(card);
-  if (index < 0) return;
-  if (event.target.closest("[data-type-addmask]")) {
-    collectTypes();
-    const type = state.types[index];
-    if (!type) return;
-    type.masks = [...(type.masks || []), ""];
-    renderTypes();
-    const inputs = host.querySelectorAll(".type-card")[index]?.querySelectorAll(".type-mask");
-    inputs?.[inputs.length - 1]?.focus();
-    return;
-  }
-  if (event.target.closest("[data-type-rmmask]")) {
-    const row = event.target.closest(".type-mask-row");
-    const maskIndex = [...card.querySelectorAll(".type-mask-row")].indexOf(row);
-    collectTypes();
-    const type = state.types[index];
-    if (!type || maskIndex < 0) return;
-    type.masks.splice(maskIndex, 1);
-    renderTypes();
-    saveTypes();
-    return;
-  }
-  if (event.target.closest("[data-type-remove]")) {
-    collectTypes();
-    state.types.splice(index, 1);
-    renderTypes();
-    saveTypes();
-  }
-});
-$("types-list").addEventListener("input", (event) => {
-  if (event.target.closest("[data-type-name], [data-type-mask]")) saveTypesSoon();
-});
-$("wall-row").addEventListener("click", (event) => {
-  const tile = event.target.closest("[data-wall]");
-  if (tile) { chooseWall(tile.dataset.wall); return; }
-  if (event.target.closest("#wall-pick")) $("wall-file").click();
-});
-$("wall-file").addEventListener("change", () => {
-  const file = $("wall-file").files && $("wall-file").files[0];
-  // Reset first: choosing the same file twice must upload it twice, and a file
-  // input that keeps its value fires no change event the second time.
-  $("wall-file").value = "";
-  useWallFile(file);
-});
-$("wall-edit").addEventListener("click", openWallEditor);
-$("wall-editor-close").addEventListener("click", closeWallEditor);
-$("wall-editor").addEventListener("click", (event) => {
-  if (event.target.id === "wall-editor") closeWallEditor();
-});
-$("wall-editor-reset").addEventListener("click", resetWallFrame);
-$("wall-zoom").addEventListener("input", () => setWallZoom(Number($("wall-zoom").value)));
-
-/* --------------------------------------------------- look (appearance) UI */
-
-$("look-dim").addEventListener("input", () => {
-  const percent = Number($("look-dim").value);
-  $("look-dim-val").textContent = `${percent}%`;
-  setLook({ dim: percent / 100 });
-});
-$("look-blur").addEventListener("input", () => {
-  const px = Number($("look-blur").value);
-  $("look-blur-val").textContent = `${px}px`;
-  setLook({ blur: px });
-});
-$("look-panel").addEventListener("input", () => {
-  const percent = Number($("look-panel").value);
-  $("look-panel-val").textContent = `${percent}%`;
-  setLook({ panelAlpha: percent / 100 });
-});
-$("look-card").addEventListener("input", () => {
-  const percent = Number($("look-card").value);
-  $("look-card-val").textContent = `${percent}%`;
-  setLook({ cardAlpha: percent / 100 });
-});
-$("look-radius").addEventListener("input", () => {
-  const px = Number($("look-radius").value);
-  $("look-radius-val").textContent = `${px}px`;
-  setLook({ radius: px });
-});
-/* Touching a tint slider takes the palette away from the wallpaper: the
-   checkbox unchecks itself, because "custom" is what the gesture means. */
-$("tint-hue").addEventListener("input", () => {
-  const hue = Number($("tint-hue").value);
-  $("tint-hue-val").textContent = `${hue}°`;
-  setLook({ tintAuto: false, hue });
-});
-$("tint-sat").addEventListener("input", () => {
-  const sat = Number($("tint-sat").value);
-  $("tint-sat-val").textContent = `${sat}%`;
-  setLook({ tintAuto: false, sat });
-});
-$("tint-auto").addEventListener("change", () => {
-  setLook({ tintAuto: $("tint-auto").checked });
-});
-$("look-reset").addEventListener("click", () => {
-  // The wallpaper stays as chosen: reset speaks for the glass, not the photo.
-  setLook({ ...DEFAULT_LOOK });
-});
-
-/* Drag-to-pan: the picture follows the pointer, clamped so it always covers the
-   stage. Pointer capture keeps the drag alive when the pointer leaves the
-   preview, which is where a mouse-based crop usually falls apart. */
-(() => {
-  const stage = $("wall-stage");
-  let drag = null;
-
-  stage.addEventListener("pointerdown", (event) => {
-    if (!editor.open || !editor.image || event.button !== 0) return;
-    const cover = stageCover(stage, editor.image);
-    const slackX = cover.width * clampScale(theme.scale) - stage.clientWidth;
-    const slackY = cover.height * clampScale(theme.scale) - stage.clientHeight;
-    drag = { x: event.clientX, y: event.clientY, fx: clamp01(theme.fx ?? 0.5), fy: clamp01(theme.fy ?? 0.5), slackX, slackY };
-    stage.setPointerCapture(event.pointerId);
-  });
-  stage.addEventListener("pointermove", (event) => {
-    if (!drag) return;
-    setWallFocus(
-      drag.slackX > 0 ? drag.fx - (event.clientX - drag.x) / drag.slackX : drag.fx,
-      drag.slackY > 0 ? drag.fy - (event.clientY - drag.y) / drag.slackY : drag.fy,
+/* ------------------------------------------------------------------ seal */
+
+function renderSeal(seal) {
+  state.seal = seal;
+  $("seal-state").textContent = seal.sealed ? t("panel.sealed") : t("panel.notSealed");
+  const button = $("seal-btn");
+  button.textContent = seal.sealed ? t("panel.unsealBtn") : t("panel.sealBtn");
+  button.disabled = Boolean(seal.working);
+  const progress = $("seal-progress");
+  if (seal.working) {
+    progress.hidden = false;
+    const total = seal.total || 1;
+    const percent = Math.min(99, Math.round(((seal.done || 0) / total) * 100));
+    $("seal-progress-fill").style.width = `${percent}%`;
+    const stageKey = "panel.sealStage" + String(seal.stage || "").replace(
+      /(^|[a-z])([A-Z])/g, (m, a, b) => a + b.toUpperCase(),
     );
-  });
-  const stop = (event) => {
-    if (!drag) return;
-    drag = null;
-    if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
-  };
-  stage.addEventListener("pointerup", stop);
-  stage.addEventListener("pointercancel", stop);
-
-  // The wheel zooms around the focus point, which by construction never moves
-  // on screen — the subject stays put while the world grows around it.
-  stage.addEventListener("wheel", (event) => {
-    if (!editor.open || !editor.image) return;
-    event.preventDefault();
-    const current = clampScale(theme.scale);
-    const next = event.deltaY < 0 ? current * 1.08 : current / 1.08;
-    setWallZoom(next);
-    syncWallZoom();
-  }, { passive: false });
-})();
-// Enter in either dictionary field adds the entry: a two-field form with no
-// keyboard path is a form people fill in with the mouse or not at all.
-["alias-word", "alias-means"].forEach((id) => {
-  $(id).addEventListener("keydown", (event) => {
-    if (event.key === "Enter") { event.preventDefault(); addAlias(); }
-  });
-});
-$("index-btn").addEventListener("click", startJob);
-$("watch-btn").addEventListener("click", toggleWatch);
-
-/* Duplicate screenshots: the report opens in its own right-side drawer with
-   every copy listed by name and full path. Each row reuses the same reveal
-   handler the result cards have — click shows the file in Explorer. A checkbox
-   on every row marks a copy for deletion; the bin in the header deletes the
-   checked files after one confirmation. */
-function setDups(open) {
-  if (open) setPanel(false);  // the two drawers are mutually exclusive
-  $("dups-drawer").classList.toggle("open", open);
-  $("dups-drawer").setAttribute("aria-hidden", String(!open));
-  $("scrim").classList.toggle("show", open);
-  updateRailActive();
-  if (!open && dupStream) {
-    dupStream.abort();
-    dupStream = null;
-    hideDupProgress();
+    const stage = t(stageKey) !== stageKey ? t(stageKey) : seal.stage || "";
+    $("seal-progress-label").textContent = `${stage} · ${percent}%`;
+    $("seal-warn").hidden = true;
+  } else {
+    progress.hidden = true;
+    $("seal-progress-fill").style.width = "0";
+    if (seal.error) {
+      $("seal-warn").hidden = false;
+      $("seal-warn").textContent = seal.error;
+    } else {
+      $("seal-warn").hidden = !seal.sealed;
+      if (seal.sealed) $("seal-warn").textContent = t("panel.sealWarn");
+    }
   }
 }
 
-function basename(path) {
-  return path.split("\\").pop().split("/").pop();
+async function pollSeal() {
+  for (;;) {
+    try {
+      const seal = await api("/api/seal");
+      renderSeal(seal);
+      $("seal-btn").disabled = false;
+      if (!seal.working) break;
+    } catch (error) {
+      $("seal-btn").disabled = false;
+      return;
+    }
+    await sleep(400);
+  }
+  loadStats();
+}
+
+/* ------------------------------------------------------- aliases + types */
+
+function renderAliases() {
+  const host = $("alias-list");
+  if (!host) return;
+  const aliases = (state.personal && state.personal.aliases) || [];
+  host.innerHTML = aliases.length
+    ? aliases.map((item) => `
+      <div class="alias-row">
+        <span>${esc(item.alias)}</span><span class="alias-arrow">→</span>
+        <span>${esc(item.expand)}</span>
+        <button class="row-x a-x" data-alias-drop="${esc(item.alias)}"
+                aria-label="${esc(t("alias.removed", { alias: item.alias }))}">×</button>
+      </div>`).join("")
+    : `<p class="settings-note" id="alias-empty">${esc(t("alias.empty"))}</p>`;
+}
+
+function renderTypes() {
+  const host = $("types-list");
+  if (!host) return;
+  host.innerHTML = state.types.length
+    ? state.types.map((type) => `
+      <div class="type-card" data-type="${esc(type.id || "")}">
+        <input class="type-name" data-type-name value="${esc(type.name || "")}"
+               placeholder="${esc(t("types.name"))}" spellcheck="false">
+        <textarea class="type-masks" data-type-masks rows="2"
+                  placeholder="${esc(t("types.mask"))}" spellcheck="false">${esc((type.masks || []).join("\n"))}</textarea>
+        <div style="display:flex;justify-content:flex-end">
+          <button class="row-x" data-type-remove aria-label="${esc(t("types.remove"))}">×</button>
+        </div>
+      </div>`).join("")
+    : `<p class="settings-note" id="types-empty">${esc(t("types.empty"))}</p>`;
+}
+
+async function loadTypes() {
+  try {
+    const data = await api("/api/types");
+    state.types = data.types || [];
+  } catch (error) {
+    state.types = [];
+  }
+  renderTypes();
+}
+
+async function saveTypes() {
+  const rows = [];
+  for (const cardNode of document.querySelectorAll("#types-list .type-card")) {
+    const name = cardNode.querySelector("[data-type-name]")?.value.trim();
+    const masks = (cardNode.querySelector("[data-type-masks]")?.value || "")
+      .split("\n").map((line) => line.trim()).filter(Boolean);
+    const id = cardNode.dataset.type;
+    if (name && masks.length) rows.push({ id: id || undefined, name, masks });
+  }
+  try {
+    const data = await api("/api/types", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ types: rows }),
+    });
+    state.types = data.types || rows;
+    renderTypes();
+    paintCustomChips();
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
+}
+
+function paintCustomChips() {
+  const menu = $(".menu");
+  if (!menu) return;
+  menu.querySelectorAll("[data-kind^='custom:']").forEach((node) => node.remove());
+  for (const type of state.types) {
+    if (!type.id || !type.name) continue;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.dataset.kind = `custom:${type.id}`;
+    chip.textContent = type.name;
+    chip.addEventListener("click", () => {
+      state.kind = chip.dataset.kind;
+      paintKindChips();
+      runSearch();
+    });
+    menu.appendChild(chip);
+  }
+}
+
+/* ------------------------------------------------------------ dups drawer */
+
+function setDups(open) {
+  $("dups-drawer").classList.toggle("open", Boolean(open));
+  $("dups-drawer").setAttribute("aria-hidden", String(!open));
+  $("scrim").classList.toggle("show", Boolean(open) && !$("panel").classList.contains("open"));
+  updateActionButtons();
+  if (!open && state.dupStream) {
+    state.dupStream.abort();
+    state.dupStream = null;
+    $("dups-progress").hidden = true;
+  }
+  if (open) loadDuplicates(state.dupMode);
+}
+
+async function loadDuplicates(mode, force) {
+  if (!force && state.dupCache[mode]) {
+    renderDuplicates(state.dupCache[mode]);
+    return;
+  }
+  const fill = $("dups-progress-fill");
+  const label = $("dups-progress-label");
+  $("dups-progress").hidden = false;
+  fill.style.width = "0";
+  label.textContent = t("dups.scanning");
+  const controller = new AbortController();
+  state.dupStream = controller;
+  try {
+    const response = await fetch(`/api/duplicates/stream?mode=${mode}`, { signal: controller.signal });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "progress" && event.total) {
+          fill.style.width = `${Math.round((event.done / event.total) * 100)}%`;
+          label.textContent = `${event.done}/${event.total}`;
+        } else if (event.type === "done") {
+          state.dupCache[event.mode || mode] = event.groups || [];
+          renderDuplicates(event.groups || []);
+          $("dups-progress").hidden = true;
+        } else if (event.type === "error") {
+          label.textContent = event.error;
+        }
+      }
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      label.textContent = error.message;
+    }
+  } finally {
+    state.dupStream = null;
+  }
 }
 
 function renderDuplicates(groups) {
   $("dups-body").innerHTML = groups.length
     ? groups.map((group) => {
       const keep = Number(group.keep) || 0;
+      const oldest = Math.min(...group.items.map((item) => Number(item.mtime) || 0));
+      const largest = Math.max(...group.items.map((item) => Number(item.size) || 0));
       return `<div class="dup-group" data-keep="${keep}">
           <b class="dup-count">${t("panel.copies", { n: group.items.length })}${
             group.kind === "doc" ? ` <span class="dup-kind">${esc(t("dups.documents"))}</span>` : ""
           }</b>
           ${group.items.map((item) => {
             const isKeep = item.file_id === keep;
+            // Hints are advisory only: the server's `keep` still decides what
+            // "Keep the best" selects, and nothing is deleted without confirm.
+            const hints = [];
+            if ((Number(item.mtime) || 0) === oldest) hints.push(ui("dup.older"));
+            if ((Number(item.size) || 0) === largest) hints.push(ui("dup.larger"));
+            if (isKeep) hints.push(ui("dup.keep"));
             return `<div class="dup-item${isKeep ? " keep" : ""}">
               <button type="button" class="dup-reveal" data-reveal="${item.file_id}"
                       title="${esc(item.path)}">
                 <span class="dup-name">${esc(basename(item.path))}${
                   isKeep ? ` <span class="dup-keep">${esc(t("dups.keep"))}</span>` : ""
                 }</span>
+                <span class="dup-hints">${hints.map((hint) => `<span class="dup-hint">${esc(hint)}</span>`).join("")}</span>
                 <span class="dup-full">${esc(item.path)}</span>
               </button>
               <input type="checkbox" class="dup-pick" value="${item.file_id}"
@@ -3298,827 +1790,640 @@ function renderDuplicates(groups) {
   });
 }
 
-function showDupProgress(done, total) {
-  const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
-  $("dups-progress").hidden = false;
-  $("dups-progress-fill").style.width = `${percent}%`;
-  $("dups-progress-label").textContent = t("dups.scanning", { percent });
+function selectedDups() {
+  return [...document.querySelectorAll("#dups-body .dup-pick:checked")]
+    .map((box) => Number(box.value));
 }
 
-function hideDupProgress() {
-  $("dups-progress").hidden = true;
-}
+/* ------------------------------------------------------------ open + delete */
 
-let dupStream = null;
-
-/* The document report can take a second or two on a big index. The request is
-   streamed, so the drawer opens at once, the percentage moves while the papers
-   are fingerprinted, and the rows already on screen (a previous load of this
-   mode) stay clickable. Switching modes or closing the drawer aborts the old
-   stream so a slow answer cannot overwrite a newer one. */
-async function loadDuplicates(mode = state.dupMode) {
-  state.dupMode = mode;
-  setDups(true);
-  document.querySelectorAll(".dup-mode").forEach((button) => {
-    button.classList.toggle("active", button.dataset.dupMode === mode);
-  });
-  const cached = state.dupCache[mode];
-  if (cached) {
-    state.dupGroups = cached;
-    renderDuplicates(cached);
-  } else {
-    state.dupGroups = [];
-    $("dups-body").innerHTML = "";
-  }
-  if (dupStream) dupStream.abort();
-  const controller = new AbortController();
-  dupStream = controller;
-  showDupProgress(0, 0);
+async function openFile(id, reveal) {
   try {
-    const response = await fetch(
-      `/api/duplicates/stream?mode=${encodeURIComponent(mode)}`,
-      { signal: controller.signal },
-    );
-    if (!response.ok || !response.body) {
-      throw new Error(response.statusText || "duplicates failed");
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let cut = buffer.indexOf("\n");
-      while (cut >= 0) {
-        const line = buffer.slice(0, cut).trim();
-        buffer = buffer.slice(cut + 1);
-        cut = buffer.indexOf("\n");
-        if (!line) continue;
-        const event = JSON.parse(line);
-        if (event.type === "progress") {
-          if (state.dupMode === mode) showDupProgress(event.done, event.total);
-        } else if (event.type === "done") {
-          const groups = event.groups || [];
-          state.dupCache[mode] = groups;
-          if (state.dupMode === mode) {
-            state.dupGroups = groups;
-            renderDuplicates(groups);
-          }
-        } else if (event.type === "error") {
-          throw new Error(event.error || "duplicates failed");
-        }
-      }
+    await api(`/api/${reveal ? "reveal" : "open"}?id=${id}`);
+    if (!reveal) {
+      // The most recent query log entry gains the name of what it opened.
+      const hit = state.hits.find((item) => item.file_id === id);
+      if (hit) openedInHistory(hit.name);
     }
   } catch (error) {
-    if (error.name !== "AbortError") {
+    toast(error.message);
+  }
+}
+
+function openConfirm(text, onYes) {
+  $("confirm-text").textContent = text;
+  $("confirm").classList.add("open");
+  $("confirm-yes").onclick = async () => {
+    $("confirm").classList.remove("open");
+    await onYes();
+  };
+  $("confirm-no").onclick = () => $("confirm").classList.remove("open");
+}
+
+async function deleteIds(ids) {
+  if (!ids.length) return;
+  openConfirm(t("confirm.deleteTitle"), async () => {
+    try {
+      const result = await api("/api/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      toast(t("toast.deleted", { n: result.deleted }));
+      state.dupCache = {};
+      for (const id of ids) state.picked.delete(id);
+      updateBulkBar();
+      await loadDuplicates(state.dupMode, true);
+      if (state.query) runSearch({ append: false });
+    } catch (error) {
       toast(t("toast.failed", { error: error.message }));
     }
-  } finally {
-    if (dupStream === controller) {
-      dupStream = null;
-      hideDupProgress();
-    }
-  }
-}
-
-function selectedDupIds() {
-  return Array.from($("dups-body").querySelectorAll(".dup-pick:checked"))
-    .map((node) => Number(node.value));
-}
-
-/* Ctrl + drag paints selection over the rows. The first row decides the mode:
-   start on an unchecked row and the swiped rows become checked, start on a
-   checked one and they are cleared. A checkbox clicked on its own still behaves
-   like a normal checkbox. Near the top or bottom edge the report scrolls on its
-   own, so a selection can continue past the visible rows. */
-let dupPaint = null;
-let dupPaintSwallowClick = false;
-
-const DUP_SCROLL_EDGE = 46;
-const DUP_SCROLL_MAX = 20;
-
-function dupScroller() {
-  const body = $("dups-body");
-  const drawer = $("dups-drawer");
-  if (body.scrollHeight > body.clientHeight + 1) return body;
-  return drawer.scrollHeight > drawer.clientHeight + 1 ? drawer : body;
-}
-
-function dupPaintRowAt(x, y) {
-  const node = document.elementFromPoint(x, y);
-  const row = node && node.closest && node.closest(".dup-item");
-  if (!row || !$("dups-body").contains(row)) return;
-  const pick = row.querySelector(".dup-pick");
-  if (pick) pick.checked = dupPaint.value;
-}
-
-function dupAutoScroll() {
-  if (!dupPaint) return;
-  const scroller = dupScroller();
-  const rect = scroller.getBoundingClientRect();
-  let delta = 0;
-  if (dupPaint.y > rect.bottom - DUP_SCROLL_EDGE) {
-    const depth = dupPaint.y - (rect.bottom - DUP_SCROLL_EDGE);
-    delta = Math.min(DUP_SCROLL_MAX, Math.round(depth / 2) + 4);
-  } else if (dupPaint.y < rect.top + DUP_SCROLL_EDGE) {
-    const depth = (rect.top + DUP_SCROLL_EDGE) - dupPaint.y;
-    delta = -Math.min(DUP_SCROLL_MAX, Math.round(depth / 2) + 4);
-  }
-  if (delta) {
-    const before = scroller.scrollTop;
-    scroller.scrollTop += delta;
-    if (scroller.scrollTop !== before) {
-      const x = Math.min(Math.max(dupPaint.x, rect.left + 2), rect.right - 2);
-      const y = Math.min(Math.max(dupPaint.y, rect.top + 2), rect.bottom - 2);
-      dupPaintRowAt(x, y);
-    }
-  }
-  dupPaint.raf = requestAnimationFrame(dupAutoScroll);
-}
-
-$("dups-body").addEventListener("pointerdown", (event) => {
-  if (!event.ctrlKey || event.button !== 0) return;
-  if (event.target.closest(".dup-pick")) return;
-  const row = event.target.closest(".dup-item");
-  if (!row) return;
-  const pick = row.querySelector(".dup-pick");
-  if (!pick) return;
-  dupPaint = { value: !pick.checked, x: event.clientX, y: event.clientY, raf: 0 };
-  pick.checked = dupPaint.value;
-  dupPaintSwallowClick = true;
-  event.preventDefault();
-  dupPaint.raf = requestAnimationFrame(dupAutoScroll);
-});
-
-window.addEventListener("pointermove", (event) => {
-  if (!dupPaint) return;
-  dupPaint.x = event.clientX;
-  dupPaint.y = event.clientY;
-  dupPaintRowAt(event.clientX, event.clientY);
-});
-
-function stopDupPaint() {
-  if (dupPaint) cancelAnimationFrame(dupPaint.raf);
-  dupPaint = null;
-  if (dupPaintSwallowClick) {
-    setTimeout(() => { dupPaintSwallowClick = false; }, 0);
-  }
-}
-
-window.addEventListener("pointerup", stopDupPaint);
-window.addEventListener("pointercancel", stopDupPaint);
-
-/* The list is the only scroller in the drawer; the wheel works over the header
-   and the empty space too, not just over a row. */
-$("dups-drawer").addEventListener("wheel", (event) => {
-  const body = $("dups-body");
-  if (body.scrollHeight <= body.clientHeight + 1) return;
-  const step = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
-  body.scrollTop += step;
-  event.preventDefault();
-}, { passive: false });
-
-$("dups-body").addEventListener("click", (event) => {
-  if (!dupPaintSwallowClick) return;
-  event.preventDefault();
-  event.stopPropagation();
-}, true);
-
-let pendingDelete = [];
-
-function setConfirm(open) {
-  pendingDelete = open ? selectedDupIds() : [];
-  $("confirm").classList.toggle("open", open);
-  $("confirm").setAttribute("aria-hidden", String(!open));
-}
-
-function closeConfirm() {
-  setConfirm(false);
-  $("confirm-yes").disabled = false;
-}
-
-$("dups-btn").addEventListener("click", () => {
-  loadDuplicates();
-});
-
-function setAllDups(checked) {
-  $("dups-body").querySelectorAll(".dup-pick").forEach((pick) => {
-    pick.checked = checked;
   });
 }
 
-$("dups-select-all").addEventListener("click", () => setAllDups(true));
-$("dups-clear").addEventListener("click", () => setAllDups(false));
-$("dups-smart").addEventListener("click", () => {
-  let checked = 0;
-  $("dups-body").querySelectorAll(".dup-group").forEach((group) => {
-    const keep = Number(group.dataset.keep) || 0;
-    group.querySelectorAll(".dup-item").forEach((row) => {
-      const pick = row.querySelector(".dup-pick");
-      if (!pick) return;
-      pick.checked = Number(pick.value) !== keep;
-      if (pick.checked) checked += 1;
-    });
-  });
-  toast(t("dups.smartDone", { n: checked }));
-});
-$("dups-mode").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-dup-mode]");
-  if (!button || button.dataset.dupMode === state.dupMode) return;
-  loadDuplicates(button.dataset.dupMode);
-});
+/* ------------------------------------------------------------- pin + saved */
 
-$("dups-delete").addEventListener("click", () => {
-  const ids = selectedDupIds();
-  if (!ids.length) { toast(t("dups.nothingSelected")); return; }
-  $("confirm-text").textContent = t("confirm.deleteText", { n: ids.length });
-  setConfirm(true);
-});
-
-$("confirm-no").addEventListener("click", closeConfirm);
-$("confirm").addEventListener("click", (event) => {
-  if (event.target.id === "confirm") closeConfirm();
-});
-
-$("confirm-yes").addEventListener("click", async () => {
-  const ids = pendingDelete.slice();
-  if (!ids.length) { closeConfirm(); return; }
-  const button = $("confirm-yes");
-  button.disabled = true;
+async function togglePin(id, wanted) {
   try {
-    const result = await api("/api/delete", {
+    const data = await api("/api/pin", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify(wanted === undefined ? { id } : { id, pinned: wanted }),
     });
-    closeConfirm();
-    toast(t("toast.deleted", { n: result.deleted }));
-    state.dupCache = {};
-    await loadDuplicates();
+    const hit = state.hits.find((item) => item.file_id === id);
+    if (hit) hit.pinned = data.pinned;
+    document.querySelectorAll(`[data-pin="${id}"]`).forEach((star) => {
+      star.classList.toggle("on", data.pinned);
+      star.setAttribute("aria-pressed", String(data.pinned));
+      // The hop-and-flash: a click on the star must never read as nothing.
+      star.classList.remove("pop");
+      void star.offsetWidth;
+      star.classList.add("pop");
+    });
+    // The idle screen caches the pinned rows. Dropping the cache alone leaves
+    // the old row on screen until a full reload, so repaint it from the server.
+    if ($("personal")) {
+      await loadPersonal(true);
+      paintPersonal();
+    } else {
+      state.personal = null;
+    }
+    toast(data.pinned ? t("pin.added") : t("pin.removed"));
   } catch (error) {
-    button.disabled = false;
     toast(t("toast.failed", { error: error.message }));
   }
-});
-
-$("dups-close").addEventListener("click", () => {
-  setDups(false);
-  $("rail-dups").classList.remove("active");
-});
-$("purge-btn").addEventListener("click", purgePrivate);
-$("privacy-toggle").addEventListener("click", () => {
-  const open = $("privacy-filters").classList.toggle("open");
-  $("privacy-filters").setAttribute("aria-hidden", String(!open));
-  $("privacy-toggle").classList.toggle("open", open);
-  $("privacy-toggle").setAttribute("aria-expanded", String(open));
-});
-$("privacy-enabled").addEventListener("change", () => {
-  savePrivacy({ enabled: $("privacy-enabled").checked });
-});
-$("privacy-filters-list").addEventListener("change", () => {
-  const categories = [...$("privacy-filters-list").querySelectorAll("[data-privacy]:checked")]
-    .map((box) => box.dataset.privacy);
-  savePrivacy({ categories });
-});
-$("modal-close").addEventListener("click", () => $("modal").classList.remove("open"));
-  // Drag-and-drop: dragging a result card into Explorer copies the file.
-  document.addEventListener('dragstart', (event) => {
-    const card = event.target.closest('.card[data-index]');
-    if (!card || !state.hits[Number(card.dataset.index)]) return;
-    const hit = state.hits[Number(card.dataset.index)];
-    event.dataTransfer.setData('text/uri-list',
-      'file:///' + hit.path.replace(/\\/g, '/'));
-    event.dataTransfer.setData('text/plain', hit.path);
-    event.dataTransfer.effectAllowed = 'copy';
-});
-
-$("modal").addEventListener("click", (event) => { if (event.target.id === "modal") $("modal").classList.remove("open"); });
-$("preview-close").addEventListener("click", () => $("preview").classList.remove("open"));
-$("preview").addEventListener("click", (event) => {
-  if (event.target.id === "preview") $("preview").classList.remove("open");
-});
-
-/* The rail: each circular button opens its own function. Index, privacy and
-   encryption slide the drawer and scroll to their section; duplicates opens
-   its own drawer; search, hotkeys and appearance live in the drawer since
-   the settings modal gave them up. */
-function setDrawerTab(name) {
-  state.drawerTab = name;
-  setPanel(true);
-  document.querySelectorAll("#drawer-tabs .drawer-tab").forEach((button) => {
-    button.classList.toggle("active", button.dataset.drawerTab === name);
-  });
-  document.querySelectorAll("#panel .drawer-pane").forEach((pane) => {
-    pane.classList.toggle("active", pane.dataset.drawerPane === name);
-  });
-  const titles = { index: "rail.index", privacy: "rail.privacy", encryption: "rail.encryption",
-                   search: "rail.searchTitle", keys: "hotkeys.title", appearance: "settings.appearance" };
-  $("drawer-title").setAttribute("data-i18n", titles[name] || "rail.index");
-  applyStaticText();
-  if (name === "search") {
-    loadPersonal().then(renderAliases);
-    loadTypes(true).then(() => { renderTypes(); renderTypeTabs(); });
-  }
-  if (name === "keys") loadHotkeys().then(renderHotkeys);
-  if (name === "appearance") { renderWalls(); renderLook(); }
 }
 
-/* Clicking the circle whose function is already open slides that drawer
-   away: the same button opens and closes, like a dock icon. A double click
-   lands as two toggles, so the drawer answers each press instead of
-   ignoring the second one. */
-function toggleDrawerTab(name) {
-  if ($("panel").classList.contains("open") && state.drawerTab === name) {
-    setPanel(false);
-    if (typesTimer) saveTypes();
-  } else {
-    setDrawerTab(name);
-  }
-}
-
-$("rail-dups").addEventListener("click", () => {
-  if ($("dups-drawer").classList.contains("open")) setDups(false);
-  else setDups(true);
-});
-$("rail-index").addEventListener("click", () => toggleDrawerTab("index"));
-$("rail-privacy").addEventListener("click", () => toggleDrawerTab("privacy"));
-$("rail-seal").addEventListener("click", () => toggleDrawerTab("encryption"));
-$("rail-search").addEventListener("click", () => toggleDrawerTab("search"));
-$("rail-keys").addEventListener("click", () => toggleDrawerTab("keys"));
-$("rail-appearance").addEventListener("click", () => toggleDrawerTab("appearance"));
-$("drawer-tabs").addEventListener("click", (event) => {
-  const tab = event.target.closest("[data-drawer-tab]");
-  if (tab) setDrawerTab(tab.dataset.drawerTab);
-});
-$("panel-close").addEventListener("click", () => {
-  setPanel(false);
-  if (typesTimer) saveTypes();
-});
-$("scrim").addEventListener("click", () => { setPanel(false); setDups(false); });
-
-$("settings-btn").addEventListener("click", () => setSettings(true));
-$("settings-close").addEventListener("click", () => setSettings(false));
-$("settings").addEventListener("click", (event) => {
-  if (event.target.id === "settings") setSettings(false);
-});
-$("settings-tabs").addEventListener("click", (event) => {
-  const tab = event.target.closest("[data-tab]");
-  if (tab) setSettingsTab(tab.dataset.tab);
-});
-$("hotkeys-list").addEventListener("keydown", (event) => {
-  const slot = event.target.closest(".hk-slot");
-  if (!slot) return;
-  // Tab still moves focus: recording must not trap the keyboard in the list.
-  if (event.key === "Tab") return;
-  // The slot owns the keyboard while recording; no global shortcut may fire.
-  event.preventDefault();
-  event.stopPropagation();
-  recordHotkey(slot, event);
-});
-$("hotkeys-reset").addEventListener("click", () => {
-  state.hotkeys = JSON.parse(JSON.stringify(state.hotkeyDefaults || FALLBACK_HOTKEYS));
-  saveHotkeys();
-});
-
-/* ------------------------------------------------------ filters and export */
-
-$("filters-btn").addEventListener("click", () => {
-  openFilters($("filter-builder").hidden);
-});
-["f-type", "f-period", "f-collection"].forEach((id) => {
-  $(id).addEventListener("change", paintFilterPreview);
-});
-["f-folder", "f-size-min", "f-size-max", "f-tag"].forEach((id) => {
-  $(id).addEventListener("input", paintFilterPreview);
-});
-$("filter-apply").addEventListener("click", applyFilters);
-$("filter-clear").addEventListener("click", clearFilters);
-$("export-btn").addEventListener("click", () => {
-  const menu = $("export-menu");
-  menu.hidden = !menu.hidden;
-  $("export-btn").setAttribute("aria-expanded", String(!menu.hidden));
-  if (!menu.hidden) placePanel(menu, $("export-btn"));
-});
-$("export-menu").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-export]");
-  if (button) exportResults(button.dataset.export);
-});
-
-/* A left-button drag moves a panel by its own surface; a press that never
-   travels past a few pixels stays a normal click, so the menu buttons keep
-   working. */
-function makePanelDraggable(panel) {
-  if (!panel) return;
-  let drag = null;
-  let swallow = false;
-  panel.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || event.target.closest("input, select, textarea")) return;
-    const host = panel.offsetParent;
-    const rect = panel.getBoundingClientRect();
-    const frame = host ? host.getBoundingClientRect() : { left: 0, top: 0 };
-    drag = {
-      id: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
-      left: rect.left - frame.left,
-      top: rect.top - frame.top,
-      moving: false,
-    };
-    swallow = false;
-  });
-  panel.addEventListener("pointermove", (event) => {
-    if (!drag || event.pointerId !== drag.id) return;
-    const dx = event.clientX - drag.x;
-    const dy = event.clientY - drag.y;
-    if (!drag.moving) {
-      if (Math.hypot(dx, dy) < 4) return;
-      drag.moving = true;
-      swallow = true;
-      try { panel.setPointerCapture(drag.id); } catch (error) { /* synthetic pointer */ }
-      panel.classList.add("dragging");
-    }
-    panel.style.left = `${drag.left + dx}px`;
-    panel.style.top = `${drag.top + dy}px`;
-    panel.style.right = "auto";
-    event.preventDefault();
-  });
-  const stop = (event) => {
-    if (!drag || event.pointerId !== drag.id) return;
-    drag = null;
-    panel.classList.remove("dragging");
-    try {
-      if (panel.hasPointerCapture(event.pointerId)) panel.releasePointerCapture(event.pointerId);
-    } catch (error) { /* synthetic pointer */ }
-  };
-  panel.addEventListener("pointerup", stop);
-  panel.addEventListener("pointercancel", stop);
-  panel.addEventListener("click", (event) => {
-    if (!swallow) return;
-    swallow = false;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }, true);
-}
-
-makePanelDraggable($("filter-builder"));
-makePanelDraggable($("export-menu"));
-
-document.addEventListener("click", (event) => {
-  document.querySelectorAll(".unit-picker.open").forEach((picker) => {
-    if (!event.target.closest(".unit-picker")) setUnitMenu(picker, false);
-  });
-  document.querySelectorAll(".filter-picker.open").forEach((picker) => {
-    if (!event.target.closest(".filter-picker")) setFilterPicker(picker, false);
-  });
-  if (!$("export-menu").hidden
-      && !event.target.closest("#export-menu")
-      && !event.target.closest("#export-btn")) {
-    $("export-menu").hidden = true;
-    $("export-btn").setAttribute("aria-expanded", "false");
-  }
-  if (!$("sort-menu").hidden
-      && !event.target.closest("#sort-menu")
-      && !event.target.closest("#sort-btn")) {
-    setSortMenu(false);
-  }
-  if (!$("filter-builder").hidden
-      && !event.target.closest("#filter-builder")
-      && !event.target.closest("#filters-btn")) {
-    openFilters(false);
-  }
-});
-
-/* --------------------------------------------------------------- bulk bar */
-
-$("bulk-pin").addEventListener("click", async () => {
-  const ids = [...state.picked];
-  if (!ids.length) return;
+async function saveSearch(query) {
   try {
-    await api("/api/pin", {
+    await api("/api/saved", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids, pinned: true }),
+      body: JSON.stringify({ query }),
     });
-    for (const hit of pickedHits()) hit.pinned = true;
-    refreshResults();
     await loadPersonal(true);
     paintPersonal();
-    toast(t("bulk.pinned", { n: ids.length }));
+    // The bookmark hop: save must be felt, not only toasted.
+    const btn = $("save-btn");
+    btn.classList.remove("pop");
+    void btn.offsetWidth;
+    btn.classList.add("pop");
+    setTimeout(() => btn.classList.remove("pop"), 550);
+    toast(t("saved.done", { query }));
+  } catch (error) {
+    toast(t("saved.failed", { error: error.message }));
+  }
+}
+
+async function dropSaved(id) {
+  try {
+    await api("/api/saved/drop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: Number(id) }),
+    });
+    await loadPersonal(true);
+    paintPersonal();
+    toast(t("saved.forgotten"));
   } catch (error) {
     toast(t("toast.failed", { error: error.message }));
   }
-});
-$("bulk-tag").addEventListener("click", () => openAnnotate("tag", [...state.picked]));
-$("bulk-collection").addEventListener("click", () => openAnnotate("collection", [...state.picked]));
-$("bulk-copy").addEventListener("click", async () => {
-  const paths = pickedHits().map((hit) => hit.path);
-  if (!paths.length) return;
+}
+
+async function addAlias(alias, expand) {
   try {
-    await navigator.clipboard.writeText(paths.join("\n"));
-    toast(t("bulk.copied", { n: paths.length }));
+    await api("/api/alias", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alias, expand }),
+    });
+    $("alias-word").value = "";
+    $("alias-means").value = "";
+    await loadPersonal(true);
+    renderAliases();
   } catch (error) {
-    toast(t("ctx.copyFailed"));
+    toast(t("toast.failed", { error: error.message }));
   }
-});
-$("bulk-export").addEventListener("click", exportPicked);
-$("bulk-clear").addEventListener("click", clearPicks);
-
-/* ------------------------------------------------------- tag/collection UI */
-
-$("annotate-close").addEventListener("click", closeAnnotate);
-$("annotate").addEventListener("click", (event) => {
-  if (event.target.id === "annotate") closeAnnotate();
-});
-$("annotate-body").addEventListener("click", (event) => {
-  const tag = event.target.closest("[data-annotate-tag]");
-  if (tag) { applyTag(tag.dataset.annotateTag, ANNOTATE.ids); return; }
-  const collection = event.target.closest("[data-annotate-collection]");
-  if (collection) {
-    applyCollection(collection.dataset.annotateCollection, "", ANNOTATE.ids);
-    return;
-  }
-  if (event.target.closest("#annotate-add")) {
-    const value = $("annotate-input")?.value.trim() || "";
-    if (!value) return;
-    if (ANNOTATE.kind === "tag") applyTag(value, ANNOTATE.ids);
-    else applyCollection(0, value, ANNOTATE.ids);
-  }
-});
-$("annotate-body").addEventListener("keydown", (event) => {
-  if (event.key !== "Enter" || !event.target.closest("#annotate-input")) return;
-  event.preventDefault();
-  const value = $("annotate-input").value.trim();
-  if (!value) return;
-  if (ANNOTATE.kind === "tag") applyTag(value, ANNOTATE.ids);
-  else applyCollection(0, value, ANNOTATE.ids);
-});
-$("content").addEventListener("change", (event) => {
-  const pick = event.target.closest("[data-pick]");
-  if (pick) togglePick(pick.dataset.pick, pick.checked);
-});
-
-/* The welcome screen is the only place a new user learns that the index and
-   the language switch exist, so its controls have to work before the main app
-   has anything to show. */
-$("onboard-lang").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-lang]");
-  if (!button) return;
-  if (!setLang(button.dataset.lang)) { paintOnboarding(); return; }
-  paintLang();
-  paintOnboarding();
-  paintSince();
-  loadStats();
-  if (state.query) runSearch(); else renderIdle();
-});
-$("ob-autostart").addEventListener("change", toggleAutostart);
-$("ob-import").addEventListener("click", importKensaku);
-$("ob-import-scan").addEventListener("click", scanKensaku);
-$("ob-index").addEventListener("click", startOnboardingIndex);
-$("onboard-done").addEventListener("click", finishOnboarding);
-$("onboard-skip").addEventListener("click", finishOnboarding);
-$("replay-onboarding").addEventListener("click", replayOnboarding);
-
-/* The welcome card doubles as the title bar of its little frameless window:
-   grab it anywhere calm with the left button and drag. pywebview moves the
-   window for anything inside `.pywebview-drag-region`; the capture guard
-   keeps a press on a real control a click instead of a drag. */
-const onboardBox = $("onboard");
-onboardBox.classList.add("pywebview-drag-region");
-onboardBox.addEventListener(
-  "mousedown",
-  (event) => {
-    if (event.button !== 0) return;
-    if (event.target.closest("button, input, select, label, a, [role='switch'], [role='button']")) {
-      event.stopPropagation();
-    }
-  },
-  true,
-);
-
-/* Switching language redraws the screen from the same data: nothing is
-   refetched except the strings, and the choice is remembered across launches. */
-$("lang-switch").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-lang]");
-  if (!button) return;
-  if (!setLang(button.dataset.lang)) { paintLang(); return; }
-  paintLang();
-  renderAbout();
-  renderAliases();
-  renderTypes();
-  paintSince();
-  if (CAL.open) renderCalendar();
-  loadStats();
-  if (state.query) runSearch(); else renderIdle();
-});
-
-function selectedHit() {
-  return state.selected >= 0 ? state.hits[state.selected] : null;
 }
 
-/* The shortcut table is user data, so every action goes through one dispatcher.
-   The guard order matters: Escape first, then fields, then overlays, and only
-   then the selected row — the same reflex the hardcoded handler had. */
-function runHotkey(action) {
-  const hit = selectedHit();
-  switch (action) {
-    case "focus":
-      $("q").focus();
-      $("q").select();
-      return true;
-    case "search":
-      $("q").focus();
-      if (state.query) runSearch();
-      return true;
-    case "settings":
-      setSettings(!$("settings").classList.contains("open"));
-      return true;
-    case "panel":
-      setPanel(!$("panel").classList.contains("open"));
-      return true;
-    case "duplicates":
-      if ($("dups-drawer").classList.contains("open")) setDups(false);
-      else $("dups-btn").click();
-      return true;
-    case "preview":
-      if (hit) openPreview(hit.file_id);
-      return Boolean(hit);
-    case "open":
-    case "reveal":
-      if (hit) {
-        api(`/api/${action}?id=${hit.file_id}`)
-          .catch((error) => toast(t("toast.failed", { error: error.message })));
+async function dropAlias(alias) {
+  try {
+    await api("/api/alias/drop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alias }),
+    });
+    await loadPersonal(true);
+    renderAliases();
+    toast(t("alias.removed", { alias }));
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
+  }
+}
+
+/* ------------------------------------------------------- annotate popover */
+
+let annotateIds = [];
+
+function openAnnotate(mode, ids) {
+  annotateIds = ids;
+  const isTag = mode === "tag";
+  $("annotate-title").textContent = isTag ? t("bulk.tag") : t("bulk.collection");
+  const chips = isTag
+    ? state.metaTags.map((tag) => `<button class="tag-chip" data-annotate-run="${esc(tag)}">#${esc(tag)}</button>`).join("")
+    : state.metaCollections.map((collection) => `
+      <button class="tag-chip" data-annotate-collection="${collection.id}">${esc(collection.name || collection.id)}</button>`).join("");
+  $("annotate-body").innerHTML = `
+    <input class="annotate-input" id="annotate-value" spellcheck="false"
+           placeholder="${esc(isTag ? t("card.tag") : t("bulk.collection"))}">
+    <div class="annotate-chips">${chips || `<p class="settings-note">${esc(t("annotate.empty"))}</p>`}</div>
+    <p class="annotate-note" data-i18n="${isTag ? "annotate.tagNote" : "annotate.collectionNote"}"></p>`;
+  applyStaticText();
+  const input = $("annotate-value");
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") submitAnnotate(mode, input.value);
+  });
+  const popover = $("annotate");
+  popover.hidden = false;
+  const rect = document.querySelector("[data-tag-add], [data-collection-add], #bulk-tag")?.getBoundingClientRect();
+  if (rect) {
+    popover.style.left = `${Math.min(rect.left, window.innerWidth - 320)}px`;
+    popover.style.top = `${Math.min(rect.bottom + 8, window.innerHeight - 260)}px`;
+  }
+  input.focus();
+}
+
+async function submitAnnotate(mode, raw) {
+  const clean = String(raw || "").trim().replace(/"/g, "");
+  if (!clean || !annotateIds.length) return;
+  try {
+    if (mode === "tag") {
+      await api("/api/tag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: clean, ids: annotateIds, on: true }),
+      });
+      for (const id of annotateIds) {
+        const hit = state.hits.find((item) => item.file_id === id);
+        if (hit) hit.tags = [...new Set([...(hit.tags || []), clean])].sort();
       }
-      return Boolean(hit);
-    case "next":
-      moveSelection(1);
-      return true;
-    case "prev":
-      moveSelection(-1);
-      return true;
-    case "select":
-      if (hit) togglePick(hit.file_id);
-      return Boolean(hit);
-    case "export":
-      $("export-btn").click();
-      return true;
-    default:
-      return false;
-  }
-}
-
-/* Personal-layer shortcuts that need no server: the help overlay, the
-   density and font-size toggles, and copy-path. All of them persist so the
-   next session starts the way this one ended. */
-const HELP_KEY_STORAGE = "af.font-scale";
-
-function toggleHelpOverlay() {
-  const overlay = $("help-overlay");
-  if (!overlay) return;
-  overlay.hidden = !overlay.hidden;
-}
-
-function cycleDensity() {
-  const next = document.body.classList.toggle("compact") ? "compact" : "cozy";
-  try { localStorage.setItem("af.density", next); } catch (e) {}
-}
-
-function applyFontScale(scale) {
-  const clamped = Math.min(1.4, Math.max(0.85, scale));
-  document.documentElement.style.setProperty("--font-scale", clamped);
-  try { localStorage.setItem(HELP_KEY_STORAGE, String(clamped)); } catch (e) {}
-}
-
-try {
-  const savedScale = parseFloat(localStorage.getItem(HELP_KEY_STORAGE));
-  if (savedScale) applyFontScale(savedScale);
-  if (localStorage.getItem("af.density") === "compact") document.body.classList.add("compact");
-} catch (e) {}
-
-try {
-  if (localStorage.getItem("af.hc") === "1") document.body.classList.add("high-contrast");
-  if (localStorage.getItem("af.rtl") === "1") document.body.setAttribute("dir", "rtl");
-} catch (e) {}
-
-function toggleHighContrast() {
-  const on = document.body.classList.toggle("high-contrast");
-  try { localStorage.setItem("af.hc", on ? "1" : "0"); } catch (e) {}
-}
-
-function toggleRTL() {
-  const rtl = document.body.getAttribute("dir") !== "rtl";
-  if (rtl) document.body.setAttribute("dir", "rtl");
-  else document.body.removeAttribute("dir");
-  try { localStorage.setItem("af.rtl", rtl ? "1" : "0"); } catch (e) {}
-}
-
-document.addEventListener("keydown", (event) => {
-  if (event.key === "?" && !event.ctrlKey && !event.altKey) {
-    const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
-    if (!typing) { toggleHelpOverlay(); return; }
-  }
-  if (event.ctrlKey && event.altKey && (event.key === "d" || event.key === "D")) {
-    event.preventDefault();
-    cycleDensity();
-    return;
-  }
-  if (event.ctrlKey && event.altKey && (event.key === "h" || event.key === "H")) {
-    event.preventDefault();
-    toggleHighContrast();
-    return;
-  }
-  if (event.ctrlKey && event.altKey && (event.key === "r" || event.key === "R")) {
-    event.preventDefault();
-    toggleRTL();
-    return;
-  }
-  if (event.ctrlKey && event.altKey && (event.key === "+" || event.key === "=")) {
-    event.preventDefault();
-    const scale = parseFloat(localStorage.getItem(HELP_KEY_STORAGE)) || 1;
-    applyFontScale(scale + 0.05);
-    return;
-  }
-  if (event.ctrlKey && event.altKey && event.key === "-") {
-    event.preventDefault();
-    const scale = parseFloat(localStorage.getItem(HELP_KEY_STORAGE)) || 1;
-    applyFontScale(scale - 0.05);
-    return;
-  }
-  if (event.ctrlKey && event.shiftKey && (event.key === "C" || event.key === "c")) {
-    const first = [...state.picked][0]
-      ?? (state.hits[0] ? String(state.hits[0].file_id) : null);
-    const hit = state.hits.find((item) => String(item.file_id) === first);
-    if (hit) {
-      navigator.clipboard.writeText(hit.path);
-      toast(t("copied"));
-    }
-  }
-  if (event.key === "Escape") toggleHelpOverlay();
-});
-
-document.addEventListener("keydown", (event) => {
-  if (event.target.closest && event.target.closest("#hotkeys-list")) return;
-  const inField = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
-
-  if (event.key === "Escape") {
-    if ($("confirm").classList.contains("open")) { closeConfirm(); return; }
-    if (!$("annotate").hidden) { closeAnnotate(); return; }
-    if (CAL.open) { openCalendar(false); return; }
-    if (editor.open) { closeWallEditor(); return; }
-    if ($("preview").classList.contains("open")) { $("preview").classList.remove("open"); return; }
-    if ($("settings").classList.contains("open")) { setSettings(false); return; }
-    if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }
-    if ($("panel").classList.contains("open")) { setPanel(false); return; }
-    if ($("dups-drawer").classList.contains("open")) { setDups(false); return; }
-    return;
-  }
-
-  const chord = chordOfEvent(event);
-  const action = hotkeyActionFor(chord);
-  if (!action) return;
-
-  // A plain key belongs to whatever field has focus: typing "x" in the query
-  // box is a letter, not "select". Chords with Ctrl/Alt/Meta are global.
-  const plain = !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
-  if (inField && plain) return;
-
-  const overlay = $("settings").classList.contains("open")
-    || $("preview").classList.contains("open")
-    || $("modal").classList.contains("open")
-    || $("confirm").classList.contains("open")
-    || $("panel").classList.contains("open")
-    || $("dups-drawer").classList.contains("open");
-  if (overlay && ["preview", "open", "reveal", "next", "prev", "select"].includes(action)) {
-    return;
-  }
-
-  // Double Enter on the same result = open the containing folder. The first
-  // Enter opens the file through the "open" hotkey; the second one on the
-  // still-selected row aims one level up. Any other key resets the pairing.
-  if (action === "open" && state.selected >= 0) {
-    if (state.lastEnterHit === state.selected) {
-      const hit = state.hits[state.selected];
-      state.lastEnterHit = -1;
-      if (hit) {
-        const folder = hit.path.replace(/[^\\]+$/, "");
-        window.open(`file:///${folder.replace(/\\/g, "/")}`);
-        event.preventDefault();
-        return;
-      }
+      await loadMeta(true);
+      toast(t("annotate.tagged", { tag: clean, n: annotateIds.length }));
     } else {
-      state.lastEnterHit = state.selected;
+      let id = Number(clean);
+      if (!Number.isFinite(id) || !state.metaCollections.some((c) => Number(c.id) === id)) {
+        const created = await api("/api/collections", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "create", name: clean }),
+        });
+        id = Number(created.id) || 0;
+      }
+      if (!id) return;
+      await api("/api/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "add", id, ids: annotateIds }),
+      });
+      await loadMeta(true);
+      toast(t("annotate.added", { n: annotateIds.length }));
     }
+    closeAnnotate();
+    if (state.query) renderResults({ hits: state.hits }, false);
+  } catch (error) {
+    toast(t("toast.failed", { error: error.message }));
   }
+}
 
-  if (runHotkey(action)) event.preventDefault();
-});
+function closeAnnotate() {
+  $("annotate").hidden = true;
+  annotateIds = [];
+}
 
-/* The window has no title bar, so the header carries the only close button
-   there is. pywebview injects its bridge after load; until then, and in a
-   plain browser, the button stays hidden — there is nothing to hide. */
+/* ---------------------------------------------------------------- preview */
+
+function paintBoxesInto(holder, data, hotWord) {
+  if (!holder) return;
+  if (!data.boxes?.length || !data.width || !data.height) { holder.innerHTML = ""; return; }
+  holder.innerHTML = data.boxes.map((box) => {
+    const left = (box.x / data.width) * 100;
+    const top = (box.y / data.height) * 100;
+    const width = (box.w / data.width) * 100;
+    const height = (box.h / data.height) * 100;
+    const hot = hotWord && String(box.text || "").toLowerCase().includes(String(hotWord).toLowerCase());
+    return `<span class="ocr-box${hot ? " hot" : ""}" title="${esc(box.text || "")}"
+      style="left:${left}%;top:${top}%;width:${width}%;height:${height}%"></span>`;
+  }).join("");
+}
+
+async function openPreview(fileId) {
+  state.previewId = Number(fileId) || 0;
+  state.noteText = "";
+  $("preview").classList.add("open");
+  const body = $("preview-body");
+  body.innerHTML = `<p class="settings-note">${esc(t("status.checking"))}</p>`;
+  try {
+    const data = await api(`/api/preview?id=${fileId}&chars=1600`);
+    const meta = `<p class="pv-meta"><b>${esc(data.name)}</b><br>${esc(data.path)}<br>
+      ${fmtSize(data.size)} · ${fmtDate(data.mtime)} · ${esc(t("preview.opened", { n: data.opens }))}</p>`;
+    const missing = data.exists ? "" : `<p class="pv-missing">${esc(t("preview.missing"))}</p>`;
+    if (data.image) {
+      const ocrText = String(data.image.ocr || "");
+      body.innerHTML = `${meta}
+        <div class="pv-image">
+          <img src="${data.image.thumb}" alt="">
+          <div class="ocr-boxes" data-pv-id="${fileId}"></div>
+        </div>
+        ${ocrText ? `<div class="pv-text ocr-text">${ocrWords(ocrText, state.query)}</div>` : ""}
+        ${missing}
+        <div class="pv-actions">
+          <button class="btn primary" data-open="${fileId}">${esc(t("card.open"))}</button>
+          <button class="btn" data-reveal="${fileId}">${esc(t("card.folder"))}</button>
+          <button class="btn" data-similar="${fileId}">${esc(t("card.similar"))}</button>
+          <button class="btn" data-copy-path="${esc(data.path)}">${esc(t("ctx.copy"))}</button>
+        </div>
+        ${notesEditor(fileId)}`;
+      api(`/api/ocr-boxes?id=${fileId}&q=${encodeURIComponent(state.query || "")}`)
+        .then((boxes) => paintBoxesInto(body.querySelector(".ocr-boxes"), boxes))
+        .catch(() => {});
+    } else {
+      const isCode = data.kind === "code";
+      body.innerHTML = `${meta}
+        <div class="pv-text${isCode ? " is-code" : ""}">${isCode
+          ? numberedCode(data.text || "", state.query, 1, 1)
+          : highlight(data.text || "", state.query, 1)}</div>
+        ${missing}
+        <div class="pv-actions">
+          <button class="btn primary" data-open="${fileId}">${esc(t("card.open"))}</button>
+          <button class="btn" data-reveal="${fileId}">${esc(t("card.folder"))}</button>
+          <button class="btn" data-pin="${fileId}">${esc(t("card.pin"))}</button>
+          <button class="btn" data-copy-path="${esc(data.path)}">${esc(t("ctx.copy"))}</button>
+        </div>
+        ${notesEditor(fileId)}`;
+    }
+    if (data.truncated) {
+      body.querySelector(".pv-actions").insertAdjacentHTML("beforebegin",
+        `<p class="settings-note">…</p>`);
+    }
+    loadNoteInto(fileId);
+  } catch (error) {
+    body.innerHTML = `<p class="pv-missing">${esc(t("preview.failed", { error: error.message }))}</p>`;
+  }
+}
+
+function closePreview() {
+  $("preview").classList.remove("open");
+}
+
+/* ---------------------------------------------------------------- similar */
+
+async function openSimilar(fileId) {
+  try {
+    // Document neighbours come from file vectors (/api/similar-files);
+    // screenshots use the visual route (/api/similar). Both are read-only.
+    let files = [];
+    try {
+      const data = await api(`/api/similar-files?id=${fileId}&limit=12`);
+      files = data.files || [];
+    } catch (error) {
+      /* older servers only have the visual route */
+    }
+    if (files.length) {
+      $("modal-grid").innerHTML = files.map((item) => `
+        <div class="similar-row" data-open="${item.file_id}" title="${esc(item.path)}">
+          <span class="s-name">${esc(item.name || basename(item.path))}</span>
+          <span class="s-score">${Number(item.score || 0).toFixed(3)}</span>
+        </div>`).join("");
+    } else {
+      const data = await api(`/api/similar?id=${fileId}`);
+      $("modal-grid").innerHTML = (data.images || []).length
+        ? data.images.map(shot).join("")
+        : `<div class="empty" style="min-height:120px"><p>${esc(t("results.nothing"))}</p></div>`;
+    }
+    $("modal").classList.add("open");
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+/* ---------------------------------------------------------------- why box */
+
+function openWhy(id) {
+  const hit = state.hits.find((item) => item.file_id === id);
+  if (!hit) return;
+  $("annotate-title").textContent = `${hit.name} — ${ui("why.title")}`;
+  // Every channel gets a row. Translated ones use the interface wording; the
+  // rest fall back to a readable name from the local table, never a raw key.
+  const extraNames = {
+    bm25: "BM25", fuzzy: "fuzzy", vector: "vector", ocr: "OCR",
+    semantic: "semantic", text: "text", name: "name", image: "image",
+  };
+  const chips = (hit.channels || []).map((channel) => {
+    const translated = t(`why.${channel}`);
+    const label = translated !== `why.${channel}`
+      ? translated
+      : (extraNames[channel] || channel);
+    return `<button class="tag-chip" style="cursor:default">${esc(label)}</button>`;
+  }).join("");
+  const terms = String(state.query || "").split(/\s+/)
+    .filter((word) => word && !word.includes(":")).slice(0, 8);
+  $("annotate-body").innerHTML = `
+    <div class="why-head">${esc(ui("why.channels"))}</div>
+    <div class="annotate-chips">${chips || `<p class="settings-note">${esc(t("annotate.empty"))}</p>`}</div>
+    <div class="why-meta">
+      <span>${esc(ui("why.score"))}: ${Number(hit.score || 0).toFixed(4)}</span>
+      ${terms.length ? `<span>${esc(ui("why.terms"))}: ${terms.map((word) => esc(word)).join(", ")}</span>` : ""}
+    </div>`;
+  const popover = $("annotate");
+  popover.hidden = false;
+  const rect = document.querySelector(`[data-why="${id}"]`)?.getBoundingClientRect();
+  if (rect) {
+    popover.style.left = `${Math.min(rect.left, window.innerWidth - 320)}px`;
+    popover.style.top = `${Math.min(rect.bottom + 8, window.innerHeight - 200)}px`;
+  }
+}
+
+/* -------------------------------------------------------------- filter UI */
+
+const SIZE_UNITS = { b: 1, kb: 1024, mb: 1048576, gb: 1073741824 };
+
+function builtFilterTokens() {
+  const tokens = [];
+  const type = $("f-type")?.value || "";
+  if (type && !type.startsWith("custom:")) tokens.push(`type:${type}`);
+  const folder = $("f-folder")?.value.trim();
+  if (folder) tokens.push(`in:"${folder.replace(/"/g, "")}"`);
+  const min = Number($("f-size-min")?.value);
+  const max = Number($("f-size-max")?.value);
+  const minUnit = $("f-size-min-unit")?.value || "mb";
+  const maxUnit = $("f-size-max-unit")?.value || "mb";
+  if (min > 0) tokens.push(`size:>=${min}${minUnit}`);
+  if (max > 0) tokens.push(`size:<${max}${maxUnit}`);
+  const period = $("f-period")?.value;
+  if (period) tokens.push(`modified:${period}`);
+  const tag = $("f-tag")?.value.trim();
+  if (tag) tokens.push(`tag:"${tag.replace(/"/g, "")}"`);
+  const collection = $("f-collection")?.value;
+  if (collection) tokens.push(`collection:"${collection.replace(/"/g, "")}"`);
+  return tokens;
+}
+
+function paintFilterPreview() {
+  const preview = $("filter-preview");
+  if (preview) preview.textContent = builtFilterTokens().join(" ");
+}
+
+function applyFilters() {
+  const tokens = builtFilterTokens().join(" ");
+  const input = $("q");
+  // Strip any tokens the builder wrote earlier, then append the fresh ones:
+  // the builder owns its own words in the query and nothing else's.
+  input.value = `${input.value.replace(/(?:type:\S+|in:"[^"]*"|size:>=?\S+|size:<\S+|modified:\S+|tag:"[^"]*"|collection:"[^"]*")/g, " ").replace(/\s+/g, " ").trim()} ${tokens}`.trim();
+  openFilters(false);
+  runSearch();
+}
+
+function openFilters(open) {
+  const box = $("filter-builder");
+  if (!box) return;
+  box.hidden = !open;
+  $("filters-btn").setAttribute("aria-expanded", String(open));
+  if (open) paintFilterPreview();
+}
+
+/* --------------------------------------------------------------- calendar */
+
+const CAL = { month: new Date().getMonth(), year: new Date().getFullYear() };
+
+function isoDate(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function paintSince() {
+  const label = $("since-label");
+  if (label) label.textContent = state.since || t("tools.any");
+}
+
+function paintCalendar() {
+  // i18n keeps both lists as comma-separated strings, not arrays.
+  const months = String(t("cal.months")).split(",");
+  const weekdays = String(t("cal.weekdays")).split(",");
+  $("cal-title").textContent = t("cal.monthYear", {
+    month: months[CAL.month], year: CAL.year,
+  });
+  $("cal-week").innerHTML = weekdays
+    .map((name) => `<span>${esc(name)}</span>`).join("");
+  // Monday first, which is what the rest of the interface assumes.
+  const start = (new Date(CAL.year, CAL.month, 1).getDay() + 6) % 7;
+  const days = new Date(CAL.year, CAL.month + 1, 0).getDate();
+  const today = isoDate(new Date());
+  const cells = [];
+  for (let blank = 0; blank < start; blank += 1) cells.push("<span></span>");
+  for (let day = 1; day <= days; day += 1) {
+    const value = isoDate(new Date(CAL.year, CAL.month, day));
+    const classes = ["cal-day"];
+    if (value === state.since) classes.push("sel");
+    if (value === today) classes.push("today");
+    cells.push(`<button type="button" class="${classes.join(" ")}" data-day="${value}">${day}</button>`);
+  }
+  $("cal-grid").innerHTML = cells.join("");
+}
+
+function openCalendar(open) {
+  const box = $("calendar");
+  box.hidden = !open;
+  $("since-btn").setAttribute("aria-expanded", String(open));
+  if (open) paintCalendar();
+}
+
+function setSince(value) {
+  state.since = value;
+  paintSince();
+  openCalendar(false);
+  $("since-btn").focus();
+  if (state.query) runSearch();
+}
+
+/* ---------------------------------------------------------------- suggest */
+
+let suggestIndex = -1;
+
+function suggestItems(text) {
+  // Token completions win over saved queries: a half-typed `ext:` is an
+  // unfinished filter, not the beginning of a remembered search.
+  const tokens = tokenCompletions(text);
+  if (tokens.length) return tokens.slice(0, 8);
+  const needle = text.trim().toLowerCase();
+  const saved = ((state.personal && state.personal.saved) || [])
+    .map((item) => ({ value: item.query, kind: t("suggest.saved") }));
+  const recent = recentQueries()
+    .map((value) => ({ value, kind: t("suggest.recent") }));
+  const pool = [...saved, ...recent];
+  const seen = new Set();
+  return pool.filter((item) => {
+    if (!needle || !item.value.toLowerCase().includes(needle)) return false;
+    if (seen.has(item.value)) return false;
+    seen.add(item.value);
+    return true;
+  }).slice(0, 7);
+}
+
+/* Applying a suggestion replaces only the word under the caret for tokens;
+   saved and recent queries still replace the whole input. */
+function applySuggestion(item) {
+  if (!item) return;
+  const input = $("q");
+  if (item.start != null && item.end != null) {
+    const value = input.value;
+    input.value = value.slice(0, item.start) + item.value + value.slice(item.end);
+  } else {
+    input.value = item.value;
+  }
+  closeSuggest();
+  runSearch();
+  input.focus();
+}
+
+function paintSuggest() {
+  const box = $("suggest");
+  const items = suggestItems($("q").value);
+  box._items = items;
+  if (!items.length) { box.hidden = true; suggestIndex = -1; return; }
+  box.innerHTML = items.map((item, index) => `
+    <button type="button" class="suggestion${index === suggestIndex ? " sel" : ""}" data-suggest="${index}">
+      <span>${esc(item.value)}</span><span class="s-kind">${esc(item.kind)}</span>
+    </button>`).join("");
+  box.hidden = false;
+}
+
+function moveSuggest(delta) {
+  const items = suggestItems($("q").value);
+  if (!items.length) return;
+  suggestIndex = (suggestIndex + delta + items.length) % items.length;
+  paintSuggest();
+}
+
+function closeSuggest() {
+  $("suggest").hidden = true;
+  suggestIndex = -1;
+}
+
+/* ----------------------------------------------------------------- export */
+
+function openExport(open) {
+  const menu = $("export-menu");
+  menu.hidden = !open;
+  $("export-btn").setAttribute("aria-expanded", String(open));
+}
+
+function exportCurrent(format) {
+  if (!state.query) { toast(t("export.empty")); return; }
+  const url = `/api/export?${new URLSearchParams({
+    format, ...Object.fromEntries(searchParams(0).entries()), limit: "5000",
+  })}`;
+  downloadUrl(url, `autofind-export.${format}`);
+  toast(t("export.started"));
+}
+
+function exportSelectionCsv() {
+  const ids = [...state.picked];
+  const rows = state.hits.filter((hit) => ids.includes(hit.file_id));
+  if (!rows.length) { toast(t("bulk.nothing")); return; }
+  const header = ["name", "path", "kind", "size", "modified", "score", "tags"];
+  // A file name is user-typed data; a cell that opens with = + - @ would
+  // run as a formula the moment Excel opens the export.
+  const safe = (cell) => {
+    let text = String(cell ?? "").replace(/"/g, '""');
+    if (/^[=+\-@]/.test(text)) text = `'${text}`;
+    return `"${text}"`;
+  };
+  const body = [header, ...rows.map((hit) => [
+    hit.name, hit.path, hit.kind, hit.size,
+    new Date(hit.mtime * 1000).toISOString(),
+    Number(hit.score || 0).toFixed(6),
+    (hit.tags || []).join("; "),
+  ])].map((row) => row.map(safe).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF", body], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  downloadUrl(url, "autofind-selection.csv");
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+/* --------------------------------------------------------------- settings */
+
+function setSettings(open) {
+  $("settings").classList.toggle("open", Boolean(open));
+  if (open) {
+    loadAbout();
+    renderAuditBreakdown();
+    renderTelemetryBadge();
+    renderPortableBadge();
+    loadExclusions();
+  }
+}
+
+async function loadAbout() {
+  try {
+    const { stats, status } = (await loadStats()) || {};
+    const rows = [
+      ["app.title", "AutoFind"],
+      ["settings.about", status ? `${status.text_embedder || ""} · ${status.visual_embedder || ""}` : ""],
+    ];
+    const audit = await api("/api/audit");
+    const dl = $("about");
+    const label = (key) => t(key);
+    dl.innerHTML = `
+      <dt>${esc(label("audit.path"))}</dt><dd>${esc(audit.db)}</dd>
+      <dt>${esc(label("audit.size"))}</dt><dd>${fmtSize(audit.total_bytes)}</dd>
+      <dt>${esc(label("audit.files"))}</dt><dd>${audit.files}</dd>
+      <dt>${esc(label("audit.chunks"))}</dt><dd>${audit.chunks}</dd>
+      <dt>${esc(label("audit.images"))}</dt><dd>${audit.images}</dd>
+      <dt>${esc(label("audit.vectors"))}</dt><dd>${audit.vectors}</dd>
+      <dt>${esc(label("audit.pins"))}</dt><dd>${audit.personal.pins}</dd>
+      <dt>${esc(label("audit.saved"))}</dt><dd>${audit.personal.saved}</dd>
+      <dt>${esc(label("audit.aliases"))}</dt><dd>${audit.personal.aliases}</dd>
+      <dt>${esc(label("audit.tags"))}</dt><dd>${audit.personal.tags}</dd>
+      <dt>${esc(label("audit.collections"))}</dt><dd>${audit.personal.collections}</dd>
+      <dt>${esc(label("audit.privacy"))}</dt><dd>${audit.sensitive.enabled
+        ? t("audit.privacyOn", { n: audit.sensitive.count })
+        : t("panel.off")}</dd>
+      <dt>${esc(label("audit.encrypted"))}</dt><dd>${audit.encrypted ? t("audit.yes") : t("audit.no")}</dd>`;
+  } catch (error) {
+    /* the about box stays with whatever it had */
+  }
+}
+
+function paintLang() {
+  document.querySelectorAll("[data-lang]").forEach((button) => {
+    button.classList.toggle("on", button.dataset.lang === LANG);
+  });
+}
+
+/* ----------------------------------------------------------- window chrome */
+
 function wireWindowControls() {
   const markApp = () => document.body.classList.add("in-app");
-  // pywebview dispatches this on window, after its bridge is injected.
   window.addEventListener("pywebviewready", markApp);
   document.addEventListener("pywebviewready", markApp);
   if (window.pywebview && window.pywebview.api) markApp();
@@ -4128,38 +2433,41 @@ function wireWindowControls() {
     box.addEventListener("click", (event) => {
       const button = event.target.closest("[data-win]");
       if (!button) return;
-      const api = window.pywebview && window.pywebview.api;
-      if (!api) return;
+      const bridge = window.pywebview && window.pywebview.api;
+      if (!bridge) return;
       event.preventDefault();
-      if (button.dataset.win === "quit") api.quit();
-      else api.hide();
+      if (button.dataset.win === "quit") bridge.quit();
+      else bridge.hide();
     });
   };
+  const topButton = $("ontop-btn");
+  if (topButton) {
+    topButton.addEventListener("click", () => {
+      const bridge = window.pywebview && window.pywebview.api;
+      if (bridge && bridge.always_on_top) {
+        bridge.always_on_top();
+        topButton.classList.toggle("on");
+      }
+    });
+  }
   wireDataWin($("win-controls"));
-  // The welcome card carries the same pair in its own corner: the grey bar
-  // hides the little window, the grey cross leaves the app entirely.
   wireDataWin($("onboard-controls"));
+}
+
+function greetingBridge(name) {
+  const bridge = window.pywebview && window.pywebview.api;
+  return bridge && typeof bridge[name] === "function" ? bridge[name] : null;
 }
 
 /* ------------------------------------------------------------ boot screen */
 
-/* The window is up in ~200 ms; the vector pack is not. Instead of showing an
-   idle screen that cannot search yet, the app opens on a greeting: one "hello"
-   from the languages this machine's OCR can actually read, changing every
-   700 ms while the pack warms. It is a loading screen that states a fact about
-   the product — the languages on screen are exactly the ones the index can
-   find text in — and it is bounded at both ends, so it can neither flash nor
-   hang. */
 const BOOT_MIN_MS = 900;
 const BOOT_POLL_MS = 120;
 const BOOT_MAX_POLLS = 70;
 
-// Shown for the first frame, before `/api/ocr` answers with the real list of
-// languages this machine can read. All of these are readable on any machine
-// that has the bundled model or a CJK language pack.
 const BOOT_GREETINGS = [
   { hello: "Hello", name: "English" },
-  { hello: "Привет", name: "Русский" },
+  { hello: "\u041f\u0440\u0438\u0432\u0435\u0442", name: "\u0420\u0443\u0441\u0441\u043a\u0438\u0439" },
   { hello: "Hola", name: "Español" },
   { hello: "Bonjour", name: "Français" },
   { hello: "Hallo", name: "Deutsch" },
@@ -4170,14 +2478,102 @@ const BOOT_GREETINGS = [
   { hello: "Merhaba", name: "Türkçe" },
 ];
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function skipBoot() {
+  const box = $("boot");
+  if (!box || box.classList.contains("done")) return;
+  box.classList.add("done");
+  setTimeout(() => box.remove(), 620);
+}
 
-/* ------------------------------------------------------------ first run */
+/* /api/ocr answers with {tag, name, hello} objects; the static table above
+   only covers the first frame, so every entry is normalized to one shape. */
+function greetingPool(languages) {
+  return (languages || []).map((item) => {
+    if (item && typeof item === "object") {
+      const name = String(item.name || item.tag || "?");
+      return { hello: String(item.hello || name), name };
+    }
+    return { hello: String(item), name: String(item) };
+  });
+}
 
-/* The setup screen is the boot greeting with somewhere to put the answers.
-   It reuses the same greeting pool and the same words; the host window grows
-   around its centre and unfolds the right column (see `onboarding_split` in
-   app.py). */
+async function boot() {
+  const box = $("boot");
+  if (!box) return;
+  const hello = $("boot-hello");
+  const lang = $("boot-lang");
+  const bar = $("boot-bar");
+  const stage = $("boot-stage");
+  const started = performance.now();
+  let pool = BOOT_GREETINGS;
+  let index = Math.floor(Math.random() * pool.length);
+
+  const show = () => {
+    const item = pool[index % pool.length];
+    index += 1;
+    hello.classList.add("fade");
+    lang.classList.add("fade");
+    setTimeout(() => {
+      hello.textContent = item.hello;
+      lang.textContent = item.name;
+      hello.classList.remove("fade");
+      lang.classList.remove("fade");
+    }, 110);
+  };
+  show();
+  const timer = setInterval(show, 700);
+
+  // The server knows exactly which languages this machine can read.
+  api("/api/ocr")
+    .then((data) => {
+      const list = (data.coverage && data.coverage.languages) || [];
+      if (!list.length) return;
+      pool = greetingPool(list);
+      index = Math.floor(Math.random() * pool.length);
+    })
+    .catch(() => {});
+
+  const onboard = await fetchOnboarding();
+  if (onboard && onboard.first_run) {
+    const enough = 3 * 700 + 250;
+    const wait = enough - (performance.now() - started);
+    if (wait > 0) await sleep(wait);
+    clearInterval(timer);
+    openOnboarding(onboard, { hello: hello.textContent, name: lang.textContent });
+    box.classList.add("done");
+    setTimeout(() => box.remove(), 460);
+    return;
+  }
+
+  for (let attempt = 0; attempt < BOOT_MAX_POLLS; attempt += 1) {
+    try {
+      const ready = await api("/api/ready");
+      if (ready.ready) {
+        bar.style.width = "100%";
+        stage.textContent = t("boot.ready", {
+          ms: Math.round(ready.warm_ms ?? ready.uptime_ms),
+        });
+        break;
+      }
+      const warm = ready.stage === "vectors";
+      bar.style.width = warm ? "74%" : "26%";
+      stage.textContent = warm ? t("boot.warm") : t("boot.index");
+    } catch (error) {
+      stage.textContent = t("boot.wait");
+    }
+    await sleep(BOOT_POLL_MS);
+  }
+
+  const spent = performance.now() - started;
+  if (spent < BOOT_MIN_MS) await sleep(BOOT_MIN_MS - spent);
+  clearInterval(timer);
+  box.classList.add("done");
+  setTimeout(() => box.remove(), 620);
+  $("q")?.focus();
+}
+
+/* -------------------------------------------------------------- first run */
+
 const ONBOARD = {
   active: false,
   data: null,
@@ -4192,201 +2588,116 @@ const ONBOARD = {
   job: null,
 };
 
-function greetingBridge(name) {
-  const bridge = window.pywebview && window.pywebview.api;
-  return bridge && typeof bridge[name] === "function" ? bridge[name] : null;
-}
-
 async function fetchOnboarding() {
   try {
-    return await api("/api/onboarding");
+    // The welcome must never hold the window hostage: if the server is slow to
+    // answer, the ready loop below takes over from here.
+    return await Promise.race([
+      api("/api/onboarding"),
+      sleep(5000).then(() => null),
+    ]);
   } catch (error) {
-    // The app can still be used without the setup screen; never block boot on it.
     return null;
   }
 }
 
-function showNextOnboardingGreeting() {
-  const hello = $("onboard-hello");
-  const lang = $("onboard-hello-lang");
-  if (!hello || !ONBOARD.pool.length) return;
-  const item = ONBOARD.pool[ONBOARD.index % ONBOARD.pool.length];
-  ONBOARD.index += 1;
-  hello.classList.add("fade");
-  setTimeout(() => {
-    hello.textContent = item.hello;
-    if (lang) lang.textContent = item.name;
-    hello.classList.remove("fade");
-  }, 140);
-}
-
-function startOnboardingCycle() {
-  clearInterval(ONBOARD.timer);
-  ONBOARD.timer = setInterval(showNextOnboardingGreeting, 2200);
-}
-
-function openOnboarding(data, current) {
-  const box = $("onboard");
-  if (!box) return;
+function openOnboarding(data, greeting) {
   ONBOARD.active = true;
   ONBOARD.data = data;
-  ONBOARD.pool = BOOT_GREETINGS;
-  ONBOARD.index = 0;
-
-  const hello = $("onboard-hello");
-  const lang = $("onboard-hello-lang");
-  if (hello && current && current.hello) hello.textContent = current.hello;
-  if (lang && current && current.name) lang.textContent = current.name;
-
-  // Continue from the word already on screen instead of starting over.
-  const at = BOOT_GREETINGS.findIndex((item) => item.hello === (current && current.hello));
-  ONBOARD.index = at >= 0 ? at + 1 : 0;
-
+  const box = $("onboard");
   box.hidden = false;
+  box.classList.remove("done");
+  box.classList.add("pywebview-drag-region");
+  const hello = $("onboard-hello");
+  const helloLang = $("onboard-hello-lang");
+  if (greeting) { hello.textContent = greeting.hello; helloLang.textContent = greeting.name; }
+  const rotate = () => {
+    const item = ONBOARD.pool[ONBOARD.index % ONBOARD.pool.length];
+    ONBOARD.index += 1;
+    hello.classList.add("fade");
+    setTimeout(() => {
+      hello.textContent = item.hello;
+      helloLang.textContent = item.name;
+      hello.classList.remove("fade");
+    }, 110);
+  };
+  clearInterval(ONBOARD.timer);
+  ONBOARD.timer = setInterval(rotate, 900);
   paintOnboarding();
-  requestAnimationFrame(() => box.classList.add("open"));
-
-  // A beat at the centre, then the window moves aside and the settings column
-  // unfolds. The delay is what makes the movement read as a transition rather
-  // than as a different window having opened behind the first one.
-  setTimeout(() => {
-    box.classList.add("split");
-    const split = greetingBridge("onboarding_split");
-    if (split) Promise.resolve(split()).catch(() => {});
-  }, 480);
-
-  startOnboardingCycle();
-  // Kensaku detection is cheap, but it touches foreign config files; let the
-  // layout settle first so a slow disk does not make the greeting stutter.
-  setTimeout(scanKensaku, 900);
+  api("/api/ocr").then((ocr) => {
+    const list = (ocr.coverage && ocr.coverage.languages) || [];
+    if (list.length) {
+      ONBOARD.pool = greetingPool(list);
+    }
+  }).catch(() => {});
 }
 
 function paintOnboarding() {
   const data = ONBOARD.data;
   if (!data) return;
-
-  document.querySelectorAll("#onboard-lang button").forEach((button) => {
-    button.setAttribute("aria-checked", String(button.dataset.lang === currentLang()));
+  document.querySelectorAll("#onboard-lang [data-lang]").forEach((button) => {
+    button.classList.toggle("on", button.dataset.lang === LANG);
   });
-
-  const auto = data.autostart || {};
   const toggle = $("ob-autostart");
+  const auto = data.autostart || {};
   if (toggle) {
     toggle.checked = Boolean(auto.enabled);
     toggle.disabled = !auto.supported;
   }
   const autoState = $("ob-autostart-state");
   if (autoState) {
-    autoState.classList.remove("good", "bad");
     if (ONBOARD.autostartError) {
-      autoState.textContent = t("onboard.autostartFailed", { error: ONBOARD.autostartError });
-      autoState.classList.add("bad");
-    } else if (!auto.supported) {
-      autoState.textContent = t("onboard.autostartUnsupported");
+      autoState.textContent = ONBOARD.autostartError;
+      autoState.className = "ob-state bad";
     } else {
-      autoState.textContent = auto.enabled
-        ? t("onboard.autostartOn") : t("onboard.autostartOff");
-      autoState.classList.toggle("good", Boolean(auto.enabled));
+      autoState.textContent = auto.enabled ? t("panel.on") : "";
+      autoState.className = "ob-state";
     }
   }
-
-  const roots = data.roots || [];
-  const list = $("ob-roots");
-  if (list) {
-    list.innerHTML = roots.length
-      ? roots.map((root) => `<li title="${esc(root)}">${esc(root)}</li>`).join("")
-      : `<li class="ob-none">${esc(t("onboard.indexEmpty"))}</li>`;
-  }
-
   paintImportState();
+  const roots = $("ob-roots");
+  if (roots) {
+    roots.innerHTML = (data.roots || []).map((root) => `<li>${esc(root)}</li>`).join("");
+  }
   paintIndexState();
 }
 
 function paintImportState() {
-  const state = $("ob-import-state");
-  if (!state) return;
-  state.classList.remove("good", "bad");
   const badge = $("ob-import-badge");
-  const importBtn = $("ob-import");
-  const scanBtn = $("ob-import-scan");
-  if (scanBtn) scanBtn.disabled = ONBOARD.importBusy;
-  if (importBtn) {
-    const blocked = ONBOARD.importBusy
-      || Boolean(ONBOARD.scan && !ONBOARD.scan.found);
-    importBtn.disabled = blocked;
-    // A filled primary button that does nothing is worse than a quiet one:
-    // without a Kensaku install there is nothing to import, so stop shouting.
-    importBtn.classList.toggle("primary", !blocked);
-    importBtn.classList.toggle("ghost", blocked);
-  }
-
+  const state2 = $("ob-import-state");
+  if (!state2) return;
   if (ONBOARD.importBusy) {
-    state.textContent = t("onboard.importScanning");
+    state2.textContent = t("dups.scanning");
+    state2.className = "ob-state";
   } else if (ONBOARD.importError) {
-    state.textContent = t("onboard.importFailed", { error: ONBOARD.importError });
-    state.classList.add("bad");
+    state2.textContent = ONBOARD.importError;
+    state2.className = "ob-state bad";
   } else if (ONBOARD.imported) {
-    const report = ONBOARD.imported;
-    state.textContent = t("onboard.importDone", {
-      pins: report.pins, saved: report.saved, aliases: report.aliases,
-    });
-    state.classList.add("good");
-    if (report.missing_count) {
-      state.textContent += ` ${t("onboard.importMissing", { n: report.missing_count })}`;
-    }
-  } else if (ONBOARD.scan) {
-    if (ONBOARD.scan.found) {
-      state.textContent = t("onboard.importFound", {
-        pins: ONBOARD.scan.pins,
-        saved: ONBOARD.scan.saved,
-        aliases: ONBOARD.scan.aliases,
-      });
-      state.classList.add("good");
-    } else {
-      state.textContent = t("onboard.importNothing");
-    }
-  } else {
-    state.textContent = "";
-  }
-
-  if (badge) {
-    const found = Boolean(ONBOARD.scan && ONBOARD.scan.found);
+    const found = ONBOARD.imported.found;
     badge.hidden = !found;
-    if (found) {
-      badge.textContent = String(
-        ONBOARD.scan.pins + ONBOARD.scan.saved + ONBOARD.scan.aliases,
-      );
+    if (found) badge.textContent = `+${ONBOARD.imported.pins || 0} / ${ONBOARD.imported.saved || 0} / ${ONBOARD.imported.aliases || 0}`;
+    state2.textContent = found
+      ? t("onboard.importDone", {
+        pins: ONBOARD.imported.pins || 0,
+        saved: ONBOARD.imported.saved || 0,
+        aliases: ONBOARD.imported.aliases || 0,
+      })
+      : t("onboard.importMissing");
+    state2.className = "ob-state good";
+  } else if (ONBOARD.scan) {
+    badge.hidden = !ONBOARD.scan.found;
+    if (ONBOARD.scan.found) {
+      badge.textContent = `+${ONBOARD.scan.pins} / ${ONBOARD.scan.saved} / ${ONBOARD.scan.aliases}`;
     }
-  }
-}
-
-function paintIndexState() {
-  const state = $("ob-index-state");
-  const bar = $("ob-bar");
-  if (!state) return;
-  state.classList.remove("good", "bad");
-  const job = ONBOARD.job;
-  let percent = 0;
-  if (job && job.running) {
-    percent = job.total ? Math.round((job.position / job.total) * 100) : 4;
-    state.textContent = t("onboard.indexRunning", { done: percent });
-  } else if (job && job.errorKind === "empty") {
-    state.textContent = t("onboard.indexEmpty");
-    state.classList.add("bad");
-  } else if (job && job.error) {
-    state.textContent = t("onboard.indexFailed", { error: job.error });
-    state.classList.add("bad");
-  } else if (job && job.result) {
-    percent = 100;
-    state.textContent = t("onboard.indexDone", {
-      files: plural(job.result.indexed || 0, "unit.files"),
-      seconds: job.result.seconds || 0,
-    });
-    state.classList.add("good");
+    state2.textContent = ONBOARD.scan.found
+      ? t("onboard.importFound", {
+        pins: ONBOARD.scan.pins, saved: ONBOARD.scan.saved, aliases: ONBOARD.scan.aliases,
+      })
+      : t("onboard.importMissing");
+    state2.className = "ob-state";
   } else {
-    state.textContent = "";
+    state2.textContent = "";
   }
-  if (bar) bar.style.width = `${percent}%`;
 }
 
 async function scanKensaku() {
@@ -4447,6 +2758,35 @@ async function toggleAutostart() {
   }
 }
 
+function paintIndexState() {
+  const state2 = $("ob-index-state");
+  const bar = $("ob-bar");
+  if (!state2 || !bar) return;
+  const job = ONBOARD.job;
+  let percent = 0;
+  state2.className = "ob-state";
+  if (job && job.running) {
+    percent = job.total ? Math.round((job.position / job.total) * 100) : 4;
+    state2.textContent = `${job.position}/${job.total} · ${shortPath(job.path || "")}`;
+  } else if (job && job.errorKind === "empty") {
+    state2.textContent = t("onboard.indexEmpty");
+    state2.classList.add("bad");
+  } else if (job && job.error) {
+    state2.textContent = t("onboard.indexFailed", { error: job.error });
+    state2.classList.add("bad");
+  } else if (job && job.result) {
+    percent = 100;
+    state2.textContent = t("onboard.indexDone", {
+      files: plural(job.result.indexed || 0, "unit.files"),
+      seconds: job.result.seconds || 0,
+    });
+    state2.classList.add("good");
+  } else {
+    state2.textContent = "";
+  }
+  if (bar) bar.style.width = `${percent}%`;
+}
+
 async function startOnboardingIndex() {
   const roots = (ONBOARD.data && ONBOARD.data.roots) || [];
   if (!roots.length) {
@@ -4493,7 +2833,6 @@ async function finishOnboarding() {
   if (!ONBOARD.active) return;
   ONBOARD.active = false;
   clearInterval(ONBOARD.timer);
-  // Persist first: the window grows back whether or not the bridge exists.
   api("/api/onboarding/done", { method: "POST", body: "{}" }).catch(() => {});
   const grow = greetingBridge("onboarding_finish");
   if (grow) Promise.resolve(grow()).catch(() => {});
@@ -4501,13 +2840,13 @@ async function finishOnboarding() {
   const box = $("onboard");
   if (box) {
     box.classList.add("done");
-    setTimeout(() => box.remove(), 640);
+    setTimeout(() => box.remove(), 300);
   }
   setTimeout(() => {
     $("q")?.focus();
     loadStats();
     if (!state.query) renderIdle();
-  }, 700);
+  }, 320);
   toast(t("onboard.ready"));
 }
 
@@ -4526,104 +2865,1446 @@ async function replayOnboarding() {
   location.reload();
 }
 
-async function boot() {
-  const box = $("boot");
-  if (!box) return;
-  const hello = $("boot-hello");
-  const lang = $("boot-lang");
-  const bar = $("boot-bar");
-  const stage = $("boot-stage");
-  const started = performance.now();
+/* -------------------------------------------------------------- selection */
 
-  let pool = BOOT_GREETINGS;
-  let index = Math.floor(Math.random() * pool.length);
-  const show = () => {
-    const item = pool[index % pool.length];
-    index += 1;
-    hello.classList.add("fade");
-    setTimeout(() => {
-      hello.textContent = item.hello;
-      lang.textContent = item.name;
-      hello.classList.remove("fade");
-    }, 110);
-  };
-  show();
-  const timer = setInterval(show, 700);
-
-  // The server knows exactly which languages this machine can read; the
-  // built-in list above is only there so the first frame does not wait for it.
-  api("/api/ocr")
-    .then((data) => {
-      const list = (data.coverage && data.coverage.languages) || [];
-      if (!list.length) return;
-      pool = list;
-      index = Math.floor(Math.random() * pool.length);
-    })
-    .catch(() => {
-      // A splash must never be the reason the app does not start.
-    });
-
-  // First launch is not a splash screen, it is a welcome: show the greeting
-  // three times while the window sits in the middle, then turn the same words
-  // into the setup screen. Waiting for the vector pack here would make setup
-  // feel like a hang; it warms up behind the conversation.
-  const onboard = await fetchOnboarding();
-  if (onboard && onboard.first_run) {
-    const enough = 3 * 700 + 250;
-    const wait = enough - (performance.now() - started);
-    if (wait > 0) await sleep(wait);
-    clearInterval(timer);
-    openOnboarding(onboard, { hello: hello.textContent, name: lang.textContent });
-    box.classList.add("done");
-    setTimeout(() => box.remove(), 460);
-    return;
-  }
-
-  for (let attempt = 0; attempt < BOOT_MAX_POLLS; attempt += 1) {
-    try {
-      const ready = await api("/api/ready");
-      if (ready.ready) {
-        bar.style.width = "100%";
-        // `warm_ms` is how long the index took to be ready; `uptime_ms` is how
-        // long the server has been up. A second window opened an hour later
-        // must not claim the app took an hour to start.
-        stage.textContent = t("boot.ready", {
-          ms: Math.round(ready.warm_ms ?? ready.uptime_ms),
-        });
-        break;
-      }
-      const warm = ready.stage === "vectors";
-      bar.style.width = warm ? "74%" : "26%";
-      stage.textContent = warm ? t("boot.warm") : t("boot.index");
-    } catch (error) {
-      stage.textContent = t("boot.wait");
-    }
-    await sleep(BOOT_POLL_MS);
-  }
-
-  const spent = performance.now() - started;
-  if (spent < BOOT_MIN_MS) await sleep(BOOT_MIN_MS - spent);
-  clearInterval(timer);
-  hello.classList.remove("fade");
-  box.classList.add("done");
-  setTimeout(() => box.remove(), 620);
-  // The cursor belongs in the search box: this is a launcher, not a dashboard.
-  $("q")?.focus();
+function togglePick(id, checked) {
+  if (checked) state.picked.add(Number(id));
+  else state.picked.delete(Number(id));
+  document.querySelectorAll(`.gcard[data-file="${id}"]`).forEach((node) => {
+    node.classList.toggle("picked", state.picked.has(Number(id)));
+  });
+  updateBulkBar();
 }
 
-function skipBoot() {
-  const box = $("boot");
-  if (!box || box.classList.contains("done")) return;
-  box.classList.add("done");
-  setTimeout(() => box.remove(), 620);
+function copyText(text) {
+  navigator.clipboard?.writeText(text).then(
+    () => toast(t("copied")),
+    () => toast(t("toast.failed", { error: "clipboard" })),
+  );
+}
+
+/* ---------------------------------------------------------- event wiring */
+
+function wire() {
+  // The Rust shell saves Ctrl+Alt+S screenshots and dispatches this event.
+  document.addEventListener("autofind:screenshot", async (event) => {
+    const info = event.detail || window.__autofindLastScreenshot || {};
+    const path = typeof info === "string" ? info : info.path;
+    if (!path) return;
+    toast(t("screenshot.saved", { name: String(path).split(/[\\/]/).pop() }));
+    if (typeof info === "object" && info.indexed) return;
+    try {
+      await api("/api/screenshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      toast(t("screenshot.indexed"));
+    } catch (error) {
+      /* the file is still saved and visible in the screenshots folder */
+    }
+  });
+
+  // Ctrl+Shift+1..9 — saved searches, in the order shown in the drawer.
+  document.addEventListener("keydown", async (event) => {
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "c") {
+      const hit = selectedHit && selectedHit();
+      if (hit && navigator.clipboard) {
+        event.preventDefault();
+        try { await navigator.clipboard.writeText(hit.path); } catch (error) {}
+      }
+      return;
+    }
+    if (!(event.ctrlKey && event.shiftKey && /^[1-9]$/.test(event.key))) return;
+    event.preventDefault();
+    try {
+      const data = await api("/api/saved");
+      const item = (data.saved || [])[Number(event.key) - 1];
+      if (!item) return;
+      $("q").value = item.query;
+      runSearch();
+    } catch (error) {
+      /* a missing saved search is not an error worth a toast */
+    }
+  });
+
+  // search box
+  const q = $("q");
+  q.addEventListener("input", () => { paintSuggest(); scheduleSearch(); });
+  q.addEventListener("focus", () => { if (q.value) paintSuggest(); });
+  q.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") { event.preventDefault(); moveSuggest(1); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); moveSuggest(-1); }
+    else if (event.key === "Enter") {
+      const items = suggestItems(q.value);
+      if (suggestIndex >= 0 && items[suggestIndex]) {
+        event.preventDefault();
+        applySuggestion(items[suggestIndex]);
+        return;
+      }
+      closeSuggest();
+      runSearch();
+    } else if (event.key === "Escape") {
+      closeSuggest();
+    }
+  });
+  q.addEventListener("blur", () => setTimeout(closeSuggest, 160));
+  $("suggest").addEventListener("mousedown", (event) => {
+    const button = event.target.closest("[data-suggest]");
+    if (!button) return;
+    event.preventDefault();
+    const items = $("suggest")._items || [];
+    applySuggestion(items[Number(button.dataset.suggest)]);
+  });
+  $("clear").addEventListener("click", () => {
+    q.value = "";
+    state.kind = "";
+    state.folder = "";
+    state.since = "";
+    paintSince();
+    paintKindChips();
+    runSearch();
+    q.focus();
+  });
+  $("save-btn").addEventListener("click", () => saveSearch(q.value.trim()));
+
+  // kind chips
+  document.querySelectorAll(".chip[data-kind]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      state.kind = chip.dataset.kind;
+      paintKindChips();
+      runSearch();
+    });
+  });
+
+  // tools
+  $("folder").addEventListener("input", () => {
+    state.folder = $("folder").value.trim();
+    scheduleSearch();
+  });
+  $("since-btn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    openCalendar($("calendar").hidden);
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".date-field")) openCalendar(false);
+    if (!event.target.closest(".sort-field") && !$("sort-menu").hidden) openSort(false);
+    if (!event.target.closest("#filters-btn") && !event.target.closest("#filter-builder")) openFilters(false);
+    if (!event.target.closest(".menu-anchor") && !$("export-menu").hidden) openExport(false);
+    // The click that OPENS the popover also reaches document: without the
+    // opener guard it closes the popover in the same event, so "+ \u0442\u0435\u0433" and
+    // "+ \u043a\u043e\u043b\u043b\u0435\u043a\u0446\u0438\u044f" looked dead.
+    if (!event.target.closest("#annotate, [data-tag-add], [data-collection-add], #bulk-tag")
+        && !$("annotate").hidden) closeAnnotate();
+  });
+  $("calendar").addEventListener("click", (event) => {
+    const day = event.target.closest("[data-day]");
+    if (day) { setSince(day.dataset.day); return; }
+    const action = event.target.closest("[data-cal]");
+    if (!action) return;
+    const what = action.dataset.cal;
+    if (what === "prev") { CAL.month -= 1; if (CAL.month < 0) { CAL.month = 11; CAL.year -= 1; } paintCalendar(); }
+    else if (what === "next") { CAL.month += 1; if (CAL.month > 11) { CAL.month = 0; CAL.year += 1; } paintCalendar(); }
+    else if (what === "clear") setSince("");
+    else if (what === "today") setSince(isoDate(new Date()));
+    else if (what === "docdate") {
+      state.docdate = !state.docdate;
+      action.classList.toggle("on", state.docdate);
+      if (state.query) runSearch();
+    }
+  });
+  $("sort-btn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    // hidden=true means the menu is closed, so closed → open. The inverted
+    // form here is why every click read as "close" and the menu never opened.
+    openSort($("sort-menu").hidden);
+  });
+  $("sort-menu").addEventListener("click", (event) => {
+    const option = event.target.closest("[data-sort]");
+    if (!option) return;
+    state.sort = option.dataset.sort;
+    $("sort-value").textContent = t(`sort.${state.sort}`);
+    openSort(false);
+    runSearch();
+  });
+  $("filters-btn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    openFilters($("filter-builder").hidden);
+  });
+  $("filter-builder").addEventListener("input", paintFilterPreview);
+  $("filter-builder").addEventListener("click", (event) => {
+    const option = event.target.closest(".filter-menu button, .unit-menu button");
+    if (!option) return;
+    const menu = option.parentElement;
+    const field = menu.closest("[data-picker], .unit-picker");
+    menu.hidden = true;
+    if (option.dataset.unit) {
+      const holder = menu.parentElement;
+      holder.querySelector("input[type=hidden]").value = option.dataset.unit;
+      holder.querySelector(".unit-value").textContent = option.textContent;
+    } else if (field) {
+      const select = field.querySelector("select");
+      select.value = option.dataset.value ?? "";
+      field.querySelector(".filter-picker-value").textContent = option.textContent;
+    }
+    paintFilterPreview();
+  });
+  $("filter-builder").addEventListener("click", (event) => {
+    const trigger = event.target.closest(".filter-picker-btn, .unit-trigger");
+    if (trigger) {
+      const menu = trigger.parentElement.querySelector(".filter-menu, .unit-menu");
+      if (menu) menu.hidden = !menu.hidden;
+    }
+  });
+  $("filter-apply").addEventListener("click", applyFilters);
+  $("filter-clear").addEventListener("click", () => {
+    $("filter-builder").querySelectorAll("input").forEach((input) => {
+      if (input.type === "hidden") input.value = "mb";
+      else input.value = "";
+    });
+    $("filter-builder").querySelectorAll("select").forEach((select) => { select.value = ""; });
+    $("filter-builder").querySelectorAll(".filter-picker-value").forEach((node) => {
+      node.textContent = t("filters.any");
+    });
+    $("filter-builder").querySelectorAll(".unit-value").forEach((node) => {
+      node.textContent = t("unit.mb");
+    });
+    paintFilterPreview();
+  });
+  $("export-btn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    openExport($("export-menu").hidden);
+  });
+  $("export-menu").addEventListener("click", (event) => {
+    const option = event.target.closest("[data-export]");
+    if (!option) return;
+    openExport(false);
+    exportCurrent(option.dataset.export);
+  });
+
+  // header actions
+  $("panel-btn").addEventListener("click", () => setPanel(!$("panel").classList.contains("open")));
+  $("dups-btn").addEventListener("click", () => setDups(!$("dups-drawer").classList.contains("open")));
+  $("panel-close").addEventListener("click", () => setPanel(false));
+  $("dups-close").addEventListener("click", () => setDups(false));
+  $("scrim").addEventListener("click", () => { setPanel(false); setDups(false); });
+
+  // drawer tabs
+  $("drawer-tabs").addEventListener("click", (event) => {
+    const tab = event.target.closest("[data-drawer-tab]");
+    if (tab) setDrawerTab(tab.dataset.drawerTab);
+  });
+
+  // index pane
+  $("index-btn").addEventListener("click", indexNow);
+  $("watch-btn").addEventListener("click", toggleWatch);
+  $("dups-open").addEventListener("click", () => setDups(true));
+
+  // privacy pane
+  $("privacy-enabled").addEventListener("change", () => {
+    savePrivacy({ enabled: $("privacy-enabled").checked });
+  });
+  $("privacy-toggle").addEventListener("click", () => {
+    const box = $("privacy-filters");
+    const open = !box.classList.contains("open");
+    box.classList.toggle("open", open);
+    $("privacy-filters").setAttribute("aria-hidden", String(!open));
+    $("privacy-toggle").setAttribute("aria-expanded", String(open));
+  });
+  $("privacy-filters-list").addEventListener("change", (event) => {
+    const box = event.target.closest("[data-privacy]");
+    if (!box) return;
+    const checked = [...document.querySelectorAll("[data-privacy]:checked")]
+      .map((node) => node.dataset.privacy);
+    savePrivacy({ categories: checked });
+  });
+  $("purge-btn").addEventListener("click", async () => {
+    try {
+      await api("/api/privacy/purge", { method: "POST", body: "{}" });
+      toast(t("toast.purged"));
+      refreshPrivacy();
+    } catch (error) {
+      toast(t("toast.failed", { error: error.message }));
+    }
+  });
+
+  // seal pane
+  $("seal-btn").addEventListener("click", async () => {
+    const button = $("seal-btn");
+    if (button.disabled) return;
+    button.disabled = true;
+    const action = state.seal && state.seal.sealed ? "off" : "on";
+    try {
+      await api("/api/seal", { method: "POST", body: JSON.stringify({ action }) });
+    } catch (error) {
+      button.disabled = false;
+      toast(t("toast.failed", { error: error.message }));
+      return;
+    }
+    pollSeal();
+  });
+
+  // search pane (aliases + types)
+  $("alias-add").addEventListener("click", () => {
+    const alias = $("alias-word").value.trim();
+    const expand = $("alias-means").value.trim();
+    if (!alias || !expand) { toast(t("alias.need")); return; }
+    addAlias(alias, expand);
+  });
+  $("alias-list").addEventListener("click", (event) => {
+    const drop = event.target.closest("[data-alias-drop]");
+    if (drop) dropAlias(drop.dataset.aliasDrop);
+  });
+  $("types-add").addEventListener("click", () => {
+    state.types.push({ name: "", masks: [""] });
+    renderTypes();
+  });
+  $("types-list").addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-type-remove]");
+    if (!remove) return;
+    const cardNode = remove.closest(".type-card");
+    const index = [...document.querySelectorAll("#types-list .type-card")].indexOf(cardNode);
+    if (index >= 0) {
+      state.types.splice(index, 1);
+      renderTypes();
+    }
+  });
+  $("types-list").addEventListener("change", () => {/* edits commit on blur */});
+  $("types-list").addEventListener("focusout", saveTypes);
+
+  // keys pane
+  $("hotkeys-list").addEventListener("keydown", (event) => {
+    const input = event.target.closest("[data-hotkey]");
+    if (!input) return;
+    const chord = chordOfEvent(event);
+    if (chord && !MODIFIER_KEYS.has(chord)) {
+      event.preventDefault();
+      input.value = chordLabel(chord);
+    }
+  });
+  $("hotkeys-list").addEventListener("focusout", () => {
+    const dirty = [...document.querySelectorAll("[data-hotkey]")]
+      .some((input) => input.value && !input.dataset.clean);
+    if (dirty) saveHotkeys();
+  });
+  $("hotkeys-reset").addEventListener("click", async () => {
+    try {
+      const data = await api("/api/hotkeys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hotkeys: FALLBACK_HOTKEYS }),
+      });
+      state.hotkeys = data.hotkeys || FALLBACK_HOTKEYS;
+      state.hotkeyConflicts = data.conflicts || [];
+      renderHotkeys();
+    } catch (error) {
+      toast(t("toast.failed", { error: error.message }));
+    }
+  });
+
+  // appearance pane
+  $("wall-row").addEventListener("click", (event) => {
+    const tile = event.target.closest("[data-wall]");
+    if (tile) chooseWall(tile.dataset.wall);
+  });
+  $("wall-pick").addEventListener("click", () => $("wall-file").click());
+  $("wall-file").addEventListener("change", () => {
+    useWallFile($("wall-file").files[0]);
+    $("wall-file").value = "";
+  });
+  $("wall-edit").addEventListener("click", openWallEditor);
+  const bindLook = (id, patch) => {
+    $(id).addEventListener("input", () => setLook(patch($(id).value)));
+  };
+  bindLook("look-dim", (v) => ({ dim: clamp(Number(v) / 100, 0, 0.7, 0) }));
+  bindLook("look-blur", (v) => ({ blur: clamp(Number(v), 0, 24, 11) }));
+  bindLook("look-panel", (v) => ({ panelAlpha: clamp(Number(v) / 100, 0.3, 0.98, 0.72) }));
+  bindLook("look-card", (v) => ({ cardAlpha: clamp(Number(v) / 100, 0.4, 1, 0.82) }));
+  bindLook("look-radius", (v) => ({ radius: clamp(Number(v), 0, 24, 12) }));
+  bindLook("tint-hue", (v) => ({ hue: clamp(Number(v), 0, 360, 205), tintAuto: false }));
+  bindLook("tint-sat", (v) => ({ sat: clamp(Number(v), 0, 20, 9), tintAuto: false }));
+  $("tint-auto").addEventListener("change", () => {
+    setLook({ tintAuto: $("tint-auto").checked });
+  });
+  $("look-reset").addEventListener("click", () => setLook({ ...DEFAULT_LOOK }));
+
+  // wall editor
+  $("wall-editor-close").addEventListener("click", closeWallEditor);
+  $("wall-editor-reset").addEventListener("click", resetWallFrame);
+  $("wall-zoom").addEventListener("input", () => editWall({ scale: clampScale($("wall-zoom").value) }));
+  const stage = $("wall-stage");
+  stage.addEventListener("pointerdown", (event) => {
+    if (!editor.image) return;
+    stage.setPointerCapture(event.pointerId);
+    const move = (moveEvent) => {
+      const rect = stage.getBoundingClientRect();
+      const cover = stageCover(stage, editor.image);
+      const slackX = Math.max(cover.width - rect.width, 0);
+      const slackY = Math.max(cover.height - rect.height, 0);
+      const dx = -((moveEvent.clientX - rect.left) / rect.width - clamp01(theme.fx)) * slackX / (cover.width || 1);
+      const dy = -((moveEvent.clientY - rect.top) / rect.height - clamp01(theme.fy)) * slackY / (cover.height || 1);
+      setWallFocus(clamp01(theme.fx + dx), clamp01(theme.fy + dy));
+    };
+    const up = () => {
+      stage.removeEventListener("pointermove", move);
+      stage.removeEventListener("pointerup", up);
+    };
+    stage.addEventListener("pointermove", move);
+    stage.addEventListener("pointerup", up);
+  });
+
+  // dups drawer
+  $("dups-mode").addEventListener("click", (event) => {
+    const mode = event.target.closest("[data-dup-mode]");
+    if (!mode) return;
+    state.dupMode = mode.dataset.dupMode;
+    loadDuplicates(state.dupMode);
+  });
+  $("dups-smart").addEventListener("click", () => {
+    document.querySelectorAll("#dups-body .dup-group").forEach((group) => {
+      const keep = Number(group.dataset.keep) || 0;
+      group.querySelectorAll(".dup-pick").forEach((box) => {
+        box.checked = Number(box.value) !== keep;
+      });
+    });
+    updateActionButtons();
+    toast(t("dups.smartDone", { n: selectedDups().length }));
+  });
+  $("dups-select-all").addEventListener("click", () => {
+    document.querySelectorAll("#dups-body .dup-pick").forEach((box) => { box.checked = true; });
+    updateActionButtons();
+    toast(t("bulk.count", { n: selectedDups().length }));
+  });
+  $("dups-clear").addEventListener("click", () => {
+    document.querySelectorAll("#dups-body .dup-pick").forEach((box) => { box.checked = false; });
+    updateActionButtons();
+    toast(t("bulk.nothing"));
+  });
+  $("dups-delete").addEventListener("click", () => deleteIds(selectedDups()));
+  $("dups-body").addEventListener("click", (event) => {
+    const reveal = event.target.closest("[data-reveal]");
+    if (reveal) openFile(reveal.dataset.reveal, true);
+  });
+
+  // results interactions (delegated)
+  $("content").addEventListener("click", (event) => {
+    const pick = event.target.closest("[data-pick]");
+    if (pick) { togglePick(pick.dataset.pick, pick.checked); return; }
+    // The drop buttons live INSIDE clickable rows: they must be matched before
+    // the row's own data-open / data-saved-run, or the × runs the search
+    // instead of removing the entry.
+    const unpin = event.target.closest("[data-unpin]");
+    if (unpin) { togglePin(Number(unpin.dataset.unpin), false); return; }
+    const savedDrop = event.target.closest("[data-saved-drop]");
+    if (savedDrop) { dropSaved(savedDrop.dataset.savedDrop); return; }
+    const open = event.target.closest("[data-open]");
+    if (open) { openFile(open.dataset.open, false); return; }
+    const reveal = event.target.closest("[data-reveal]");
+    if (reveal) { openFile(reveal.dataset.reveal, true); return; }
+    const preview = event.target.closest("[data-preview]");
+    if (preview) { openPreview(Number(preview.dataset.preview)); return; }
+    const similar = event.target.closest("[data-similar]");
+    if (similar) { openSimilar(Number(similar.dataset.similar)); return; }
+    const pin = event.target.closest("[data-pin]");
+    if (pin) { togglePin(Number(pin.dataset.pin)); return; }
+    const tagAdd = event.target.closest("[data-tag-add]");
+    if (tagAdd) { openAnnotate("tag", [Number(tagAdd.dataset.tagAdd)]); return; }
+    const collAdd = event.target.closest("[data-collection-add]");
+    if (collAdd) { openAnnotate("collection", [Number(collAdd.dataset.collectionAdd)]); return; }
+    const why = event.target.closest("[data-why]");
+    if (why) { openWhy(Number(why.dataset.why)); return; }
+    const group = event.target.closest("[data-group]");
+    if (group) { toggleGroup(group); return; }
+    const tagRun = event.target.closest("[data-tag-run]");
+    if (tagRun) { runToken(`tag:"${tagRun.dataset.tagRun}"`); return; }
+    const savedRun = event.target.closest("[data-saved-run]");
+    if (savedRun) {
+      $("q").value = savedRun.dataset.savedRun;
+      runSearch();
+      return;
+    }
+    const annotateRun = event.target.closest("[data-annotate-run]");
+    if (annotateRun) { submitAnnotate("tag", annotateRun.dataset.annotateRun); return; }
+    const annotateColl = event.target.closest("[data-annotate-collection]");
+    if (annotateColl) { submitAnnotate("collection", annotateColl.dataset.annotateCollection); return; }
+    const card2 = event.target.closest(".gcard");
+    if (card2) selectCard(Number(card2.dataset.index));
+    if (!event.target.closest("#annotate")) closeAnnotate();
+  });
+
+  // preview modal
+  $("preview-close").addEventListener("click", closePreview);
+  $("preview").addEventListener("click", (event) => {
+    if (event.target === $("preview")) closePreview();
+  });
+  $("preview-body").addEventListener("click", (event) => {
+    const open = event.target.closest("[data-open]");
+    if (open) { openFile(open.dataset.open, false); return; }
+    const reveal = event.target.closest("[data-reveal]");
+    if (reveal) { openFile(reveal.dataset.reveal, true); return; }
+    const similar = event.target.closest("[data-similar]");
+    if (similar) { openSimilar(Number(similar.dataset.similar)); return; }
+    const copy = event.target.closest("[data-copy-path]");
+    if (copy) { copyText(copy.dataset.copyPath); return; }
+    const pin = event.target.closest("[data-pin]");
+    if (pin) togglePin(Number(pin.dataset.pin));
+  });
+
+  // similar modal
+  $("modal-close").addEventListener("click", () => $("modal").classList.remove("open"));
+  $("modal").addEventListener("click", (event) => {
+    if (event.target === $("modal")) $("modal").classList.remove("open");
+    const similarOpen = event.target.closest(".similar-row[data-open]");
+    if (similarOpen) {
+      $("modal").classList.remove("open");
+      openFile(similarOpen.dataset.open, false);
+      return;
+    }
+    const shotEl = event.target.closest("[data-preview]");
+    if (shotEl) {
+      $("modal").classList.remove("open");
+      openPreview(Number(shotEl.dataset.preview));
+    }
+  });
+
+  // settings modal: the gear opens About/language; the sliders icon opens the drawer
+  $("settings-gear").addEventListener("click", () => setSettings(true));
+  $("settings-close").addEventListener("click", () => setSettings(false));
+  $("settings").addEventListener("click", (event) => {
+    if (event.target === $("settings")) setSettings(false);
+  });
+  $("settings-tabs").addEventListener("click", (event) => {
+    const tab = event.target.closest("[data-tab]");
+    if (!tab) return;
+    document.querySelectorAll(".settings-tab").forEach((node) => {
+      node.classList.toggle("active", node.dataset.tab === tab.dataset.tab);
+    });
+    document.querySelectorAll(".settings-pane").forEach((node) => {
+      node.classList.toggle("active", node.dataset.pane === tab.dataset.tab);
+    });
+  });
+  document.body.addEventListener("click", (event) => {
+    // The annotate popover lives outside #content, so its chips need a
+    // document-level listener — the one on #content never sees them.
+    const tagRun = event.target.closest("[data-annotate-run]");
+    if (tagRun) { submitAnnotate("tag", tagRun.dataset.annotateRun); return; }
+    const collRun = event.target.closest("[data-annotate-collection]");
+    if (collRun) { submitAnnotate("collection", collRun.dataset.annotateCollection); return; }
+    const lang = event.target.closest("[data-lang]");
+    if (!lang) return;
+    if (setLang(lang.dataset.lang)) {
+      paintLang();
+      paintSince();
+      if (state.query) renderResults({ hits: state.hits }, false);
+      else renderIdle();
+    }
+  });
+  $("replay-onboarding").addEventListener("click", replayOnboarding);
+
+  // bulk bar
+  $("bulk-pin").addEventListener("click", async () => {
+    const ids = [...state.picked];
+    if (!ids.length) return;
+    try {
+      await api("/api/pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, pinned: true }),
+      });
+      for (const id of ids) {
+        const hit = state.hits.find((item) => item.file_id === id);
+        if (hit) hit.pinned = true;
+      }
+      document.querySelectorAll("[data-pin]").forEach((star) => {
+        if (state.picked.has(Number(star.dataset.pin))) star.classList.add("on");
+      });
+      toast(t("bulk.pinned", { n: ids.length }));
+      state.picked.clear();
+      updateBulkBar();
+      if (state.query) renderResults({ hits: state.hits }, false);
+    } catch (error) {
+      toast(t("toast.failed", { error: error.message }));
+    }
+  });
+  $("bulk-tag").addEventListener("click", () => openAnnotate("tag", [...state.picked]));
+  $("bulk-collection").addEventListener("click", () => openAnnotate("collection", [...state.picked]));
+  $("bulk-copy").addEventListener("click", () => {
+    const rows = state.hits.filter((hit) => state.picked.has(hit.file_id));
+    if (!rows.length) { toast(t("bulk.nothing")); return; }
+    copyText(rows.map((hit) => hit.path).join("\n"));
+  });
+  $("bulk-export").addEventListener("click", exportSelectionCsv);
+  $("bulk-clear").addEventListener("click", () => {
+    state.picked.clear();
+    document.querySelectorAll(".card-pick").forEach((box) => { box.checked = false; });
+    document.querySelectorAll(".gcard.picked").forEach((node) => node.classList.remove("picked"));
+    updateBulkBar();
+  });
+
+  // annotate popover: it lives outside #content, so it wires its own clicks
+  $("annotate-close").addEventListener("click", closeAnnotate);
+  $("annotate-body").addEventListener("click", (event) => {
+    const run = event.target.closest("[data-annotate-run]");
+    if (run) { submitAnnotate("tag", run.dataset.annotateRun); return; }
+    const collection = event.target.closest("[data-annotate-collection]");
+    if (collection) submitAnnotate("collection", collection.dataset.annotateCollection);
+  });
+
+  // welcome screen (the boot screen hands off to it on a first run)
+  $("onboard-skip").addEventListener("click", finishOnboarding);
+  $("onboard-done").addEventListener("click", finishOnboarding);
+  $("ob-import").addEventListener("click", importKensaku);
+  $("ob-import-scan").addEventListener("click", scanKensaku);
+  $("ob-autostart").addEventListener("change", toggleAutostart);
+  $("ob-index").addEventListener("click", startOnboardingIndex);
+
+  // help overlay
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "?" && !event.target.closest("input, textarea")) {
+      const help = $("help-overlay");
+      help.hidden = !help.hidden;
+    }
+  });
+  document.querySelector(".help-close").addEventListener("click", () => {
+    $("help-overlay").hidden = true;
+  });
+}
+
+/* keyboard navigation over the results */
+
+function selectCard(index) {
+  state.selected = index;
+  document.querySelectorAll(".gcard.selected").forEach((node) => node.classList.remove("selected"));
+  const node = document.querySelector(`.gcard[data-index="${index}"]`);
+  if (node) {
+    node.classList.add("selected");
+    node.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function selectedHit() {
+  return visibleHits()[state.selected] || null;
+}
+
+function paintKindChips() {
+  document.querySelectorAll(".chip[data-kind]").forEach((chip) => {
+    chip.classList.toggle("active", chip.dataset.kind === state.kind);
+  });
+}
+
+function openSort(open) {
+  $("sort-menu").hidden = !open;
+  $("sort-btn").setAttribute("aria-expanded", String(open));
+}
+
+function runToken(token) {
+  const input = $("q");
+  input.value = `${input.value} ${token}`.trim();
+  runSearch();
+  input.focus();
+}
+
+async function toggleGroup(button) {
+  const cardNode = button.closest(".gcard");
+  const existing = cardNode.parentElement.querySelector(`.group-list[data-for="${button.dataset.group}"]`);
+  if (existing) { existing.remove(); button.classList.remove("open"); return; }
+  const hit = visibleHits()[Number(cardNode.dataset.index)];
+  if (!hit || !hit.group_members || !hit.group_members.length) return;
+  button.classList.add("open");
+  const list = document.createElement("div");
+  list.className = "group-list";
+  list.dataset.for = button.dataset.group;
+  list.innerHTML = `<p class="settings-note">${esc(t("status.checking"))}</p>`;
+  cardNode.parentElement.appendChild(list);
+  const rows = await Promise.all(
+    hit.group_members.slice(0, 24).map((id) =>
+      api(`/api/preview?id=${id}&chars=0`).catch(() => null)),
+  );
+  list.innerHTML = rows.filter(Boolean).map((row) => `
+    <div class="group-row">
+      <button class="g-name" data-open="${row.file_id}">${esc(row.name)}</button>
+      <span class="g-meta">${fmtSize(row.size)} · ${fmtDate(row.mtime)}</span>
+      <button class="gact" data-reveal="${row.file_id}">${esc(t("card.folder"))}</button>
+    </div>`).join("");
 }
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") skipBoot();
-}, true);
-document.addEventListener("click", (event) => {
-  if (event.target.closest("#boot")) skipBoot();
-}, true);
+  const inField = Boolean(event.target.closest("input, textarea, select"));
+  // Escape closes the topmost layer: boot, onboard, modals, drawers, popovers.
+  if (event.key === "Escape") {
+    if ($("boot")) { skipBoot(); return; }
+    if (!$("annotate").hidden) { closeAnnotate(); return; }
+    if ($("preview").classList.contains("open")) { closePreview(); return; }
+    if ($("modal").classList.contains("open")) { $("modal").classList.remove("open"); return; }
+    if ($("settings").classList.contains("open")) { setSettings(false); return; }
+    if ($("wall-editor").classList.contains("open")) { closeWallEditor(); return; }
+    if ($("dups-drawer").classList.contains("open")) { setDups(false); return; }
+    if ($("panel").classList.contains("open")) { setPanel(false); return; }
+    if (!$("help-overlay").hidden) { $("help-overlay").hidden = true; return; }
+    return;
+  }
+  if (inField) return;
+  const chord = chordOfEvent(event);
+  const action = actionForChord(chord);
+  if (["next", "prev", "open", "reveal", "preview", "select"].includes(action)) {
+    const delta = action === "next" ? 1 : action === "prev" ? -1 : 0;
+    if (delta) selectCard(state.selected < 0 ? 0 : Math.min(state.selected + delta, state.hits.length - 1));
+    if (action === "open" && selectedHit()) openFile(selectedHit().file_id, false);
+    if (action === "reveal" && selectedHit()) openFile(selectedHit().file_id, true);
+    if (action === "preview" && selectedHit()) openPreview(selectedHit().file_id);
+    if (action === "select" && selectedHit()) togglePick(selectedHit().file_id, !state.picked.has(selectedHit().file_id));
+    event.preventDefault();
+    return;
+  }
+  if (runHotkey(action)) event.preventDefault();
+});
+
+/* ============================================================ convenience UI
+   Everything below rides on endpoints that already exist in core/api.py:
+   /api/search, /api/preview, /api/ocr-boxes, /api/note, /api/notes,
+   /api/similar, /api/audit, /api/self-test, /api/log, /api/health,
+   /api/watch, /api/index, /api/collections. No new route is required. */
+
+function noteNaturalDate(changes) {
+  const host = $("meta");
+  if (!host || !changes.length) return;
+  host.querySelector(".natdate-note")?.remove();
+  const note = document.createElement("span");
+  note.className = "natdate-note";
+  note.textContent = ui("natdate.note", { phrase: changes[0].phrase, token: changes[0].token });
+  host.after(note);
+  setTimeout(() => note.remove(), 6000);
+}
+
+/* ------------------------------------------------- 1/2: tokens and chips */
+
+function folderFromQuery() {
+  const token = filterTokens(state.query).find((item) => item.kind === "in" || item.kind === "path");
+  return token && token.value ? token.value : "";
+}
+
+function renderQueryChips() {
+  const host = $("query-chips");
+  if (!host) return;
+  const chips = [...(state.chips || [])];
+  const seen = new Set(chips.map((chip) => chip.raw));
+  for (const token of filterTokens(state.query)) {
+    if (!seen.has(token.raw)) {
+      chips.push({
+        kind: token.kind, value: token.value, label: token.raw,
+        raw: token.raw, source: token.raw,
+      });
+    }
+  }
+  host._chips = chips;
+  host.innerHTML = `
+    <div class="query-tools">
+      <button class="mini-tool" id="undo-btn" type="button" title="${esc(ui("undo"))}" aria-label="${esc(ui("undo"))}">↶</button>
+      <button class="mini-tool" id="redo-btn" type="button" title="${esc(ui("redo"))}" aria-label="${esc(ui("redo"))}">↷</button>
+      <input class="within-input" id="within-input" type="search" spellcheck="false"
+             placeholder="${esc(ui("within.placeholder"))}" value="${esc(state.withinText)}">
+      <span class="within-count" id="within-count"></span>
+      <button class="mini-tool reindex-folder" id="reindex-folder-btn" type="button"
+              title="${esc(ui("reindexFolder"))}" hidden>↻ ${esc(ui("reindexFolder"))}</button>
+    </div>
+    ${chips.length ? `<div class="chip-row">${chips.map((chip, index) => `
+      <span class="filter-chip" data-chip="${index}" title="${esc(ui("chip.title"))}">
+        <span class="chip-label" data-chip-edit="${index}">${esc(chip.label || chip.raw || `${chip.kind}:${chip.value}`)}</span>
+        <button class="chip-x" type="button" data-chip-remove="${index}" aria-label="remove">×</button>
+      </span>`).join("")}</div>` : ""}`;
+  host.hidden = false;
+  updateUndoButtons();
+  updateWithinCount();
+  const reindex = $("reindex-folder-btn");
+  if (reindex) reindex.hidden = !folderFromQuery();
+}
+
+function applyWithin(value) {
+  state.withinText = String(value || "");
+  // Re-render only the cards. Rebuilding the toolbar would drop focus from the
+  // input on every keystroke, which makes "search within results" unusable.
+  const grid = $("content")?.querySelector(".results-grid");
+  if (grid) {
+    const view = visibleHits();
+    grid.innerHTML = view.map((hit, index) => card(hit, index, index)).join("");
+    paintOcrBoxes();
+    hydrateDocThumbs();
+  }
+  updateWithinCount();
+}
+
+function updateWithinCount() {
+  const el = $("within-count");
+  if (el) el.textContent = ui("within.count", { n: visibleHits().length, total: state.hits.length });
+}
+
+/* ------------------------------------------------ 19: undo / redo filters */
+
+function pushFilterHistory(query) {
+  const stack = state.filterStack;
+  if (stack[state.filterPos] === query) return;
+  stack.splice(state.filterPos + 1);
+  stack.push(query);
+  if (stack.length > 60) stack.shift();
+  state.filterPos = stack.length - 1;
+  updateUndoButtons();
+}
+
+function updateUndoButtons() {
+  const undo = $("undo-btn");
+  const redo = $("redo-btn");
+  if (undo) undo.disabled = state.filterPos <= 0;
+  if (redo) redo.disabled = state.filterPos >= state.filterStack.length - 1;
+}
+
+function applyFilterAt(position) {
+  const query = state.filterStack[position] || "";
+  $("q").value = query;
+  updateUndoButtons();
+  runSearch();
+}
+
+function undoFilter() {
+  if (state.filterPos > 0) applyFilterAt(state.filterPos - 1);
+}
+
+function redoFilter() {
+  if (state.filterPos < state.filterStack.length - 1) applyFilterAt(state.filterPos + 1);
+}
+
+/* ---------------------------------------------- 4: history with context */
+
+const HISTORY_KEY = "af.query-history";
+
+function loadHistory() {
+  if (!state.queryLog.length) state.queryLog = storageGet(HISTORY_KEY, []) || [];
+  return state.queryLog;
+}
+
+function recordHistory(query, count) {
+  if (!query) return;
+  const list = loadHistory();
+  const last = list[0];
+  if (last && last.query === query) {
+    last.time = Date.now();
+    last.count = count || 0;
+  } else {
+    list.unshift({ query, time: Date.now(), count: count || 0, opened: "" });
+  }
+  state.queryLog = list.slice(0, 40);
+  storageSet(HISTORY_KEY, state.queryLog);
+  renderHistory();
+}
+
+function openedInHistory(name) {
+  const list = loadHistory();
+  if (!list.length || !name) return;
+  if (list[0].opened === name) return;
+  list[0].opened = name;
+  storageSet(HISTORY_KEY, list);
+  renderHistory();
+}
+
+function renderHistory() {
+  const host = $("history-list");
+  if (!host) return;
+  const list = loadHistory();
+  host.innerHTML = list.length
+    ? list.map((item, index) => `
+      <div class="history-row" data-history-run="${esc(item.query)}">
+        <span class="h-query">${esc(item.query)}</span>
+        <span class="h-meta">${esc(new Date(item.time).toLocaleString())} · ${esc(ui("history.count", { n: item.count }))}${
+          item.uses ? ` · ×${item.uses}` : ""
+        }${
+          item.opened ? ` · ${esc(ui("history.opened", { name: item.opened }))}` : ""
+        }</span>
+        <button class="row-x" type="button" data-history-drop="${index}" aria-label="remove">×</button>
+      </div>`).join("")
+    : `<p class="settings-note">${esc(ui("history.empty"))}</p>`;
+}
+
+function clearHistory() {
+  state.queryLog = [];
+  storageSet(HISTORY_KEY, []);
+  renderHistory();
+}
+
+/* Context the server cannot know (result count, what was opened) lives in
+   localStorage; the query list itself comes from /api/history. */
+async function loadServerHistory() {
+  try {
+    const data = await api("/api/history?limit=20");
+    const local = loadHistory();
+    const byQuery = new Map(local.map((item) => [item.query, item]));
+    const merged = (data.history || []).map((item) => {
+      const own = byQuery.get(item.query) || {};
+      return {
+        query: item.query,
+        time: (item.at || 0) * 1000 || own.time || Date.now(),
+        count: own.count || 0,
+        opened: own.opened || "",
+        uses: item.uses || 0,
+      };
+    });
+    for (const item of local) {
+      if (!merged.some((entry) => entry.query === item.query)) merged.push(item);
+    }
+    state.queryLog = merged.slice(0, 40);
+    renderHistory();
+  } catch (error) {
+    /* the local log is still a complete history */
+  }
+}
+
+/* ------------------------------------------- 14: reindex current folder */
+
+async function reindexFolder() {
+  const folder = folderFromQuery();
+  if (!folder) { toast(ui("reindex.noFolder")); return; }
+  try {
+    await api("/api/index", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roots: [folder], prune: false }),
+    });
+    toast(ui("reindex.started"));
+    pollJob();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+/* ------------------------------------------------- 5: hover preview */
+
+function wireHover() {
+  const host = $("hover-preview");
+  const content = $("content");
+  if (!host || !content) return;
+  const hide = () => { clearTimeout(state.hoverTimer); host.hidden = true; };
+  content.addEventListener("mouseover", (event) => {
+    const cardNode = event.target.closest(".gcard");
+    if (!cardNode || cardNode.contains(event.relatedTarget)) return;
+    const id = Number(cardNode.dataset.file || 0);
+    if (!id) return;
+    clearTimeout(state.hoverTimer);
+    state.hoverId = id;
+    state.hoverTimer = setTimeout(() => showHover(id, cardNode), 380);
+  });
+  content.addEventListener("mouseout", (event) => {
+    const cardNode = event.target.closest(".gcard");
+    if (!cardNode || cardNode.contains(event.relatedTarget)) return;
+    hide();
+  });
+  host.addEventListener("mouseenter", () => clearTimeout(state.hoverTimer));
+  host.addEventListener("mouseleave", hide);
+}
+
+async function showHover(id, cardNode) {
+  const host = $("hover-preview");
+  if (!host || id !== state.hoverId || !cardNode.isConnected) return;
+  try {
+    const data = await api(`/api/preview?id=${id}&chars=500`);
+    if (id !== state.hoverId) return;
+    const body = data.image
+      ? `${data.image.thumb ? `<img class="hv-thumb" src="${data.image.thumb}" alt="">` : ""}
+         ${data.image.ocr ? `<div class="hv-text">${highlight(String(data.image.ocr).slice(0, 300), state.query, 2)}</div>` : ""}`
+      : `<div class="hv-text">${highlight(String(data.text || "").slice(0, 600), state.query, 2)}</div>`;
+    host.innerHTML = `<div class="hv-head">${esc(data.name || "")}</div>${body}`;
+    const rect = cardNode.getBoundingClientRect();
+    host.hidden = false;
+    const left = Math.min(rect.right + 12, window.innerWidth - host.offsetWidth - 12);
+    const top = Math.min(Math.max(rect.top, 12), window.innerHeight - host.offsetHeight - 12);
+    host.style.left = `${Math.max(12, left)}px`;
+    host.style.top = `${Math.max(12, top)}px`;
+  } catch (error) {
+    /* A hover preview is best-effort: a failed request must never flash. */
+  }
+}
+
+/* ------------------------------------- 7/16: OCR words and notes in preview */
+
+function ocrWords(text, query) {
+  return String(text || "").split(/(\s+)/).map((part) => {
+    if (/^\s+$/.test(part)) return esc(part);
+    const word = part.replace(/[^\w\u0430-\u044f\u0451\u0410-\u042f\u04010-9_-]/g, "");
+    return `<button class="ocr-word" type="button" data-ocr-word="${esc(word)}">${highlight(part, query, 2)}</button>`;
+  }).join("");
+}
+
+function notesEditor(fileId) {
+  return `<div class="note-editor" data-note-id="${fileId}">
+    <div class="note-head"><b>${esc(ui("notes.label"))}</b>
+      <button class="btn mini primary" type="button" data-note-save="${fileId}">${esc(ui("notes.save"))}</button></div>
+    <textarea class="note-input" id="note-input" rows="3" spellcheck="false"
+              placeholder="${esc(ui("notes.placeholder"))}">${esc(state.noteText || "")}</textarea>
+  </div>`;
+}
+
+async function loadNoteInto(fileId) {
+  try {
+    const data = await api(`/api/notes?ids=${fileId}`);
+    const map = data.notes || {};
+    const raw = map[String(fileId)] ?? map[fileId] ?? "";
+    state.noteText = typeof raw === "string" ? raw : (raw.text || "");
+    const area = $("note-input");
+    const editor = $("preview-body")?.querySelector(`[data-note-id="${fileId}"]`);
+    if (area && editor) area.value = state.noteText;
+  } catch (error) {
+    state.noteText = "";
+  }
+}
+
+async function saveNote(fileId) {
+  const area = $("note-input");
+  const text = area ? area.value : "";
+  try {
+    await api("/api/note", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: fileId, text }),
+    });
+    state.noteText = text;
+    toast(ui("notes.saved"));
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+/* ------------------------------------------------ 11: tag chip dropdown */
+
+function closeTagMenus() {
+  document.querySelectorAll(".tag-dropdown").forEach((node) => node.remove());
+  document.querySelectorAll("[data-tag-menu][aria-expanded='true']")
+    .forEach((node) => node.setAttribute("aria-expanded", "false"));
+}
+
+function toggleTagMenu(cardNode, id) {
+  const existing = cardNode.querySelector(".tag-dropdown");
+  if (existing) { closeTagMenus(); return; }
+  closeTagMenus();
+  const menu = document.createElement("div");
+  menu.className = "tag-dropdown";
+  menu.innerHTML = `
+    <div class="tag-dd-head">${esc(ui("tag.recent"))}</div>
+    <div class="tag-dd-chips">${(state.metaTags || []).slice(0, 12).map((tag) =>
+      `<button class="tag-chip" type="button" data-tag-run="${esc(tag)}">#${esc(tag)}</button>`).join("")
+      || `<p class="settings-note">—</p>`}</div>
+    <div class="tag-dd-add"><input class="tag-dd-input" spellcheck="false"
+      placeholder="${esc(ui("tag.new"))}" aria-label="${esc(ui("tag.new"))}">
+      <button class="btn mini primary" type="button" data-tag-new="${id}">+</button></div>`;
+  cardNode.appendChild(menu);
+  const trigger = cardNode.querySelector(`[data-tag-menu="${id}"]`);
+  if (trigger) trigger.setAttribute("aria-expanded", "true");
+  menu.querySelector("input")?.focus();
+}
+
+/* --------------------------------------- 21: regex builder + live preview */
+
+let regexTimer = 0;
+
+function regexFlags() {
+  return [...document.querySelectorAll("#regex-flags input:checked")].map((box) => box.value).join("");
+}
+
+function liveRegexSearch(pattern) {
+  const host = $("regex-live");
+  if (!host) return;
+  clearTimeout(regexTimer);
+  if (!pattern) { host.textContent = ""; return; }
+  regexTimer = setTimeout(async () => {
+    host.textContent = ui("logs.running");
+    try {
+      const q = `re:"${String(pattern).replace(/"/g, "")}"`;
+      const data = await api(`/api/search?q=${encodeURIComponent(q)}&limit=5`);
+      const count = Number(data.total || 0);
+      host.innerHTML = `<b>${esc(ui("regex.matchCount", { n: count }))}</b>` +
+        (data.hits || []).slice(0, 5).map((hit) =>
+          `<div class="regex-hit" data-open="${hit.file_id}">${esc(hit.name)}</div>`).join("");
+    } catch (error) {
+      host.textContent = ui("regex.noMatches");
+    }
+  }, 320);
+}
+
+function paintRegexSample() {
+  const pattern = $("regex-pattern")?.value || "";
+  const sample = $("regex-sample")?.value || "";
+  const view = $("regex-sample-view");
+  if (!view) return;
+  if (!pattern) { view.textContent = ""; liveRegexSearch(""); return; }
+  let re;
+  try { re = new RegExp(pattern, `${regexFlags()}g`); }
+  catch (error) {
+    view.innerHTML = `<span class="regex-error">${esc(error.message)}</span>`;
+    liveRegexSearch("");
+    return;
+  }
+  let html = "";
+  let last = 0;
+  let count = 0;
+  let match;
+  while ((match = re.exec(sample))) {
+    if (match[0] === "") { re.lastIndex += 1; continue; }
+    html += esc(sample.slice(last, match.index)) + `<mark>${esc(match[0])}</mark>`;
+    last = match.index + match[0].length;
+    if (++count > 200) break;
+  }
+  html += esc(sample.slice(last));
+  view.innerHTML = html || "<span class='regex-dim'>—</span>";
+  liveRegexSearch(pattern);
+}
+
+function openRegexBuilder(open) {
+  const box = $("regex-builder");
+  if (!box) return;
+  box.hidden = !open;
+  $("regex-open").setAttribute("aria-expanded", String(open));
+  if (open) paintRegexSample();
+}
+
+/* --------------------------------- 13: watcher status / index freshness */
+
+async function refreshFreshness() {
+  const badge = $("fresh-badge");
+  if (!badge) return;
+  try {
+    const [watch, health] = await Promise.all([api("/api/watch"), api("/api/health")]);
+    const watching = watch && watch.running ? ui("fresh.watching") : ui("fresh.off");
+    const age = health && health.last_index_age_s != null
+      ? ui("fresh.age", { age: fmtAge(health.last_index_age_s) })
+      : ui("fresh.unknown");
+    badge.textContent = `${watching} · ${age}`;
+    badge.classList.toggle("on", Boolean(watch && watch.running));
+    badge.hidden = false;
+  } catch (error) {
+    badge.hidden = true;
+  }
+}
+
+/* -------------------------- 22/23: smart collections and drop targets */
+
+function renderSmartCollections() {
+  const host = $("smart-list");
+  if (!host) return;
+  const saved = (state.personal && state.personal.saved) || [];
+  host.innerHTML = saved.length
+    ? saved.map((item) => `
+      <div class="smart-row" data-saved-run="${esc(item.query)}" title="${esc(item.query)}">
+        <span class="s-mark">★</span>
+        <span class="s-q">${esc(item.label || item.query)}</span>
+        <span class="s-used">${item.used || 0}</span>
+      </div>`).join("")
+    : `<p class="settings-note">${esc(ui("history.empty"))}</p>`;
+}
+
+function renderCollectionTargets() {
+  const host = $("collection-targets");
+  if (!host) return;
+  host.innerHTML = (state.metaCollections || []).map((item) => `
+    <div class="collection-target" data-drop-collection="${item.id}">
+      <span>${esc(item.name || item.id)}</span><small>${item.count ?? ""}</small>
+    </div>`).join("") || `<p class="settings-note">${esc(t("annotate.empty"))}</p>`;
+}
+
+function wireDnD() {
+  document.addEventListener("dragstart", (event) => {
+    const cardNode = event.target.closest(".gcard[data-drag-file]");
+    if (!cardNode || !event.dataTransfer) return;
+    event.dataTransfer.setData("text/plain", cardNode.dataset.dragFile);
+    event.dataTransfer.effectAllowed = "copy";
+    cardNode.classList.add("dragging");
+  });
+  document.addEventListener("dragend", () => {
+    document.querySelectorAll(".gcard.dragging").forEach((node) => node.classList.remove("dragging"));
+    document.querySelectorAll(".collection-target.over").forEach((node) => node.classList.remove("over"));
+  });
+  const targets = $("collection-targets");
+  if (!targets) return;
+  targets.addEventListener("dragover", (event) => {
+    const target = event.target.closest("[data-drop-collection]");
+    if (!target) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    target.classList.add("over");
+  });
+  targets.addEventListener("dragleave", (event) => {
+    event.target.closest("[data-drop-collection]")?.classList.remove("over");
+  });
+  targets.addEventListener("drop", async (event) => {
+    const target = event.target.closest("[data-drop-collection]");
+    if (!target) return;
+    event.preventDefault();
+    target.classList.remove("over");
+    const fileId = Number(event.dataTransfer.getData("text/plain"));
+    if (!fileId) return;
+    try {
+      await api("/api/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "add", id: Number(target.dataset.dropCollection), ids: [fileId] }),
+      });
+      await loadMeta(true);
+      renderCollectionTargets();
+      toast(t("annotate.added", { n: 1 }));
+    } catch (error) {
+      toast(error.message);
+    }
+  });
+}
+
+/* ---------------- 12/18/24/25: exclusions, audit, logs, telemetry badge */
+
+/* The server owns index exclusions: GET/POST /api/exclusions are already in
+   core/api.py, so the editor writes real rules instead of a local imitation. */
+async function loadExclusions() {
+  try {
+    const data = await api("/api/exclusions");
+    state.exclusions = Array.isArray(data.exclusions) ? data.exclusions : [];
+  } catch (error) {
+    state.exclusions = [];
+  }
+  const area = $("exclusions-editor");
+  if (area) area.value = state.exclusions.join("\n");
+}
+
+async function saveExclusions() {
+  const patterns = ($("exclusions-editor")?.value || "")
+    .split("\n").map((line) => line.trim()).filter(Boolean);
+  try {
+    const data = await api("/api/exclusions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exclusions: patterns }),
+    });
+    state.exclusions = Array.isArray(data.exclusions) ? data.exclusions : patterns;
+    const area = $("exclusions-editor");
+    if (area) area.value = state.exclusions.join("\n");
+    toast(ui("exclusions.saved"));
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+/* 26: portable-mode indicator, from /api/portable. */
+async function renderPortableBadge() {
+  const badge = $("portable-badge");
+  if (!badge) return;
+  try {
+    const data = await api("/api/portable");
+    badge.textContent = ui(data.portable ? "portable.on" : "portable.off");
+    badge.classList.toggle("on", Boolean(data.portable));
+    badge.hidden = false;
+  } catch (error) {
+    badge.hidden = true;
+  }
+}
+
+async function renderAuditBreakdown() {
+  const host = $("audit-breakdown");
+  if (!host) return;
+  try {
+    const data = await api("/api/audit");
+    const rows = [
+      [t("audit.files"), data.files, data.total_bytes],
+      [t("audit.chunks"), data.chunks, 0],
+      [t("audit.images"), data.images, 0],
+      [t("audit.vectors"), data.vectors, 0],
+      [t("audit.pins"), data.personal?.pins || 0, 0],
+    ];
+    const max = Math.max(...rows.map((row) => Number(row[1]) || 0), 1);
+    host.innerHTML = rows.map(([label, value, bytes]) => `
+      <div class="breakdown-row">
+        <span>${esc(label)}</span>
+        <span class="breakdown-bar"><i style="width:${Math.max(2, Math.round((Number(value) || 0) / max * 100))}%"></i></span>
+        <b>${Number(value) || 0}${bytes ? ` · ${fmtSize(bytes)}` : ""}</b>
+      </div>`).join("");
+  } catch (error) {
+    host.innerHTML = `<p class="settings-note">${esc(error.message)}</p>`;
+  }
+}
+
+async function showSelfTest() {
+  const out = $("diag-output");
+  if (!out) return;
+  out.hidden = false;
+  out.textContent = ui("logs.running");
+  try {
+    const data = await api("/api/self-test");
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch (error) {
+    out.textContent = error.message;
+  }
+}
+
+async function showLog() {
+  const out = $("diag-output");
+  if (!out) return;
+  out.hidden = false;
+  out.textContent = ui("logs.running");
+  try {
+    const data = await api("/api/log?lines=200");
+    out.textContent = (data.lines || []).join("\n") || "(empty)";
+  } catch (error) {
+    out.textContent = error.message;
+  }
+}
+
+function renderTelemetryBadge() {
+  const badge = $("telemetry-badge");
+  if (badge) badge.textContent = ui("telemetry");
+}
+
+/* ------------------------------------------------------- event wiring */
+
+function wireFeatures() {
+  // Static labels for elements we cannot translate through i18n.js.
+  const labels = {
+    "regex-open": "regex.open", "regex-title": "regex.title",
+    "regex-pattern-label": "regex.pattern", "regex-sample-label": "regex.sample",
+    "history-title": "history.title", "history-clear": "history.clear",
+    "smart-title": "smart.title", "collections-title": "collections.title",
+    "exclusions-title": "exclusions.title", "exclusions-note": "exclusions.note",
+    "exclusions-editor": "exclusions.placeholder",
+    "audit-breakdown-title": "audit.title", "diagnostics-title": "logs.title",
+    "selftest-btn": "logs.selfTest", "logs-btn": "logs.viewLog",
+    "telemetry-badge": "telemetry",
+  };
+  for (const [id, key] of Object.entries(labels)) {
+    const node = $(id);
+    if (node) node.textContent = ui(key);
+  }
+
+  // Regex builder.
+  $("regex-open")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openRegexBuilder($("regex-builder").hidden);
+  });
+  $("regex-close")?.addEventListener("click", () => openRegexBuilder(false));
+  $("regex-insert")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-insert]");
+    if (!button) return;
+    const input = $("regex-pattern");
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    const text = button.dataset.insert.replace("…", "");
+    input.value = input.value.slice(0, start) + text + input.value.slice(end);
+    input.focus();
+    input.setSelectionRange(start + text.length, start + text.length);
+    paintRegexSample();
+  });
+  $("regex-pattern")?.addEventListener("input", paintRegexSample);
+  $("regex-sample")?.addEventListener("input", paintRegexSample);
+  $("regex-flags")?.addEventListener("change", paintRegexSample);
+  $("regex-live")?.addEventListener("click", (event) => {
+    const hit = event.target.closest("[data-open]");
+    if (hit) openFile(hit.dataset.open, false);
+  });
+
+  // Query toolbar: chips, undo/redo, within-results, folder reindex.
+  const bar = $("query-chips");
+  bar?.addEventListener("click", (event) => {
+    const chips = bar._chips || [];
+    const remove = event.target.closest("[data-chip-remove]");
+    if (remove) {
+      const chip = chips[Number(remove.dataset.chipRemove)];
+      if (chip) clearChip(chip.source || chip.raw);
+      return;
+    }
+    const edit = event.target.closest("[data-chip-edit]");
+    if (edit) {
+      const chip = chips[Number(edit.dataset.chipEdit)];
+      if (chip) {
+        const input = $("q");
+        input.focus();
+        const at = input.value.indexOf(chip.source || chip.raw);
+        if (at >= 0) input.setSelectionRange(at, at + (chip.source || chip.raw).length);
+      }
+      return;
+    }
+    if (event.target.closest("#undo-btn")) { undoFilter(); return; }
+    if (event.target.closest("#redo-btn")) { redoFilter(); return; }
+    if (event.target.closest("#reindex-folder-btn")) { reindexFolder(); return; }
+  });
+  bar?.addEventListener("input", (event) => {
+    if (event.target.id === "within-input") applyWithin(event.target.value);
+  });
+
+  // First-card pin and per-card tag dropdown.
+  $("content")?.addEventListener("click", (event) => {
+    const best = event.target.closest("[data-pin-best]");
+    if (best) { togglePin(Number(best.dataset.pinBest), true); return; }
+    const menu = event.target.closest("[data-tag-menu]");
+    if (menu) {
+      toggleTagMenu(menu.closest(".gcard"), Number(menu.dataset.tagMenu));
+      return;
+    }
+    const input = event.target.closest(".tag-dd-input");
+    if (input) return;
+    const newTag = event.target.closest("[data-tag-new]");
+    if (newTag) {
+      const value = newTag.parentElement.querySelector(".tag-dd-input")?.value.trim();
+      if (value) submitAnnotate("tag", value);
+    }
+  });
+
+  // OCR word click, note save.
+  $("preview-body")?.addEventListener("click", async (event) => {
+    const word = event.target.closest("[data-ocr-word]");
+    if (word) {
+      const term = word.dataset.ocrWord;
+      if (!term) return;
+      const holder = $("preview-body").querySelector(".ocr-boxes");
+      try {
+        const data = await api(`/api/ocr-boxes?id=${state.previewId || currentPreviewId()}&q=${encodeURIComponent(term)}`);
+        paintBoxesInto(holder, data, term);
+      } catch (error) { /* keep the existing overlay */ }
+      return;
+    }
+    const save = event.target.closest("[data-note-save]");
+    if (save) saveNote(Number(save.dataset.noteSave));
+  });
+
+  // History rows in the drawer.
+  $("history-list")?.addEventListener("click", (event) => {
+    const drop = event.target.closest("[data-history-drop]");
+    if (drop) {
+      const list = loadHistory();
+      list.splice(Number(drop.dataset.historyDrop), 1);
+      state.queryLog = list;
+      storageSet(HISTORY_KEY, list);
+      renderHistory();
+      return;
+    }
+    const run = event.target.closest("[data-history-run]");
+    if (run) {
+      $("q").value = run.dataset.historyRun;
+      runSearch();
+    }
+  });
+  $("history-clear")?.addEventListener("click", clearHistory);
+
+  // Settings: exclusions, diagnostics.
+  $("exclusions-save")?.addEventListener("click", saveExclusions);
+  $("selftest-btn")?.addEventListener("click", showSelfTest);
+  $("logs-btn")?.addEventListener("click", showLog);
+
+  // Dismiss layers on an outside click.
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".tag-dropdown, [data-tag-menu]")) closeTagMenus();
+    if (!event.target.closest("#regex-builder, #regex-open")) openRegexBuilder(false);
+  });
+
+  wireDnD();
+}
+
+/* The preview modal does not currently store its id, so fall back to the
+   clicked file id carried by its action buttons. */
+function currentPreviewId() {
+  const node = $("preview-body")?.querySelector("[data-open], [data-pin], [data-note-save]");
+  return Number(node?.dataset.open || node?.dataset.pin || node?.dataset.noteSave || 0);
+}
+
+/* --------------------------------------------------------------- init */
 
 applyStaticText();
 loadLook();
@@ -4635,13 +4316,37 @@ paintSince();
 renderIdle();
 wireWindowControls();
 loadStats();
-loadTypes().then(() => { renderTypes(); renderTypeTabs(); paintFilters(); });
-loadMeta().then(paintFilters);
+loadTypes().then(() => { renderTypes(); paintCustomChips(); });
+loadMeta().then(() => {
+  const datalist = $("filter-tag-list");
+  if (datalist) {
+    datalist.innerHTML = state.metaTags.map((tag) => `<option value="${esc(tag)}"></option>`).join("");
+  }
+  const collectionSelect = $("f-collection");
+  if (collectionSelect) {
+    collectionSelect.innerHTML = `<option value="">${esc(t("filters.any"))}</option>` +
+      state.metaCollections.map((collection) =>
+        `<option value="${esc(collection.name || collection.id)}">${esc(collection.name || collection.id)}</option>`).join("");
+  }
+  renderCollectionTargets();
+});
 loadHotkeys();
 startWatchPoll();
+loadExclusions();
+renderHistory();
+loadServerHistory();
+renderSmartCollections();
+renderCollectionTargets();
+refreshFreshness();
+setInterval(refreshFreshness, 30000);
+wireFeatures();
 api("/api/progress").then((job) => {
+  // A run that died on this boot must not greet the user with a green bar.
+  if (job.error) $("bar").style.background = "var(--red)";
   if (job.running) { $("index-btn").disabled = true; pollJob(); }
 });
+
+wire();
 
 const params = new URLSearchParams(location.search);
 const initial = params.get("q");
@@ -4654,7 +4359,5 @@ if (initial) {
 const initialPreview = params.get("preview");
 if (Number.isInteger(Number(initialPreview)) && Number(initialPreview) > 0) openPreview(Number(initialPreview));
 
-// A deep link is a request for a specific file, not a request for a greeting:
-// the splash would be in the way of the thing the link points at.
 if (initial || initialPreview) skipBoot();
 else boot();

@@ -76,9 +76,21 @@ def targets() -> list[Target]:
             if sys.platform == "darwin" else home / ".config" / "Claude" / "claude_desktop_config.json",
         ))
         found.append(Target("cursor", "Cursor", home / ".cursor" / "mcp.json"))
+    # A user-level target is deterministic; a bare Path(".vscode") is not — it
+    # silently follows whatever CWD the process had when targets() was called.
+    if sys.platform == "win32":
+        vscode_user = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming") / "Code" / "User"
+    elif sys.platform == "darwin":
+        vscode_user = home / "Library" / "Application Support" / "Code" / "User"
+    else:
+        vscode_user = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config") / "Code" / "User"
     found.append(Target(
-        "vscode", "VS Code (workspace)", Path(".vscode") / "mcp.json",
-        note="relative to the project you open",
+        "vscode-user", "VS Code (user)", vscode_user / "mcp.json",
+        note="available in every workspace",
+    ))
+    found.append(Target(
+        "vscode", "VS Code (workspace)", Path.cwd() / ".vscode" / "mcp.json",
+        note="resolved from the directory you run `autofind connect` in",
     ))
     return found
 

@@ -1,11 +1,30 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
+# PyInstaller exec()s the spec without __file__, but always defines SPECPATH.
+ROOT = Path(SPECPATH) if "SPECPATH" in globals() else Path.cwd()
 datas = [('web', 'web'), ('models/manifest.json', 'models')]
 binaries = []
 hiddenimports = ['clr', 'pypdf', 'docx', 'watchdog.observers']
+
+# Optional native hot path. Build it with `python native/build_native.py`
+# before packaging. If it is absent, core/indexer.py falls back to Python and
+# the shipped app behaves exactly as before.
+native_pyd = next(ROOT.glob('afnative*.pyd'), None)
+if native_pyd is not None:
+    binaries.append((str(native_pyd), '.'))
+    hiddenimports.append('afnative')
+# Native WebView2 shell: the frozen app opens its window through this Rust
+# binary (tens of ms to a visible window) instead of pywebview+pythonnet.
+# run.py finds it via sys._MEIPASS and sets AUTOFIND_FROZEN=1 so the shell
+# spawns `AutoFind.exe serve` for the backend.
+shell_exe = ROOT / 'shell-app' / 'target' / 'release' / 'autofind-shell.exe'
+if shell_exe.is_file():
+    binaries.append((str(shell_exe), '.'))
 # rapidocr 3.x: config yaml + the bundled `multi` recognition model. The
 # per-script models stay on demand (~8 MB each, downloaded on first use).
 datas += collect_data_files('rapidocr')

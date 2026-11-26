@@ -14,7 +14,6 @@ trade for a search tool that runs on a workstation.
 from __future__ import annotations
 
 import sys
-import time
 
 
 def seconds_idle() -> float | None:
