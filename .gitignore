@@ -40,3 +40,6 @@ shell-app/target-verify/
 native/target/
 .workbuddy-ai/
 .tastemaker/
+
+# One-off audit/benchmark reports: kept locally for the operator, never pushed.
+local-reports/
