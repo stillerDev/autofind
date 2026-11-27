@@ -136,5 +136,10 @@ check("selected titles turn green on every card",
   css.includes(".menu-style-card.on b") && css.includes(".mode-card.selected b") &&
   css.includes(".theme-card.selected span.label"));
 check("cards collapse to one column on narrow windows",
-  css.includes("@media (max-width: 640px)") &&
+  css.includes("@media (max-width: 460px)") &&
   css.includes(".theme-cards, .mode-cards, .menu-style-cards"));
+check("screens scroll with a quiet thin bar, not the fat default",
+  css.includes("::-webkit-scrollbar-thumb") && css.includes("scrollbar-width: thin") &&
+  css.includes("::-webkit-scrollbar-track { background: transparent; }"));
+check("the eye icon is replaced by the menu-layout tiles",
+  !html.includes('M2 12s3.5-6.5') && (html.match(/rx="1\.5"/g) || []).length === 12);

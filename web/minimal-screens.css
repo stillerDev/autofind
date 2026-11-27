@@ -173,6 +173,7 @@
   padding: 0 14px;
   border-radius: 999px;
   color: var(--text);
+  white-space: nowrap;
 }
 .set-bottom #settings-save-reindex, .set-bottom #launcher-back { background: var(--surface-hover); color: var(--muted); }
 .set-bottom #settings-save, .set-bottom #launcher-start { background: var(--surface-active); }
@@ -471,8 +472,22 @@ kbd {
 
 [data-theme="light"] .progress { background: #e9e9ed; }
 
-/* Narrow windows: choice cards stack instead of overflowing. */
-@media (max-width: 640px) {
+/* Screens scroll quietly: a thin surface-toned thumb on a transparent track
+   instead of the bright default bar. */
+.ln-page, .set-main, #launcher-screen {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-hover) transparent;
+}
+.ln-page::-webkit-scrollbar, .set-main::-webkit-scrollbar, #launcher-screen::-webkit-scrollbar { width: 8px; }
+.ln-page::-webkit-scrollbar-thumb, .set-main::-webkit-scrollbar-thumb, #launcher-screen::-webkit-scrollbar-thumb {
+  background: var(--surface-hover);
+  border-radius: 4px;
+}
+.ln-page::-webkit-scrollbar-track, .set-main::-webkit-scrollbar-track, #launcher-screen::-webkit-scrollbar-track { background: transparent; }
+
+/* Narrow windows: choice cards keep the wide two-column layout while it fits,
+   and stack only on genuinely small ones. */
+@media (max-width: 460px) {
   #settings-screen, #launcher-screen { padding: 18px 16px 84px; }
   .theme-cards, .mode-cards, .menu-style-cards { grid-template-columns: 1fr; }
 }
