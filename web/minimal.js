@@ -14,7 +14,15 @@ const state = {
   seq: 0,
   timer: 0,
   query: "",
+  overSettings: false,
+  pending: false,
 };
+
+// While the settings pane is open (or under the pointer) the result grid must
+// stay still: no requests, no repaint, no wheel scrolling through it.
+function searchSuspended() {
+  return state.overSettings || !$("settings-panel").hidden;
+}
 
 async function api(path) {
   const response = await fetch(path, { headers: { Accept: "application/json" } });
@@ -107,6 +115,8 @@ function normalise(data) {
 }
 
 async function load() {
+  if (searchSuspended()) { state.pending = true; return; }
+  state.pending = false;
   const seq = ++state.seq;
   const query = state.query.trim();
   const path = query
@@ -114,11 +124,11 @@ async function load() {
     : "/api/recent?limit=48";
   try {
     const data = await api(path);
-    if (seq !== state.seq) return;
+    if (seq !== state.seq || searchSuspended()) return;
     state.items = normalise(data);
     render();
   } catch (error) {
-    if (seq !== state.seq) return;
+    if (seq !== state.seq || searchSuspended()) return;
     state.items = [];
     render();
     $("status").textContent = `Ошибка: ${error.message}`;
@@ -189,8 +199,7 @@ function applyTheme(light) {
   const label = light ? "Тёмная тема" : "Светлая тема";
   button.setAttribute("aria-label", label);
   button.title = label;
-  button.querySelector(".icon-sun").hidden = light;
-  button.querySelector(".icon-moon").hidden = !light;
+  // The SVG stays the same in both modes; CSS only drops the rays in light.
 }
 
 function storedTheme() {
@@ -235,7 +244,21 @@ async function postJSON(path, payload) {
 function openSettings(open) {
   $("settings-panel").hidden = !open;
   if (open) loadSettings();
+  else if (state.pending) { state.pending = false; load(); }
 }
+
+$("settings-panel").addEventListener("mouseenter", () => {
+  state.overSettings = true;
+  clearTimeout(state.timer);
+});
+
+$("settings-panel").addEventListener("mouseleave", () => {
+  state.overSettings = false;
+  if (state.pending) { state.pending = false; load(); }
+});
+
+// Scrolling the settings list must never turn into scrolling the results.
+$("settings-panel").addEventListener("wheel", (event) => event.stopPropagation());
 
 async function loadSettings() {
   const [watch, autostart, privacy] = await Promise.all([
@@ -353,6 +376,7 @@ $("q").addEventListener("input", (event) => {
   state.query = event.target.value.trim();
   $("clear").hidden = !state.query;
   clearTimeout(state.timer);
+  if (searchSuspended()) { state.pending = true; return; }
   state.timer = setTimeout(load, 140);
 });
 
