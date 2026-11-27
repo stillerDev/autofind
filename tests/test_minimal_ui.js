@@ -36,3 +36,12 @@ check("keyboard navigation", ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp",
 check("html is escaped before innerHTML", js.includes("const esc = (value)"));
 check("reduced motion respected", css.includes("prefers-reduced-motion: reduce"));
 check("responsive grid", css.includes("grid-template-columns: repeat(auto-fill"));
+
+// Light theme toggle sits to the left of the gear and persists its choice.
+check("theme button exists", html.includes('id="theme-btn"'));
+check("theme button is labelled", html.includes('aria-label="Светлая тема"'));
+check("theme button has sun and moon icons",
+  html.includes('class="icon-sun"') && html.includes('class="icon-moon"'));
+check("theme button precedes gear", html.indexOf("theme-btn") < html.indexOf('id="gear"'));
+check("light theme tokens", css.includes('[data-theme="light"]'));
+check("theme choice is persisted", js.includes("autofind.minimal.theme"));

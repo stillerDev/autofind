@@ -178,6 +178,33 @@ function openMenu(open) {
   $("gear").setAttribute("aria-expanded", String(open));
 }
 
+/* ------------------------------------------------------------- light theme */
+
+const THEME_KEY = "autofind.minimal.theme";
+
+function applyTheme(light) {
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  const button = $("theme-btn");
+  button.setAttribute("aria-pressed", String(light));
+  const label = light ? "Тёмная тема" : "Светлая тема";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.querySelector(".icon-sun").hidden = light;
+  button.querySelector(".icon-moon").hidden = !light;
+}
+
+function storedTheme() {
+  try { return localStorage.getItem(THEME_KEY) === "light"; } catch (error) { return false; }
+}
+
+applyTheme(storedTheme());
+
+$("theme-btn").addEventListener("click", () => {
+  const light = document.documentElement.dataset.theme !== "light";
+  applyTheme(light);
+  try { localStorage.setItem(THEME_KEY, light ? "light" : "dark"); } catch (error) { /* session only */ }
+});
+
 /* ------------------------------------------------------------------ wiring */
 
 $("q").addEventListener("input", (event) => {

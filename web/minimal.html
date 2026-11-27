@@ -20,13 +20,27 @@
              placeholder="Искать везде" aria-label="Поиск по файлам">
       <button id="clear" class="clear" type="button" hidden aria-label="Очистить поиск">×</button>
     </div>
+    <button id="theme-btn" class="icon-btn" type="button" aria-label="Светлая тема"
+            aria-pressed="false" title="Светлая тема">
+      <svg class="icon-sun" viewBox="0 0 24 24" width="19" height="19" fill="none"
+           stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"></circle>
+        <path d="M12 2v2M12 20v2M22 12h-2M4 12H2M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4M19.1 19.1l-1.4-1.4M6.3 6.3 4.9 4.9"></path>
+      </svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" width="19" height="19" fill="none"
+           stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true" hidden>
+        <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"></path>
+      </svg>
+    </button>
     <div class="menu-anchor">
       <button id="gear" class="icon-btn" type="button" aria-label="Меню"
               aria-expanded="false" aria-controls="menu">
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06-2 2-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21h-2.8v-.1A1.7 1.7 0 0 0 10.9 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06-2-2 .06-.06A1.7 1.7 0 0 0 7.4 15a1.7 1.7 0 0 0-1.55-1H5.7v-2.8h.1A1.7 1.7 0 0 0 7.4 10.2a1.7 1.7 0 0 0-.34-1.87L7 8.27l2-2 .06.06A1.7 1.7 0 0 0 10.9 6.7a1.7 1.7 0 0 0 1-1.55V5h2.8v.1a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06 2 2-.06.06A1.7 1.7 0 0 0 19.4 10.2a1.7 1.7 0 0 0 1.55 1H21v2.8h-.1a1.7 1.7 0 0 0-1.5 1Z"></path>
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 2.8 20 7v10l-8 4.2L4 17V7l8-4.2Z"></path>
+          <circle cx="12" cy="12" r="3.3"></circle>
+          <path d="M12 2.8v5.9M20 7l-5 2.9M20 17l-5-2.9M12 21.2v-5.9M4 17l5-2.9M4 7l5 2.9"></path>
         </svg>
       </button>
       <div id="menu" class="menu" role="menu" aria-label="Меню" hidden>

@@ -17,7 +17,27 @@
   --ease: 140ms cubic-bezier(.2, .7, .3, 1);
 }
 
+/* Light mode keeps the same geometry and green signal, desaturated for the
+   brighter canvas. The sun button flips this attribute on <html>. */
+[data-theme="light"] {
+  --bg: #f4f4f6;
+  --surface: #e9e9ed;
+  --surface-hover: #dedee4;
+  --surface-active: #d5d5dd;
+  --border: #d3d3d9;
+  --text: #17171b;
+  --muted: #65656e;
+  --muted-dim: #7a7a84;
+  --green: #1f9d68;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+body, .thumb, .menu, .details, .statusbar, kbd {
+  transition: background-color 180ms cubic-bezier(.2, .7, .3, 1),
+              color 180ms cubic-bezier(.2, .7, .3, 1),
+              border-color 180ms cubic-bezier(.2, .7, .3, 1);
+}
 
 html, body { height: 100%; }
 
