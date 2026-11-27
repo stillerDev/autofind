@@ -25,10 +25,11 @@ for (const id of ["settings-screen", "launcher-screen", "idx-percent", "idx-coun
 }
 
 for (const label of ["Как должен открываться AutoFind?", "Сочетание открытия",
-                     "Начать индексацию", "Сохранить и переиндексировать",
-                     "03 / 03", "検索", "чтобы искать."]) {
+                     "Начать индексацию", "Сохранить и переиндексировать"]) {
   check(`screen copy: ${label}`, html.includes(label));
 }
+check("no copied launcher branding", !["03 / 03", "検索", "чтобы искать.", "Wayland",
+  "Всё остаётся на этом компьютере."].some((label) => html.includes(label)));
 
 for (const item of ["Общие", "Папки", "Исключения", "Поиск", "Семантический поиск",
                     "Агенты", "Состояние", "О программе"]) {

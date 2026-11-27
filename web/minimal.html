@@ -219,54 +219,41 @@
 </section>
 
 <section class="screen launcher" id="launcher-screen" hidden aria-label="Лаунчер">
-  <div class="launcher-left">
-    <span class="brand">AutoFind</span>
-    <div class="jp">検索</div>
-    <div class="tagline">чтобы искать.</div>
-    <span class="step">03 / 03</span>
-  </div>
-  <div class="launcher-right">
+  <div class="ln-card">
     <div class="ln-head">
+      <span class="ln-brand">AutoFind</span>
       <button type="button" id="launcher-theme" aria-label="Переключить тему">
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M22 12h-2M4 12H2M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4M19.1 19.1l-1.4-1.4M6.3 6.3 4.9 4.9"></path></svg>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path class="sun-rays" d="M12 2v2M12 20v2M22 12h-2M4 12H2M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4M19.1 19.1l-1.4-1.4M6.3 6.3 4.9 4.9"></path></svg>
       </button>
-      <button type="button" id="launcher-min" aria-label="Свернуть">—</button>
     </div>
-    <div class="ln-card">
-      <h1>Как должен открываться AutoFind?</h1>
-      <p class="lead">Это можно изменить в любой момент в настройках.</p>
-      <div class="mode-cards">
-        <button type="button" class="mode-card" data-open-mode="window">
-          <span class="mini-window"></span>
-          <b>Окно</b>
-          <small>Обычное окно на панели задач. Закрытие завершает AutoFind.</small>
-          <span class="radio"></span>
-        </button>
-        <button type="button" class="mode-card selected" data-open-mode="launcher">
-          <span class="mini-launcher"></span>
-          <b>Лаунчер</b>
-          <small>Нажмите сочетание, чтобы открыть. Если клик вне окна — скрыть. Живёт в трее.</small>
-          <span class="radio"></span>
-        </button>
-      </div>
-      <p class="ln-hint">Закрытие скрывает его — AutoFind остаётся в трее.</p>
-      <div class="hotkey-row">
-        <span>Сочетание открытия</span>
-        <span class="keys"><kbd>Alt</kbd><kbd>Space</kbd></span>
-        <button type="button" id="hotkey-change">Изменить</button>
-      </div>
-      <p class="fine">В Wayland назначить сочетание не получится, если клиент не поддерживает глобальные горячие клавиши.</p>
-      <div class="ln-foot">
-        <span>Всё остаётся на этом компьютере.</span>
-        <div>
-          <button type="button" id="launcher-back">← Назад</button>
-          <button type="button" id="launcher-start">Начать индексацию →</button>
-        </div>
-      </div>
+    <h1>Как должен открываться AutoFind?</h1>
+    <p class="lead">Это можно изменить в любой момент в настройках.</p>
+    <div class="mode-cards">
+      <button type="button" class="mode-card" data-open-mode="window">
+        <span class="mini-window"></span>
+        <b>Окно</b>
+        <small>Обычное окно на панели задач.</small>
+        <span class="radio"></span>
+      </button>
+      <button type="button" class="mode-card selected" data-open-mode="launcher">
+        <span class="mini-launcher"></span>
+        <b>Лаунчер</b>
+        <small>Открывается сочетанием, скрывается кликом вне окна. Остаётся в трее.</small>
+        <span class="radio"></span>
+      </button>
+    </div>
+    <div class="hotkey-row">
+      <span>Сочетание открытия</span>
+      <span class="keys"><kbd>Alt</kbd><kbd>Space</kbd></span>
+      <button type="button" id="hotkey-change">Изменить</button>
     </div>
     <div class="bottom-style" role="group" aria-label="Вид меню">
       <button type="button" data-menu-style="minimal" class="on">Минималист меню</button>
       <button type="button" data-menu-style="detailed">Детализированное</button>
+    </div>
+    <div class="ln-foot">
+      <button type="button" id="launcher-back">← Назад</button>
+      <button type="button" id="launcher-start">Начать индексацию →</button>
     </div>
   </div>
 </section>
