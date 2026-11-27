@@ -41,6 +41,10 @@ check("bottom light/dark control in the status bar", html.includes('data-theme-s
 check("launcher offers minimal vs detailed menu", html.includes('data-menu-style="minimal"') &&
   html.includes('data-menu-style="detailed"'));
 check("menu style is wired", js.includes("data-menu-style") && js.includes("custom.detailed"));
+check("menu styles are visual previews", html.includes('class="preview minimal-preview"') &&
+  html.includes('class="preview detailed-preview"'));
+check("window card selection is applied",
+  js.includes('classList.add("selected")') || js.includes('toggle("selected"'));
 check("first run shows the overlay", js.includes("autofind.minimal.onboarded") &&
   js.includes('showScreen("launcher")'));
 check("detailed cards are styled", css.includes(".grid.detailed") ||

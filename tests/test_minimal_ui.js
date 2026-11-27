@@ -60,7 +60,8 @@ for (const route of ["/api/watch", "/api/autostart", "/api/privacy/categories",
   check(`settings calls ${route}`, js.includes(route));
 }
 check("switches are styled", css.includes('.set-row input[type="checkbox"]'));
-check("light theme drops the sun rays", css.includes(".sun-core { display: none"));
-check("light theme shows the crescent", css.includes("[data-theme=\"light\"] .moon-core { display: block"));
+check("dark theme drops the sun", css.includes(".sun-core { display: none"));
+check("dark theme shows the crescent", css.includes(".moon-core { display: block"));
+check("theme knob moves right in dark mode", css.includes("translateX(18px)"));
 check("search pauses while settings are open", js.includes("searchSuspended()"));
 check("settings swallow the wheel", js.includes('"wheel"'));

@@ -21,14 +21,16 @@
              placeholder="Искать везде" aria-label="Поиск по файлам">
       <button id="clear" class="clear" type="button" hidden aria-label="Очистить поиск">×</button>
     </div>
-    <button id="theme-btn" class="icon-btn" type="button" aria-label="Светлая тема"
+    <button id="theme-btn" class="theme-toggle" type="button" aria-label="Светлая тема"
             aria-pressed="false" title="Светлая тема">
-      <svg class="icon-sun" viewBox="0 0 24 24" width="19" height="19" fill="none"
-           stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
-        <circle class="sun-core" cx="12" cy="12" r="4"></circle>
-        <path class="sun-rays" d="M12 2v2M12 20v2M22 12h-2M4 12H2M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4M19.1 19.1l-1.4-1.4M6.3 6.3 4.9 4.9"></path>
-        <path class="moon-core" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"></path>
-      </svg>
+      <span class="knob">
+        <svg class="icon-sun" viewBox="0 0 24 24" width="19" height="19" fill="none"
+             stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+          <circle class="sun-core" cx="12" cy="12" r="4"></circle>
+          <path class="sun-rays" d="M12 2v2M12 20v2M22 12h-2M4 12H2M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4M19.1 19.1l-1.4-1.4M6.3 6.3 4.9 4.9"></path>
+          <path class="moon-core" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"></path>
+        </svg>
+      </span>
     </button>
     <div class="menu-anchor">
       <button id="gear" class="icon-btn" type="button" aria-label="Меню"
@@ -222,8 +224,14 @@
   <div class="ln-card">
     <div class="ln-head">
       <span class="ln-brand">AutoFind</span>
-      <button type="button" id="launcher-theme" aria-label="Переключить тему">
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path class="sun-rays" d="M12 2v2M12 20v2M22 12h-2M4 12H2M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4M19.1 19.1l-1.4-1.4M6.3 6.3 4.9 4.9"></path></svg>
+      <button type="button" id="launcher-theme" class="theme-toggle" aria-label="Переключить тему">
+        <span class="knob">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+            <circle class="sun-core" cx="12" cy="12" r="4"></circle>
+            <path class="sun-rays" d="M12 2v2M12 20v2M22 12h-2M4 12H2M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4M19.1 19.1l-1.4-1.4M6.3 6.3 4.9 4.9"></path>
+            <path class="moon-core" d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"></path>
+          </svg>
+        </span>
       </button>
     </div>
     <h1>Как должен открываться AutoFind?</h1>
@@ -247,9 +255,21 @@
       <span class="keys"><kbd>Alt</kbd><kbd>Space</kbd></span>
       <button type="button" id="hotkey-change">Изменить</button>
     </div>
-    <div class="bottom-style" role="group" aria-label="Вид меню">
-      <button type="button" data-menu-style="minimal" class="on">Минималист меню</button>
-      <button type="button" data-menu-style="detailed">Детализированное</button>
+    <div class="menu-style-cards" role="group" aria-label="Вид меню">
+      <button type="button" class="menu-style-card on" data-menu-style="minimal">
+        <span class="preview minimal-preview">
+          <i></i><i></i><i></i><i></i><i></i><i></i>
+        </span>
+        <b>Минималист меню</b>
+        <small>Расширение и имя файла</small>
+      </button>
+      <button type="button" class="menu-style-card" data-menu-style="detailed">
+        <span class="preview detailed-preview">
+          <i></i><i></i><i></i><i></i>
+        </span>
+        <b>Детализированное</b>
+        <small>Тип, размер и путь</small>
+      </button>
     </div>
     <div class="ln-foot">
       <button type="button" id="launcher-back">← Назад</button>

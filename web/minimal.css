@@ -31,11 +31,37 @@
   --green: #1f9d68;
 }
 
-/* One icon, two faces: the moon is the same circle with a bite taken out. */
-.moon-core { display: none; }
-[data-theme="light"] .sun-rays,
-[data-theme="light"] .sun-core { display: none; }
-[data-theme="light"] .moon-core { display: block; }
+/* Theme switch: sun on the left in light mode, crescent on the right in dark. */
+.theme-toggle {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-hover);
+}
+.theme-toggle .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted);
+  color: var(--bg);
+  transition: transform 160ms cubic-bezier(.2, .7, .3, 1), background 160ms ease;
+}
+[data-theme="dark"] .theme-toggle .knob {
+  transform: translateX(18px);
+  background: var(--green);
+}
+.theme-toggle svg { width: 11px; height: 11px; }
+.theme-toggle .moon-core { display: none; }
+[data-theme="dark"] .theme-toggle .sun-rays,
+[data-theme="dark"] .theme-toggle .sun-core { display: none; }
+[data-theme="dark"] .theme-toggle .moon-core { display: block; }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 

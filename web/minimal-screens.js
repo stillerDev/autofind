@@ -124,22 +124,18 @@ function remember(key, value) {
   try { localStorage.setItem(key, value); } catch (error) { /* session only */ }
 }
 
-document.querySelectorAll("[data-mode]").forEach((node) => {
-  node.addEventListener("click", () => {
-    document.querySelectorAll("[data-mode], [data-open-mode]").forEach((other) => {
-      other.classList.toggle("on", other === node || other.dataset.openMode === node.dataset.mode);
-    });
-    remember("autofind.minimal.openMode", node.dataset.mode);
+function selectOpenMode(mode) {
+  document.querySelectorAll("[data-mode]").forEach((node) => {
+    node.classList.toggle("on", node.dataset.mode === mode);
   });
-});
+  document.querySelectorAll("[data-open-mode]").forEach((node) => {
+    node.classList.toggle("selected", node.dataset.openMode === mode);
+  });
+  remember("autofind.minimal.openMode", mode);
+}
 
-document.querySelectorAll("[data-open-mode]").forEach((node) => {
-  node.addEventListener("click", () => {
-    document.querySelectorAll("[data-mode], [data-open-mode]").forEach((other) => {
-      other.classList.toggle("on", other === node || other.dataset.mode === node.dataset.openMode);
-    });
-    remember("autofind.minimal.openMode", node.dataset.openMode);
-  });
+document.querySelectorAll("[data-mode], [data-open-mode]").forEach((node) => {
+  node.addEventListener("click", () => selectOpenMode(node.dataset.mode || node.dataset.openMode));
 });
 
 const langSelect = $("screen-lang");

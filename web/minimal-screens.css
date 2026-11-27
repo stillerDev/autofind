@@ -176,8 +176,9 @@
 
 .ln-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
 .ln-brand { font-size: 14px; font-weight: 650; }
-.ln-head button { width: 32px; height: 32px; border-radius: 8px; color: var(--muted); }
-.ln-head button:hover { background: var(--surface-hover); color: var(--text); }
+.ln-head .theme-toggle { width: 42px; height: 24px; }
+.ln-head button { border-radius: 12px; color: var(--muted); }
+.ln-head button:hover { color: var(--text); }
 
 .ln-card h1 { margin: 0 0 8px; font-size: 23px; font-weight: 650; letter-spacing: -.4px; }
 .ln-card .lead { margin: 0 0 22px; color: var(--muted); font-size: 12px; }
@@ -256,22 +257,44 @@ kbd {
 .hotkey-row button { color: var(--muted); font-size: 11px; }
 .hotkey-row button:hover { color: var(--text); }
 
-.bottom-style {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 18px;
+.menu-style-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
+.menu-style-card {
+  padding: 12px;
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: left;
 }
-.bottom-style button {
-  min-height: 32px;
-  padding: 0 14px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: 11px;
+.menu-style-card.on { border-color: var(--green); }
+.menu-style-card b { display: block; margin-top: 10px; font-size: 12px; }
+.menu-style-card.on b { color: var(--green); }
+.menu-style-card small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+
+.preview {
+  display: grid;
+  gap: 4px;
+  height: 62px;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--surface-hover);
 }
-.bottom-style button:hover { color: var(--text); }
-.bottom-style button.on { border-color: var(--green); color: var(--green); background: var(--bg); }
+.preview i { display: block; border: 1px solid var(--border); border-radius: 3px; background: var(--surface); }
+.minimal-preview { grid-template-columns: repeat(3, 1fr); }
+.minimal-preview i { height: 100%; }
+.detailed-preview { grid-template-columns: repeat(2, 1fr); }
+.detailed-preview i { position: relative; height: 100%; }
+.detailed-preview i::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 4px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--muted-dim);
+  opacity: .5;
+}
 
 .ln-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .ln-foot button { min-height: 38px; padding: 0 16px; border-radius: 8px; font-size: 12px; }
