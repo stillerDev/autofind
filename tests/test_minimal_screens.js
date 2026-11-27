@@ -8,6 +8,7 @@ const root = path.resolve(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "web/minimal.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "web/minimal-screens.css"), "utf8");
 const js = fs.readFileSync(path.join(root, "web/minimal-screens.js"), "utf8");
+const mjs = fs.readFileSync(path.join(root, "web/minimal.js"), "utf8");
 
 function check(name, condition) {
   if (!condition) throw new Error(`${name} failed`);
@@ -71,8 +72,20 @@ check("onboarding can be replayed",
 check("self-test is available", js.includes("/api/self-test") && js.includes("scr-selftest"));
 check("save applies pending rules", js.includes("savePending"));
 
-check("bottom light/dark control in the status bar", html.includes('data-theme-set="light"') &&
-  html.includes('data-theme-set="dark"'));
+check("the statusbar theme switch is gone",
+  !html.includes("theme-switch") && !html.includes("data-theme-set"));
+check("the statusbar center shows when files were last updated",
+  html.includes('id="last-update"') && mjs.includes("last_change") &&
+  mjs.includes("Обновлено") && mjs.includes("setInterval"));
+check("cards show a hover preview",
+  html.includes('id="hover-preview"') && mjs.includes("wireHover") &&
+  mjs.includes("/api/preview?id="));
+check("the searched word is marked in the preview",
+  mjs.includes("<mark>") &&
+  mjs.includes("split(/(&(?:amp|lt|gt|quot|nbsp|#39);)/)"));
+check("the preview marker is white",
+  (css.includes(".hover-preview mark") ||
+   fs.readFileSync(path.join(root, "web/minimal.css"), "utf8").includes(".hover-preview mark")));
 check("launcher offers minimal vs detailed menu", html.includes('data-menu-style="minimal"') &&
   html.includes('data-menu-style="detailed"'));
 check("menu style is wired", js.includes("data-menu-style") && js.includes("custom.detailed"));

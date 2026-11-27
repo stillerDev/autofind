@@ -155,5 +155,24 @@ class SidecarResealTests(unittest.TestCase):
                             "a locked sidecar is recorded, not fatal")
 
 
+class LastChangeStatsTests(unittest.TestCase):
+    """The minimal status bar shows when indexed files were last updated."""
+
+    def test_stats_report_when_files_were_last_changed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "corpus"
+            root.mkdir()
+            (root / "a.txt").write_text("документ про квартальный бюджет", encoding="utf-8")
+            config = IndexConfig(home=Path(tmp) / "home")
+            embedder = HashingEmbedder()
+            store = Store(Path(tmp) / "index.db", embedder.name, embedder.dim)
+            run_index([root], config, store, embedder)
+            stats = store.stats()
+            self.assertIn("last_change", stats)
+            expected = (root / "a.txt").stat().st_mtime
+            self.assertAlmostEqual(stats["last_change"], expected, delta=2.0)
+            store.close()
+
+
 if __name__ == "__main__":
     unittest.main()

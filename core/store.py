@@ -3498,6 +3498,9 @@ class Store:
             ) if self.sealed else 0,
             "symbols": scalar("SELECT COUNT(*) FROM symbols"),
             "db_bytes": self.path.stat().st_size if self.path.exists() else 0,
+            # the newest indexed file change: the minimal status bar renders
+            # it as a live "updated N ago" timer
+            "last_change": scalar("SELECT COALESCE(MAX(mtime), 0.0) FROM files"),
             "recent_searches": [
                 {"q": r["q"], "at": r["at"]}
                 for r in self.conn.execute(

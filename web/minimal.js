@@ -16,6 +16,8 @@ const state = {
   query: "",
   overSettings: false,
   pending: false,
+  hoverTimer: 0,
+  hoverId: 0,
 };
 
 // While the settings pane is open (or under the pointer) the result grid must
@@ -54,6 +56,26 @@ function size(bytes) {
   return `${(value / 1048576).toFixed(1)} МБ`;
 }
 
+function highlight(text, query, minLength = 3) {
+  // Escape here, not in the caller: every call site feeds raw indexed file
+  // content into this function, and its output goes straight into innerHTML.
+  const safe = esc(text);
+  const terms = [...new Set(String(query || "").toLowerCase().split(/\s+/).filter(Boolean))]
+    .filter((word) => word.length >= minLength);
+  if (!terms.length) return safe;
+  const pattern = new RegExp(
+    `(${terms.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+    "gi",
+  );
+  // Highlight only outside the entities esc() just created. A one-letter
+  // query must not turn `&amp;` into `&<mark>a</mark>mp;`.
+  return safe.split(/(&(?:amp|lt|gt|quot|nbsp|#39);)/).map((part) =>
+    /^&(?:amp|lt|gt|quot|nbsp|#39);$/.test(part)
+      ? part
+      : part.replace(pattern, "<mark>$1</mark>")
+  ).join("");
+}
+
 function cardMarkup(item, index) {
   const id = Number(item.file_id || 0);
   const ext = esc(item.ext || extension(item.name));
@@ -78,6 +100,7 @@ function render() {
   $("empty").hidden = state.items.length > 0;
   $("count").textContent = state.items.length ? `· ${state.items.length}` : "";
   $("section-title").textContent = state.query ? "Результаты" : "Недавние";
+  closeHover();
 }
 
 function select(index) {
@@ -136,14 +159,32 @@ async function load() {
   }
 }
 
+let lastChange = 0;
+
+function renderLastUpdate() {
+  const host = $("last-update");
+  if (!host) return;
+  if (!lastChange) {
+    host.textContent = "Обновлений ещё не было";
+    host.title = "";
+    return;
+  }
+  host.textContent = `Обновлено ${ago(lastChange)}`;
+  host.title = `Последнее изменение файлов: ${new Date(lastChange * 1000).toLocaleString("ru-RU")}`;
+}
+
 async function loadStats() {
   try {
     const data = await api("/api/stats");
     $("status").textContent = `Файлов: ${Number(data.files || 0).toLocaleString("ru-RU")}`;
+    lastChange = Number(data.last_change) || 0;
+    renderLastUpdate();
   } catch (error) {
     $("status").textContent = "Индекс недоступен";
   }
 }
+
+setInterval(renderLastUpdate, 30000);
 
 async function openFile(id, reveal) {
   if (!id) return;
@@ -162,6 +203,7 @@ function closeDetails() {
 async function showDetails() {
   const item = current();
   if (!item) return;
+  closeHover();
   const panel = $("details");
   panel.hidden = false;
   const body = $("details-body");
@@ -472,6 +514,63 @@ $("grid").addEventListener("dblclick", (event) => {
 
 $("refresh").addEventListener("click", () => { load(); loadStats(); });
 $("details-close").addEventListener("click", closeDetails);
+
+/* --------------------------------------------------- hover preview */
+
+/* A debounced Quick Look beside the hovered card. It never blocks the
+   pointer (the panel is pointer-events: none) and disappears the moment
+   the card is left, replaced, or the details panel opens. */
+
+function closeHover() {
+  clearTimeout(state.hoverTimer);
+  state.hoverId = 0;
+  const host = $("hover-preview");
+  if (host) host.hidden = true;
+}
+
+function wireHover() {
+  const host = $("hover-preview");
+  if (!host) return;
+  $("grid").addEventListener("mouseover", (event) => {
+    const cardNode = event.target.closest(".card");
+    if (!cardNode || cardNode.contains(event.relatedTarget)) return;
+    const id = Number(cardNode.dataset.id || 0);
+    if (!id) return;
+    clearTimeout(state.hoverTimer);
+    state.hoverId = id;
+    state.hoverTimer = setTimeout(() => showHover(id, cardNode), 380);
+  });
+  $("grid").addEventListener("mouseout", (event) => {
+    const cardNode = event.target.closest(".card");
+    if (!cardNode || cardNode.contains(event.relatedTarget)) return;
+    closeHover();
+  });
+}
+
+async function showHover(id, cardNode) {
+  const host = $("hover-preview");
+  if (!host || id !== state.hoverId || !cardNode.isConnected) return;
+  try {
+    const data = await api(`/api/preview?id=${id}&chars=500`);
+    if (id !== state.hoverId || !cardNode.isConnected) return;
+    const body = data.image
+      ? `${data.image.thumb ? `<img class="hv-thumb" src="${esc(data.image.thumb)}" alt="">` : ""}
+         ${data.image.ocr ? `<div class="hv-text">${highlight(String(data.image.ocr).slice(0, 300), state.query, 2)}</div>` : ""}`
+      : `<div class="hv-text">${highlight(String(data.text || "").slice(0, 600), state.query, 2)}</div>`;
+    host.innerHTML = `<div class="hv-head">${highlight(String(data.name || ""), state.query, 2)}</div>
+      <div class="hv-path">${esc(data.path || "")}</div>${body}`;
+    const rect = cardNode.getBoundingClientRect();
+    host.hidden = false;
+    const left = Math.min(rect.right + 10, window.innerWidth - host.offsetWidth - 10);
+    const top = Math.min(Math.max(rect.top, 10), window.innerHeight - host.offsetHeight - 10);
+    host.style.left = `${Math.max(10, left)}px`;
+    host.style.top = `${Math.max(10, top)}px`;
+  } catch (error) {
+    /* A hover preview is best-effort: a failed request must never flash. */
+  }
+}
+
+wireHover();
 
 $("gear").addEventListener("click", (event) => {
   event.stopPropagation();

@@ -67,10 +67,7 @@
       <span id="status">Индекс загружается…</span>
       <button type="button" class="text-btn" id="refresh">Обновить</button>
     </div>
-    <div class="theme-switch" role="group" aria-label="Тема">
-      <button type="button" data-theme-set="light">Светлая</button>
-      <button type="button" data-theme-set="dark" class="on">Тёмная</button>
-    </div>
+    <div class="last-update" id="last-update" role="timer" aria-label="Когда обновлялись файлы"></div>
     <div class="hotkeys" aria-label="Горячие клавиши">
       <span><kbd>Space</kbd> Открыть</span>
       <span><kbd>P</kbd> Предпросмотр</span>
@@ -453,6 +450,8 @@
     <div class="progress-status" id="idx-status"></div>
   </div>
 </section>
+
+<div class="hover-preview" id="hover-preview" hidden></div>
 
 <script src="/minimal.js"></script>
 <script src="/minimal-screens.js"></script>
