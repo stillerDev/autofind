@@ -94,3 +94,9 @@ for (const needle of [
 ]) {
   check(`source contains ${needle}`, source.includes(needle));
 }
+check("hover preview is wired at init", /\n\s{2}wireHover\(\);/.test(source));
+check("no undefined renderWithinBar call", !source.includes("renderWithinBar()"));
+check("card tag-new click is exempt from annotate auto-close",
+  source.includes("#annotate, [data-tag-add], [data-tag-new]"));
+check("content click keeps annotate ids for tag-new",
+  source.includes('!event.target.closest("#annotate, [data-tag-new]")'));

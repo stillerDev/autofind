@@ -1990,21 +1990,27 @@ class Handler(BaseHTTPRequestHandler):
         """Return OCR bounding boxes that match the search term for a given
         screenshot. The frontend overlays these as highlight boxes on the
         thumbnail image — the same visual kensaku gives."""
-        image_id = _int_param(query, "id", 0, 1)
-        if not image_id:
+        file_id = _int_param(query, "id", 0, 1)
+        if not file_id:
             self._error("id required")
             return
         q = (query.get("q") or [""])[0].lower()
         store = self._store()
         try:
+            # Callers hold a file id from /api/search or /api/preview. images.id
+            # is a separate primary key, so looking the row up by it returns
+            # nothing for every real screenshot and the overlay stays empty.
             row = store.conn.execute(
-                "SELECT i.ocr_boxes, i.width, i.height FROM images i WHERE i.id = ?",
-                (image_id,)
+                "SELECT i.ocr_boxes, i.width, i.height FROM images i WHERE i.file_id = ?",
+                (file_id,)
             ).fetchone()
         finally:
             store.close()
-        if not row or not row["ocr_boxes"]:
+        if not row:
             self._json({"boxes": [], "width": 0, "height": 0})
+            return
+        if not row["ocr_boxes"]:
+            self._json({"boxes": [], "width": row["width"], "height": row["height"]})
             return
         import json as _json
         try:

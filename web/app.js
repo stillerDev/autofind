@@ -952,7 +952,7 @@ async function runSearch(options = {}) {
       rememberQuery(rawQuery || state.query);
       clearPicks();
       state.withinText = "";
-      pushFilterHistory(rawQuery || state.query);
+      if (!options.skipHistory) pushFilterHistory(rawQuery || state.query);
     }
     renderResults(data, append);
     recordHistory(rawQuery || state.query, state.total);
@@ -1170,7 +1170,6 @@ function renderResults(data, append) {
   paintOcrBoxes();
   hydrateDocThumbs();
   renderQueryChips();
-  renderWithinBar();
 }
 
 /* The "search within results" filter is client-side: the server page stays
@@ -3053,7 +3052,10 @@ function wire() {
     // The click that OPENS the popover also reaches document: without the
     // opener guard it closes the popover in the same event, so "+ \u0442\u0435\u0433" and
     // "+ \u043a\u043e\u043b\u043b\u0435\u043a\u0446\u0438\u044f" looked dead.
-    if (!event.target.closest("#annotate, [data-tag-add], [data-collection-add], #bulk-tag")
+    // [data-tag-new] fires from the per-card tag dropdown, outside #annotate.
+    // Without the exemption closeAnnotate() clears annotateIds during the
+    // submitAnnotate() await and the success toast reports zero files.
+    if (!event.target.closest("#annotate, [data-tag-add], [data-tag-new], [data-collection-add], #bulk-tag")
         && !$("annotate").hidden) closeAnnotate();
   });
   $("calendar").addEventListener("click", (event) => {
@@ -3397,7 +3399,7 @@ function wire() {
     if (annotateColl) { submitAnnotate("collection", annotateColl.dataset.annotateCollection); return; }
     const card2 = event.target.closest(".gcard");
     if (card2) selectCard(Number(card2.dataset.index));
-    if (!event.target.closest("#annotate")) closeAnnotate();
+    if (!event.target.closest("#annotate, [data-tag-new]")) closeAnnotate();
   });
 
   // preview modal
@@ -3728,9 +3730,13 @@ function updateUndoButtons() {
 
 function applyFilterAt(position) {
   const query = state.filterStack[position] || "";
+  // Move the cursor before searching. Without this, pushFilterHistory sees the
+  // query already on the stack, returns early, and undo keeps appending the
+  // same entry instead of walking back through the stack.
+  state.filterPos = position;
   $("q").value = query;
   updateUndoButtons();
-  runSearch();
+  runSearch({ skipHistory: true });
 }
 
 function undoFilter() {
@@ -4312,7 +4318,12 @@ function wireFeatures() {
     const newTag = event.target.closest("[data-tag-new]");
     if (newTag) {
       const value = newTag.parentElement.querySelector(".tag-dd-input")?.value.trim();
-      if (value) submitAnnotate("tag", value);
+      if (value) {
+        // submitAnnotate shares the bulk popover's target list. Without this
+        // the per-card "+" silently returns because annotateIds is empty.
+        annotateIds = [Number(newTag.dataset.tagNew)];
+        submitAnnotate("tag", value);
+      }
     }
   });
 
@@ -4363,6 +4374,7 @@ function wireFeatures() {
     if (!event.target.closest("#regex-builder, #regex-open")) openRegexBuilder(false);
   });
 
+  wireHover();
   wireDnD();
 }
 
