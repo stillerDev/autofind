@@ -182,13 +182,15 @@
       <div class="set-page" data-set-content="general">
         <h1>Общие</h1>
         <p class="lead">Внешний вид, вызов и поведение при запуске.</p>
-        <div class="set-group-title">Внешний вид</div>
+        <div class="group-head">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>Внешний вид
+        </div>
         <div class="theme-cards">
-          <button type="button" class="theme-card" data-theme-choice="light">
+          <button type="button" class="theme-card choice-card" data-theme-choice="light">
             <span class="mock"><span class="mock-bar"></span><span class="mock-search"></span><span class="mock-grid"><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
             <span class="label">Светлая</span>
           </button>
-          <button type="button" class="theme-card selected" data-theme-choice="dark">
+          <button type="button" class="theme-card choice-card selected" data-theme-choice="dark">
             <span class="mock"><span class="mock-bar"></span><span class="mock-search"></span><span class="mock-grid"><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
             <span class="label">Тёмная</span>
           </button>
@@ -202,14 +204,38 @@
             <option value="zh">中文</option>
           </select>
         </div>
-        <div class="set-group-title" style="margin-top:24px">Окно</div>
-        <div class="set-card">
-          <b>Режим</b>
-          <p>Лаунчер скрывается по Esc или клику вне окна. Режим окна — обычное окно приложения. Оба продолжают работать в трее, пока вы не измените это ниже.</p>
-          <div class="mode-row">
-            <button type="button" data-mode="window">Окно</button>
-            <button type="button" data-mode="launcher" class="on">Лаунчер</button>
-          </div>
+        <div class="group-head">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M3 9h18"></path></svg>Окно
+        </div>
+        <div class="mode-cards">
+          <button type="button" class="mode-card choice-card" data-open-mode="window">
+            <span class="mini-window">
+              <span class="win-bar"><i></i><i></i><i></i><b>AutoFind</b></span>
+              <span class="win-body">
+                <span class="win-search"></span>
+                <span class="win-rows"><i></i><i></i><i></i></span>
+              </span>
+              <span class="win-task"><i></i><i></i><i></i></span>
+            </span>
+            <span class="mode-kind">Панель задач · отдельное окно</span>
+            <b>Окно</b>
+            <small>Своя иконка в панели задач. Закрытие завершает работу.</small>
+            <span class="radio" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="mode-card choice-card selected" data-open-mode="launcher">
+            <span class="mini-launcher">
+              <span class="palette">
+                <span class="pal-search"></span>
+                <span class="pal-rows"><i></i><i></i><i></i></span>
+              </span>
+              <span class="hotkey-mini">Alt Space</span>
+              <span class="tray"><i></i><i></i><i></i></span>
+            </span>
+            <span class="mode-kind">Оверлей поверх рабочего стола</span>
+            <b>Лаунчер</b>
+            <small>Вызывается сочетанием. Закрытие скрывает в трей.</small>
+            <span class="radio" aria-hidden="true"></span>
+          </button>
         </div>
       </div>
       <div class="set-page" data-set-content="appearance" hidden>
@@ -243,7 +269,9 @@
           <span>Только в простое<small>Не мешать, когда вы печатаете</small></span>
           <input type="checkbox" id="scr-idle">
         </label>
-        <div class="set-group-title" style="margin-top:24px">Папки индекса</div>
+        <div class="group-head">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="8" ry="3"></ellipse><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13"></path><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"></path></svg>Папки индекса
+        </div>
         <div class="root-list" id="scr-roots"></div>
         <p class="settings-note">Изменения папок применяются кнопками «Сохранить» внизу.</p>
       </div>
@@ -299,8 +327,8 @@
   </div>
 </section>
 
-<section class="screen launcher" id="launcher-screen" hidden aria-label="Лаунчер">
-  <div class="ln-card">
+<section class="screen" id="launcher-screen" hidden aria-label="Лаунчер">
+  <div class="ln-shell">
     <div class="ln-head">
       <span class="ln-brand">AutoFind</span>
       <button type="button" id="launcher-theme" class="theme-toggle" aria-label="Переключить тему">
@@ -313,90 +341,104 @@
         </span>
       </button>
     </div>
-    <h1>Как должен открываться AutoFind?</h1>
-    <p class="lead">Это можно изменить в любой момент в настройках.</p>
-    <div class="mode-cards">
-      <button type="button" class="mode-card" data-open-mode="window">
-        <span class="mini-window">
-          <span class="win-bar"><i></i><i></i><i></i><b>AutoFind</b></span>
-          <span class="win-body">
-            <span class="win-search"></span>
-            <span class="win-rows"><i></i><i></i><i></i></span>
+    <div class="set-page ln-page">
+      <h1>Как должен открываться AutoFind?</h1>
+      <p class="lead">Это можно изменить в любой момент — настройки и этот экран меняют одни и те же параметры.</p>
+      <div class="group-head">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8"></path><path d="M6.3 6.5a8 8 0 1 0 11.4 0"></path></svg>Режим окна
+      </div>
+      <div class="mode-cards">
+        <button type="button" class="mode-card choice-card" data-open-mode="window">
+          <span class="mini-window">
+            <span class="win-bar"><i></i><i></i><i></i><b>AutoFind</b></span>
+            <span class="win-body">
+              <span class="win-search"></span>
+              <span class="win-rows"><i></i><i></i><i></i></span>
+            </span>
+            <span class="win-task"><i></i><i></i><i></i></span>
           </span>
-          <span class="win-task"><i></i><i></i><i></i></span>
-        </span>
-        <span class="mode-kind">Панель задач · отдельное окно</span>
-        <b>Окно</b>
-        <small>Своя иконка в панели задач. Закрытие завершает работу.</small>
-        <span class="radio"></span>
-      </button>
-      <button type="button" class="mode-card selected" data-open-mode="launcher">
-        <span class="mini-launcher">
-          <span class="palette">
-            <span class="pal-search"></span>
-            <span class="pal-rows"><i></i><i></i><i></i></span>
+          <span class="mode-kind">Панель задач · отдельное окно</span>
+          <b>Окно</b>
+          <small>Своя иконка в панели задач. Закрытие завершает работу.</small>
+          <span class="radio" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="mode-card choice-card selected" data-open-mode="launcher">
+          <span class="mini-launcher">
+            <span class="palette">
+              <span class="pal-search"></span>
+              <span class="pal-rows"><i></i><i></i><i></i></span>
+            </span>
+            <span class="hotkey-mini">Alt Space</span>
+            <span class="tray"><i></i><i></i><i></i></span>
           </span>
-          <span class="hotkey-mini">Alt Space</span>
-          <span class="tray"><i></i><i></i><i></i></span>
-        </span>
-        <span class="mode-kind">Оверлей поверх рабочего стола</span>
-        <b>Лаунчер</b>
-        <small>Вызывается сочетанием. Закрытие скрывает в трей.</small>
-        <span class="radio"></span>
-      </button>
-    </div>
-    <div class="hotkey-row">
-      <span>Сочетание открытия</span>
-      <span class="keys"><kbd>Alt</kbd><kbd>Space</kbd></span>
-      <button type="button" id="hotkey-change">Изменить</button>
-    </div>
-    <div class="menu-style-cards" role="group" aria-label="Вид меню">
-      <button type="button" class="menu-style-card on" data-menu-style="minimal">
-        <span class="preview minimal-preview">
-          <span class="m-tile"><b>.js</b><i>app.js</i></span>
-          <span class="m-tile"><b>.py</b><i>api.py</i></span>
-          <span class="m-tile"><b>.json</b><i>config</i></span>
-        </span>
-        <span class="mode-kind">Без лишнего · плитка</span>
-        <b>Минималист меню</b>
-        <small>Крупное расширение, имя и время. Никаких подробностей.</small>
-      </button>
-      <button type="button" class="menu-style-card" data-menu-style="detailed">
-        <span class="preview detailed-preview">
-          <span class="d-card">
-            <b>app.js</b>
-            <i>C:\Docs\app.js</i>
-            <i>code · 12 КБ · 2 ч. назад</i>
+          <span class="mode-kind">Оверлей поверх рабочего стола</span>
+          <b>Лаунчер</b>
+          <small>Вызывается сочетанием. Закрытие скрывает в трей.</small>
+          <span class="radio" aria-hidden="true"></span>
+        </button>
+      </div>
+      <div class="group-head">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="18" height="10" rx="2"></rect><path d="M7 11h.01M11 11h.01M15 11h.01M17 11h.01M8 14h8"></path></svg>Сочетание открытия
+      </div>
+      <div class="hotkey-row">
+        <span>Лаунчер вызывается сочетанием клавиш</span>
+        <span class="keys"><kbd>Alt</kbd><kbd>Space</kbd></span>
+        <button type="button" id="hotkey-change">Изменить</button>
+      </div>
+      <div class="group-head">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>Вид меню
+      </div>
+      <div class="menu-style-cards" role="group" aria-label="Вид меню">
+        <button type="button" class="menu-style-card choice-card on" data-menu-style="minimal">
+          <span class="preview minimal-preview">
+            <span class="m-tile"><b>.js</b><i>app.js</i></span>
+            <span class="m-tile"><b>.py</b><i>api.py</i></span>
+            <span class="m-tile"><b>.json</b><i>config</i></span>
           </span>
-          <span class="d-card">
-            <b>api.py</b>
-            <i>C:\Docs\api.py</i>
-            <i>code · 4 КБ · 3 ч. назад</i>
+          <span class="mode-kind">Без лишнего · плитка</span>
+          <b>Минималист меню</b>
+          <small>Крупное расширение, имя и время. Никаких подробностей.</small>
+          <span class="radio" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="menu-style-card choice-card" data-menu-style="detailed">
+          <span class="preview detailed-preview">
+            <span class="d-card">
+              <b>app.js</b>
+              <i>C:\Docs\app.js</i>
+              <i>code · 12 КБ · 2 ч. назад</i>
+            </span>
+            <span class="d-card">
+              <b>api.py</b>
+              <i>C:\Docs\api.py</i>
+              <i>code · 4 КБ · 3 ч. назад</i>
+            </span>
           </span>
-        </span>
-        <span class="mode-kind">Всё сразу · строка</span>
-        <b>Детализированное</b>
-        <small>Имя, путь, тип, размер и время на каждой карточке.</small>
-      </button>
+          <span class="mode-kind">Всё сразу · строка</span>
+          <b>Детализированное</b>
+          <small>Имя, путь, тип, размер и время на каждой карточке.</small>
+          <span class="radio" aria-hidden="true"></span>
+        </button>
+      </div>
     </div>
-    <div class="ln-foot">
-      <button type="button" id="launcher-back">
-        <svg class="arrow-icon" viewBox="0 0 24 24" width="15" height="15" fill="none"
-             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-             stroke-linejoin="round" aria-hidden="true">
-          <path d="M19 12H5M11 6l-6 6 6 6"></path>
-        </svg>
-        Назад
-      </button>
-      <button type="button" id="launcher-start">
-        Начать индексацию
-        <svg class="arrow-icon" viewBox="0 0 24 24" width="15" height="15" fill="none"
-             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-             stroke-linejoin="round" aria-hidden="true">
-          <path d="M5 12h14M13 6l6 6-6 6"></path>
-        </svg>
-      </button>
-    </div>
+  </div>
+  <div class="set-bottom">
+    <span class="live"><i></i> Первый запуск</span>
+    <button type="button" id="launcher-back">
+      <svg class="arrow-icon" viewBox="0 0 24 24" width="15" height="15" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M19 12H5M11 6l-6 6 6 6"></path>
+      </svg>
+      Назад
+    </button>
+    <button type="button" id="launcher-start" class="primary">
+      Начать индексацию
+      <svg class="arrow-icon" viewBox="0 0 24 24" width="15" height="15" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M5 12h14M13 6l6 6-6 6"></path>
+      </svg>
+    </button>
   </div>
 </section>
 

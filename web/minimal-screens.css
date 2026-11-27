@@ -73,14 +73,27 @@
 
 .theme-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
 
-.theme-card {
+/* One choice-card language for every selectable pair — theme, window mode and
+   menu style: same border, radius, surface, hover lift and selected state. */
+.theme-card, .mode-card, .menu-style-card {
+  position: relative;
   padding: 12px 12px 14px;
-  border: 2px solid var(--border);
+  border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
+  color: var(--text);
   text-align: left;
+  transition: transform 140ms cubic-bezier(.23, 1, .32, 1), border-color 140ms ease;
 }
-.theme-card.selected { border-color: var(--green); }
+.theme-card.selected, .mode-card.selected, .menu-style-card.on { border-color: var(--green); }
+.theme-card.selected span.label, .mode-card.selected b, .menu-style-card.on b { color: var(--green); }
+@media (hover: hover) and (pointer: fine) {
+  .theme-card:hover, .mode-card:hover, .menu-style-card:hover { transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-card, .mode-card, .menu-style-card { transition: border-color 140ms ease; }
+  .theme-card:hover, .mode-card:hover, .menu-style-card:hover { transform: none; }
+}
 .theme-card .mock {
   display: block;
   height: 132px;
@@ -118,23 +131,20 @@
   font-size: 12px;
 }
 
-.set-card {
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
+/* Section titles inside a page: the muted label with the section icon, the
+   same device on the settings pages and on the first-run launcher. */
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--muted-dim);
+  font-size: 11px;
+  letter-spacing: .3px;
 }
-.set-card b { display: block; margin-bottom: 6px; font-size: 13px; }
-.set-card p { color: var(--muted); font-size: 12px; line-height: 1.55; }
-.mode-row { display: flex; gap: 10px; margin-top: 14px; }
-.mode-row button {
-  padding: 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.mode-row button.on { border-color: var(--green); color: var(--green); }
+.group-head svg { flex: 0 0 auto; opacity: .8; }
+.theme-cards + .group-head, .mode-cards + .group-head, .menu-style-cards + .group-head,
+.hotkey-row + .group-head, .set-line + .group-head, .set-row + .group-head { margin-top: 26px; }
 
 .set-bottom {
   position: fixed;
@@ -152,11 +162,21 @@
   box-shadow: 0 14px 40px rgba(0, 0, 0, .45);
   font-size: 12px;
 }
-.set-bottom .live { display: flex; align-items: center; gap: 7px; padding: 0 10px; color: var(--muted); }
+.set-bottom .live { display: flex; align-items: center; gap: 7px; padding: 0 10px; color: var(--muted); white-space: nowrap; }
 .set-bottom .live i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
-.set-bottom button { min-height: 34px; padding: 0 14px; border-radius: 999px; color: var(--text); }
-.set-bottom #settings-save-reindex { background: var(--surface-hover); color: var(--muted); }
-.set-bottom #settings-save { background: var(--surface-active); }
+.set-bottom button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  color: var(--text);
+}
+.set-bottom #settings-save-reindex, .set-bottom #launcher-back { background: var(--surface-hover); color: var(--muted); }
+.set-bottom #settings-save, .set-bottom #launcher-start { background: var(--surface-active); }
+.set-bottom #launcher-start { font-weight: 650; }
 
 /* The switch itself (`.set-row input[type="checkbox"]`) and the category chips
    come from minimal.css; only the pieces the fullscreen pages add live here. */
@@ -217,51 +237,24 @@
 
 /* ---------------------------------------------------------------- launcher */
 
-#launcher-screen {
-  display: grid;
-  place-items: center;
-  padding: 24px;
+/* The first-run launcher shares the settings anatomy: same padding, shell
+   width, page typography, choice cards and the floating action pill. */
+#launcher-screen { display: block; padding: 26px 30px 84px; overflow: auto; }
+.ln-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
 }
-
-#launcher-screen .ln-card {
-  width: min(560px, 100%);
-  padding: 26px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface);
-}
-
-.ln-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+.ln-page { flex: 1; min-height: 0; overflow: auto; }
+.ln-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .ln-brand { font-size: 14px; font-weight: 650; }
 .ln-head .theme-toggle { width: 42px; height: 24px; }
 .ln-head button { border-radius: 12px; color: var(--muted); }
 .ln-head button:hover { color: var(--text); }
 
-.ln-card h1 { margin: 0 0 8px; font-size: 23px; font-weight: 650; letter-spacing: -.4px; }
-.ln-card .lead { margin: 0 0 22px; color: var(--muted); font-size: 12px; }
-
 .mode-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.mode-card {
-  position: relative;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--bg);
-  color: var(--text);
-  text-align: left;
-  transition: transform 140ms cubic-bezier(.23, 1, .32, 1), border-color 140ms ease;
-}
-.mode-card.selected { border-color: var(--green); }
-
-/* Hover is feedback, not decoration: movement only on fine pointers, and the
-   first-run screen is rare, so the lift stays under 3px. */
-@media (hover: hover) and (pointer: fine) {
-  .mode-card:hover { transform: translateY(-2px); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .mode-card { transition: border-color 140ms ease; }
-  .mode-card:hover { transform: none; }
-}
 .mode-card .mini-window, .mode-card .mini-launcher {
   position: relative;
   display: block;
@@ -340,19 +333,19 @@
 .tray i { width: 4px; height: 4px; border-radius: 50%; background: var(--muted-dim); }
 .tray i:last-child { background: var(--green); }
 
-.mode-kind { display: block; margin-bottom: 4px; color: var(--muted-dim); font-size: 9px; letter-spacing: .3px; }
-.mode-card b { display: block; margin-bottom: 5px; font-size: 13px; }
-.mode-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.45; }
-.mode-card .radio {
+.choice-card .mode-kind { display: block; margin-bottom: 4px; color: var(--muted-dim); font-size: 9px; letter-spacing: .3px; }
+.choice-card b { display: block; margin: 6px 0 5px; font-size: 13px; }
+.choice-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.choice-card .radio {
   position: absolute;
-  top: 18px;
-  right: 16px;
+  top: 14px;
+  right: 14px;
   width: 16px;
   height: 16px;
   border: 1px solid var(--muted-dim);
   border-radius: 50%;
 }
-.mode-card.selected .radio {
+.choice-card.selected .radio, .choice-card.on .radio {
   border-color: var(--green);
   background: radial-gradient(circle, var(--green) 0 4px, transparent 5px);
 }
@@ -362,11 +355,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 18px;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--surface);
   font-size: 12px;
 }
 .hotkey-row .keys { display: flex; gap: 6px; margin-left: auto; }
@@ -380,19 +372,7 @@ kbd {
 .hotkey-row button { color: var(--muted); font-size: 11px; }
 .hotkey-row button:hover { color: var(--text); }
 
-.menu-style-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
-.menu-style-card {
-  padding: 12px;
-  border: 2px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg);
-  color: var(--text);
-  text-align: left;
-}
-.menu-style-card.on { border-color: var(--green); }
-.menu-style-card b { display: block; margin-top: 6px; font-size: 12px; }
-.menu-style-card.on b { color: var(--green); }
-.menu-style-card small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.menu-style-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 
 .preview {
   display: grid;
@@ -450,18 +430,6 @@ kbd {
 }
 .d-card i:last-child { color: var(--muted-dim); }
 
-.ln-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-.ln-foot button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 0 16px;
-  border-radius: 8px;
-  font-size: 12px;
-}
-#launcher-back { border: 1px solid var(--border); color: var(--muted); }
-#launcher-start { background: var(--text); color: var(--bg); font-weight: 650; }
 #launcher-start:disabled { opacity: .5; cursor: default; }
 
 /* One outline arrow family, decorative beside the visible label. */
@@ -501,6 +469,10 @@ kbd {
 .progress-count { margin-top: 8px; color: #8a8a92; font-size: 11px; }
 .progress-status { margin-top: 3px; color: #66666e; font-size: 10px; }
 
-[data-theme="light"] #launcher-screen .ln-card { background: #fafafb; }
-[data-theme="light"] .mode-card, [data-theme="light"] .hotkey-row { background: #f4f4f6; }
 [data-theme="light"] .progress { background: #e9e9ed; }
+
+/* Narrow windows: choice cards stack instead of overflowing. */
+@media (max-width: 640px) {
+  #settings-screen, #launcher-screen { padding: 18px 16px 84px; }
+  .theme-cards, .mode-cards, .menu-style-cards { grid-template-columns: 1fr; }
+}

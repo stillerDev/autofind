@@ -108,3 +108,33 @@ check("bar width follows percent", js.includes("idx-bar"));
 check("eta is rendered below the percent", js.includes("idx-eta"));
 check("indexing can be started", js.includes("/api/index") || js.includes("/api/reindex"));
 check("screens are styled", css.includes("#settings-screen") && css.includes("#launcher-screen"));
+
+// One design system for both screens: the launcher uses the same page anatomy
+// as the settings, the window-mode picker is the same card component in both,
+// and the launcher's actions sit in the same floating pill.
+check("launcher reuses the settings page anatomy", html.includes('class="set-page ln-page"'));
+check("mode picker is one component in both screens",
+  (html.match(/class="mini-window"/g) || []).length === 2 &&
+  (html.match(/class="mini-launcher"/g) || []).length === 2 &&
+  (html.match(/data-open-mode="window"/g) || []).length === 2);
+check("the plain mode row is gone", !html.includes('class="mode-row"'));
+check("every selectable card shares the choice-card language",
+  (html.match(/choice-card/g) || []).length === 8);
+check("picker cards carry the radio dot", (html.match(/class="radio"/g) || []).length === 6);
+check("group titles are headed by icons",
+  (html.match(/class="group-head"/g) || []).length === 6);
+check("launcher actions sit in the same floating pill",
+  (html.match(/class="set-bottom"/g) || []).length === 2);
+check("the bespoke launcher card is gone",
+  !html.includes("ln-card") && !html.includes("ln-foot"));
+check("the chosen open mode is restored on load",
+  js.includes('localStorage.getItem("autofind.minimal.openMode")'));
+check("cards share one border and hover rule",
+  css.includes(".theme-card, .mode-card, .menu-style-card") &&
+  css.includes(".theme-card:hover, .mode-card:hover, .menu-style-card:hover"));
+check("selected titles turn green on every card",
+  css.includes(".menu-style-card.on b") && css.includes(".mode-card.selected b") &&
+  css.includes(".theme-card.selected span.label"));
+check("cards collapse to one column on narrow windows",
+  css.includes("@media (max-width: 640px)") &&
+  css.includes(".theme-cards, .mode-cards, .menu-style-cards"));

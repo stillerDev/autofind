@@ -140,6 +140,12 @@ document.querySelectorAll("[data-mode], [data-open-mode]").forEach((node) => {
   node.addEventListener("click", () => selectOpenMode(node.dataset.mode || node.dataset.openMode));
 });
 
+// The choice is remembered for both surfaces that share it: restore the
+// stored mode instead of always showing the markup default.
+let openMode = "launcher";
+try { openMode = localStorage.getItem("autofind.minimal.openMode") || "launcher"; } catch (error) { /* default */ }
+selectOpenMode(openMode);
+
 const langSelect = $("screen-lang");
 try { langSelect.value = localStorage.getItem("autofind.minimal.lang") || "auto"; } catch (error) { /* default */ }
 langSelect.addEventListener("change", () => remember("autofind.minimal.lang", langSelect.value));
