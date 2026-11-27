@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AutoFind — минимальное меню</title>
+  <link rel="icon" href="/icon.png">
+  <link rel="stylesheet" href="/minimal.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="search-wrap">
+      <svg class="search-icon" viewBox="0 0 24 24" width="20" height="20" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <circle cx="10.5" cy="10.5" r="6.5"></circle>
+        <path d="M15.5 15.5 21 21"></path>
+      </svg>
+      <input id="q" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Искать везде" aria-label="Поиск по файлам">
+      <button id="clear" class="clear" type="button" hidden aria-label="Очистить поиск">×</button>
+    </div>
+    <div class="menu-anchor">
+      <button id="gear" class="icon-btn" type="button" aria-label="Меню"
+              aria-expanded="false" aria-controls="menu">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06-2 2-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21h-2.8v-.1A1.7 1.7 0 0 0 10.9 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06-2-2 .06-.06A1.7 1.7 0 0 0 7.4 15a1.7 1.7 0 0 0-1.55-1H5.7v-2.8h.1A1.7 1.7 0 0 0 7.4 10.2a1.7 1.7 0 0 0-.34-1.87L7 8.27l2-2 .06.06A1.7 1.7 0 0 0 10.9 6.7a1.7 1.7 0 0 0 1-1.55V5h2.8v.1a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06 2 2-.06.06A1.7 1.7 0 0 0 19.4 10.2a1.7 1.7 0 0 0 1.55 1H21v2.8h-.1a1.7 1.7 0 0 0-1.5 1Z"></path>
+        </svg>
+      </button>
+      <div id="menu" class="menu" role="menu" aria-label="Меню" hidden>
+        <button type="button" role="menuitem" data-action="refresh">Обновить</button>
+        <button type="button" role="menuitem" data-action="folder">Папка индекса</button>
+        <button type="button" role="menuitem" data-action="settings">Настройки</button>
+        <button type="button" role="menuitem" data-action="classic">Классический вид</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="content" id="content">
+    <div class="section-head">
+      <span id="section-title">Недавние</span>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="grid" id="grid" role="listbox" aria-label="Файлы"></div>
+    <p class="empty" id="empty" hidden>Ничего не найдено</p>
+  </main>
+
+  <footer class="statusbar">
+    <div class="status-left">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="status">Индекс загружается…</span>
+      <button type="button" class="text-btn" id="refresh">Обновить</button>
+    </div>
+    <div class="hotkeys" aria-label="Горячие клавиши">
+      <span><kbd>Space</kbd> Открыть</span>
+      <span><kbd>P</kbd> Предпросмотр</span>
+      <span><kbd>F</kbd> В папке</span>
+      <span><kbd>I</kbd> Детали</span>
+    </div>
+  </footer>
+</div>
+
+<aside class="details" id="details" hidden aria-label="Детали файла">
+  <div class="details-head">
+    <span>Детали</span>
+    <button type="button" class="icon-btn" id="details-close" aria-label="Закрыть детали">×</button>
+  </div>
+  <div class="details-body" id="details-body"></div>
+</aside>
+
+<script src="/minimal.js"></script>
+</body>
+</html>

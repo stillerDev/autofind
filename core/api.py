@@ -899,6 +899,8 @@ class Handler(BaseHTTPRequestHandler):
             self._similar_files(query)
         elif route in ("/api/history", "/api/query-history"):
             self._history(query)
+        elif route == "/api/recent":
+            self._recent(query)
         elif route in ("/api/exclusions", "/api/ignore"):
             self._exclusions()
         elif route == "/api/privacy/categories":
@@ -2461,6 +2463,41 @@ class Handler(BaseHTTPRequestHandler):
                 "last_used": float(entry["last_used"] or at) if entry else at,
             })
         self._json({"history": history})
+
+    def _recent(self, query: dict) -> None:
+        """Bounded recent-file feed for the minimal menu.
+
+        A real open is the strongest recency signal; a file that was never
+        opened still has its index timestamp. Both live in the index already,
+        so this stays read-only and needs no second store.
+        """
+        limit = _int_param(query, "limit", 20, 1, 60)
+        store = self._store()
+        try:
+            rows = store.conn.execute(
+                "SELECT f.id AS file_id, f.path, f.name, f.kind, f.size, f.mtime, "
+                "COALESCE(NULLIF(u.last_open, 0), f.indexed_at, 0) AS seen_at "
+                "FROM files f LEFT JOIN usage u ON u.file_id = f.id "
+                "ORDER BY seen_at DESC, f.id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        finally:
+            store.close()
+        recent = []
+        for row in rows:
+            name = row["name"] or ""
+            suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            recent.append({
+                "file_id": int(row["file_id"]),
+                "path": row["path"],
+                "name": name,
+                "kind": row["kind"],
+                "size": int(row["size"] or 0),
+                "mtime": float(row["mtime"] or 0.0),
+                "seen_at": float(row["seen_at"] or 0.0),
+                "ext": suffix[:12],
+                "thumb": f"/api/thumb?id={row['file_id']}" if row["kind"] == "image" else None,
+            })
+        self._json({"recent": recent})
 
     def _rules(self) -> None:
         self._json(read_index_rules(self.config.home))

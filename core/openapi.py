@@ -65,6 +65,7 @@ ROUTES: list[tuple[str, str, str, list[str], list[str]]] = [
     ("get", "/api/portable", "Portable-mode state and effective data directory", [], []),
     ("get", "/api/similar-files", "Files similar to the given file", ["id", "limit"], []),
     ("get", "/api/history", "Query history with usage context", ["limit"], []),
+    ("get", "/api/recent", "Recently opened or indexed files for the menu", ["limit"], []),
     ("get", "/api/privacy/categories", "Privacy category switches", [], []),
     ("get", "/api/openapi.json", "This document", [], []),
     ("post", "/api/index", "Index the given roots", [], ["roots", "prune"]),
