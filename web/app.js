@@ -429,6 +429,7 @@ async function loadHotkeys() {
     renderHotkeys();
   } catch (error) {
     state.hotkeys = { ...FALLBACK_HOTKEYS };
+    renderHotkeys();
   }
 }
 
@@ -870,7 +871,8 @@ const RECENT_KEY = "af.recent-queries";
 
 function recentQueries() {
   try {
-    return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    const value = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    return Array.isArray(value) ? value : [];
   } catch (error) {
     return [];
   }
@@ -917,6 +919,8 @@ async function runSearch(options = {}) {
   }
   $("save-btn").classList.toggle("show", Boolean(state.query));
   if (!state.query) {
+    // Invalidate a response already in flight for the previous query.
+    state.searchSeq += 1;
     state.hits = [];
     state.total = 0;
     state.nextOffset = null;
@@ -1132,9 +1136,14 @@ function renderResults(data, append) {
   const grid = document.createElement("div");
   grid.className = "results-grid";
   const view = visibleHits();
-  const start = append ? state.hits.length - data.hits.length : 0;
-  grid.innerHTML = view.map((hit, index) =>
-    card(hit, index, append ? index - start : index)).join("");
+  // On append, render ONLY the newly fetched hits. Building all hits again and
+  // then moving them into the old grid duplicates every existing card.
+  const fresh = append ? new Set((data.hits || []).map((hit) => hit.file_id)) : null;
+  const rows = append ? view.filter((hit) => fresh.has(hit.file_id)) : view;
+  grid.innerHTML = rows.map((hit, index) => {
+    const absolute = view.indexOf(hit);
+    return card(hit, absolute, append ? index : absolute);
+  }).join("");
   if (append) {
     const old = host.querySelector(".results-grid");
     if (old) {
@@ -1179,7 +1188,11 @@ function paintFacets() {
   document.querySelectorAll(".chip[data-kind]").forEach((chip) => {
     const kind = chip.dataset.kind;
     const count = kind === "" ? (facets.all ?? (state.total || null)) : facets[kind];
-    const base = chip.dataset.base || (chip.dataset.base = chip.textContent);
+    // Rebuild the base from the i18n key: a cached textContent from the
+    // previous language would survive a RU→EN switch.
+    const key = chip.dataset.i18n;
+    const base = (key && t(key)) || chip.dataset.base || chip.textContent;
+    chip.dataset.base = base;
     chip.textContent = count != null ? `${base} · ${count}` : base;
   });
 }
@@ -1344,6 +1357,7 @@ function setPanel(open, tab) {
 }
 
 function setDrawerTab(tab) {
+  state.drawerTab = tab;
   document.querySelectorAll(".drawer-tab").forEach((node) => {
     node.classList.toggle("active", node.dataset.drawerTab === tab);
   });
@@ -1355,7 +1369,22 @@ function setDrawerTab(tab) {
     loadServerHistory();
     renderSmartCollections();
     renderCollectionTargets();
+    loadPersonal().then(renderAliases);
+  } else if (tab === "privacy") {
+    refreshPrivacy();
+  } else if (tab === "seal") {
+    api("/api/seal").then(renderSeal).catch(() => {});
   }
+  paintDynamicLabels();
+}
+
+// A few elements carry state, not static text: applyStaticText() must not
+// clobber them on a language switch or on drawer navigation.
+function paintDynamicLabels() {
+  const sort = $("sort-value");
+  if (sort) sort.textContent = t(`sort.${state.sort}`);
+  const title = $("drawer-title");
+  if (title) title.textContent = t(DRAWER_TITLES[state.drawerTab] || "rail.indexShort");
 }
 
 function updateActionButtons() {
@@ -1567,9 +1596,10 @@ function renderSeal(seal) {
     const total = seal.total || 1;
     const percent = Math.min(99, Math.round(((seal.done || 0) / total) * 100));
     $("seal-progress-fill").style.width = `${percent}%`;
-    const stageKey = "panel.sealStage" + String(seal.stage || "").replace(
-      /(^|[a-z])([A-Z])/g, (m, a, b) => a + b.toUpperCase(),
-    );
+    const rawStage = String(seal.stage || "");
+    // The server sends lowercase "seal"/"unseal"; only the first letter needs
+    // capitalising to reach panel.sealStageSeal / panel.sealStageUnseal.
+    const stageKey = "panel.sealStage" + rawStage.charAt(0).toUpperCase() + rawStage.slice(1);
     const stage = t(stageKey) !== stageKey ? t(stageKey) : seal.stage || "";
     $("seal-progress-label").textContent = `${stage} · ${percent}%`;
     $("seal-warn").hidden = true;
@@ -1705,6 +1735,12 @@ function setDups(open) {
 }
 
 async function loadDuplicates(mode, force) {
+  // A mode switch must stop the old stream: it otherwise keeps writing the
+  // shared progress bar and can render stale groups over the new mode.
+  if (state.dupStream) {
+    state.dupStream.abort();
+    state.dupStream = null;
+  }
   if (!force && state.dupCache[mode]) {
     renderDuplicates(state.dupCache[mode]);
     return;
@@ -1713,7 +1749,7 @@ async function loadDuplicates(mode, force) {
   const label = $("dups-progress-label");
   $("dups-progress").hidden = false;
   fill.style.width = "0";
-  label.textContent = t("dups.scanning");
+  label.textContent = t("dups.scanning", { percent: 0 });
   const controller = new AbortController();
   state.dupStream = controller;
   try {
@@ -1747,7 +1783,7 @@ async function loadDuplicates(mode, force) {
       label.textContent = error.message;
     }
   } finally {
-    state.dupStream = null;
+    if (state.dupStream === controller) state.dupStream = null;
   }
 }
 
@@ -1957,8 +1993,7 @@ function openAnnotate(mode, ids) {
     <input class="annotate-input" id="annotate-value" spellcheck="false"
            placeholder="${esc(isTag ? t("card.tag") : t("bulk.collection"))}">
     <div class="annotate-chips">${chips || `<p class="settings-note">${esc(t("annotate.empty"))}</p>`}</div>
-    <p class="annotate-note" data-i18n="${isTag ? "annotate.tagNote" : "annotate.collectionNote"}"></p>`;
-  applyStaticText();
+    <p class="annotate-note">${esc(t(isTag ? "annotate.tagNote" : "annotate.collectionNote"))}</p>`;
   const input = $("annotate-value");
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") submitAnnotate(mode, input.value);
@@ -2037,6 +2072,7 @@ function paintBoxesInto(holder, data, hotWord) {
 }
 
 async function openPreview(fileId) {
+  const seq = state.previewSeq = (state.previewSeq || 0) + 1;
   state.previewId = Number(fileId) || 0;
   state.noteText = "";
   $("preview").classList.add("open");
@@ -2044,6 +2080,7 @@ async function openPreview(fileId) {
   body.innerHTML = `<p class="settings-note">${esc(t("status.checking"))}</p>`;
   try {
     const data = await api(`/api/preview?id=${fileId}&chars=1600`);
+    if (seq !== state.previewSeq) return;  // a newer preview already won
     const meta = `<p class="pv-meta"><b>${esc(data.name)}</b><br>${esc(data.path)}<br>
       ${fmtSize(data.size)} · ${fmtDate(data.mtime)} · ${esc(t("preview.opened", { n: data.opens }))}</p>`;
     const missing = data.exists ? "" : `<p class="pv-missing">${esc(t("preview.missing"))}</p>`;
@@ -2064,7 +2101,9 @@ async function openPreview(fileId) {
         </div>
         ${notesEditor(fileId)}`;
       api(`/api/ocr-boxes?id=${fileId}&q=${encodeURIComponent(state.query || "")}`)
-        .then((boxes) => paintBoxesInto(body.querySelector(".ocr-boxes"), boxes))
+        .then((boxes) => {
+          if (seq === state.previewSeq) paintBoxesInto(body.querySelector(".ocr-boxes"), boxes);
+        })
         .catch(() => {});
     } else {
       const isCode = data.kind === "code";
@@ -2087,7 +2126,9 @@ async function openPreview(fileId) {
     }
     loadNoteInto(fileId);
   } catch (error) {
-    body.innerHTML = `<p class="pv-missing">${esc(t("preview.failed", { error: error.message }))}</p>`;
+    if (seq === state.previewSeq) {
+      body.innerHTML = `<p class="pv-missing">${esc(t("preview.failed", { error: error.message }))}</p>`;
+    }
   }
 }
 
@@ -2098,6 +2139,7 @@ function closePreview() {
 /* ---------------------------------------------------------------- similar */
 
 async function openSimilar(fileId) {
+  const seq = state.similarSeq = (state.similarSeq || 0) + 1;
   try {
     // Document neighbours come from file vectors (/api/similar-files);
     // screenshots use the visual route (/api/similar). Both are read-only.
@@ -2108,6 +2150,7 @@ async function openSimilar(fileId) {
     } catch (error) {
       /* older servers only have the visual route */
     }
+    if (seq !== state.similarSeq) return;
     if (files.length) {
       $("modal-grid").innerHTML = files.map((item) => `
         <div class="similar-row" data-open="${item.file_id}" title="${esc(item.path)}">
@@ -2116,13 +2159,14 @@ async function openSimilar(fileId) {
         </div>`).join("");
     } else {
       const data = await api(`/api/similar?id=${fileId}`);
+      if (seq !== state.similarSeq) return;
       $("modal-grid").innerHTML = (data.images || []).length
         ? data.images.map(shot).join("")
         : `<div class="empty" style="min-height:120px"><p>${esc(t("results.nothing"))}</p></div>`;
     }
     $("modal").classList.add("open");
   } catch (error) {
-    toast(error.message);
+    if (seq === state.similarSeq) toast(error.message);
   }
 }
 
@@ -2191,6 +2235,21 @@ function builtFilterTokens() {
 function paintFilterPreview() {
   const preview = $("filter-preview");
   if (preview) preview.textContent = builtFilterTokens().join(" ");
+}
+
+// The picker menus are empty spans in the markup: build their options from
+// the hidden selects once, otherwise type/period/collection cannot be chosen.
+function populateFilterMenus() {
+  const builder = $("filter-builder");
+  if (!builder) return;
+  builder.querySelectorAll("[data-picker]").forEach((field) => {
+    const select = field.querySelector("select");
+    const menu = field.querySelector(".filter-menu");
+    if (!select || !menu || menu.children.length) return;
+    menu.innerHTML = [...select.options].map((option) =>
+      `<button type="button" role="option" data-value="${esc(option.value)}">${esc(option.textContent)}</button>`
+    ).join("");
+  });
 }
 
 function applyFilters() {
@@ -2667,7 +2726,7 @@ function paintImportState() {
   const state2 = $("ob-import-state");
   if (!state2) return;
   if (ONBOARD.importBusy) {
-    state2.textContent = t("dups.scanning");
+    state2.textContent = t("dups.scanning", { percent: 0 });
     state2.className = "ob-state";
   } else if (ONBOARD.importError) {
     state2.textContent = ONBOARD.importError;
@@ -2682,7 +2741,7 @@ function paintImportState() {
         saved: ONBOARD.imported.saved || 0,
         aliases: ONBOARD.imported.aliases || 0,
       })
-      : t("onboard.importMissing");
+      : t("onboard.importMissing", { n: ONBOARD.imported.pins || 0 });
     state2.className = "ob-state good";
   } else if (ONBOARD.scan) {
     badge.hidden = !ONBOARD.scan.found;
@@ -2693,7 +2752,7 @@ function paintImportState() {
       ? t("onboard.importFound", {
         pins: ONBOARD.scan.pins, saved: ONBOARD.scan.saved, aliases: ONBOARD.scan.aliases,
       })
-      : t("onboard.importMissing");
+      : t("onboard.importMissing", { n: ONBOARD.scan.pins || 0 });
     state2.className = "ob-state";
   } else {
     state2.textContent = "";
@@ -3031,6 +3090,7 @@ function wire() {
     event.stopPropagation();
     openFilters($("filter-builder").hidden);
   });
+  populateFilterMenus();
   $("filter-builder").addEventListener("input", paintFilterPreview);
   $("filter-builder").addEventListener("click", (event) => {
     const option = event.target.closest(".filter-menu button, .unit-menu button");
@@ -3120,8 +3180,8 @@ function wire() {
   });
   $("purge-btn").addEventListener("click", async () => {
     try {
-      await api("/api/privacy/purge", { method: "POST", body: "{}" });
-      toast(t("toast.purged"));
+      const purged = await api("/api/privacy/purge", { method: "POST", body: "{}" });
+      toast(t("toast.purged", { n: purged?.count ?? 0 }));
       refreshPrivacy();
     } catch (error) {
       toast(t("toast.failed", { error: error.message }));
@@ -3176,15 +3236,23 @@ function wire() {
   $("hotkeys-list").addEventListener("keydown", (event) => {
     const input = event.target.closest("[data-hotkey]");
     if (!input) return;
+    if (event.key === "Backspace") {
+      // Documented behaviour: Backspace clears the hotkey, not types a word.
+      event.preventDefault();
+      input.value = "";
+      input.dataset.dirty = "1";
+      return;
+    }
     const chord = chordOfEvent(event);
     if (chord && !MODIFIER_KEYS.has(chord)) {
       event.preventDefault();
       input.value = chordLabel(chord);
+      input.dataset.dirty = "1";
     }
   });
   $("hotkeys-list").addEventListener("focusout", () => {
     const dirty = [...document.querySelectorAll("[data-hotkey]")]
-      .some((input) => input.value && !input.dataset.clean);
+      .some((input) => input.dataset.dirty === "1" || (input.value && !input.dataset.clean));
     if (dirty) saveHotkeys();
   });
   $("hotkeys-reset").addEventListener("click", async () => {
@@ -3395,6 +3463,7 @@ function wire() {
     if (setLang(lang.dataset.lang)) {
       paintLang();
       paintSince();
+      paintDynamicLabels();
       if (state.query) renderResults({ hits: state.hits }, false);
       else renderIdle();
     }
@@ -4307,6 +4376,7 @@ function currentPreviewId() {
 /* --------------------------------------------------------------- init */
 
 applyStaticText();
+paintDynamicLabels();
 loadLook();
 loadTheme();
 renderWalls();
@@ -4329,6 +4399,7 @@ loadMeta().then(() => {
         `<option value="${esc(collection.name || collection.id)}">${esc(collection.name || collection.id)}</option>`).join("");
   }
   renderCollectionTargets();
+  populateFilterMenus();
 });
 loadHotkeys();
 startWatchPoll();

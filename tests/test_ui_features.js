@@ -83,6 +83,14 @@ for (const needle of [
   "/api/ocr-boxes", "/api/note", "/api/audit", "data-pin-best", "within-input",
   "fresh-badge", "tag-dropdown", "ocr-word", "/api/exclusions", "/api/portable",
   "/api/history?limit=", "/api/similar-files",
+  "Array.isArray(value) ? value : []",
+  "state.searchSeq += 1",
+  "new Set((data.hits || []).map((hit) => hit.file_id))",
+  "function populateFilterMenus",
+  "state.previewSeq", "state.similarSeq",
+  "input.dataset.dirty = \"1\"",
+  "panel.sealStage\" + rawStage.charAt(0).toUpperCase()",
+  "input.dataset.dirty === \"1\" || (input.value && !input.dataset.clean)",
 ]) {
   check(`source contains ${needle}`, source.includes(needle));
 }
