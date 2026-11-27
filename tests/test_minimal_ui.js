@@ -47,3 +47,15 @@ check("light theme tokens", css.includes('[data-theme="light"]'));
 check("theme choice is persisted", js.includes("autofind.minimal.theme"));
 check("gear is a thin hollow outline cog",
   html.includes("M19.40 12.00") && html.includes('stroke-width="1.3"'));
+
+// Self-contained settings: every switch stays on this page and reaches an API.
+for (const id of ["settings-panel", "set-watch", "set-idle", "set-autostart",
+                  "set-privacy", "set-theme", "set-categories", "set-purge"]) {
+  check(`settings has #${id}`, html.includes(`id="${id}"`));
+}
+check("settings opens in place", js.includes("openSettings(true)"));
+for (const route of ["/api/watch", "/api/autostart", "/api/privacy/categories",
+                     "/api/privacy/purge"]) {
+  check(`settings calls ${route}`, js.includes(route));
+}
+check("switches are styled", css.includes('.set-row input[type="checkbox"]'));

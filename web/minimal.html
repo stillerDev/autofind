@@ -83,6 +83,49 @@
   <div class="details-body" id="details-body"></div>
 </aside>
 
+<aside class="settings-panel" id="settings-panel" hidden aria-label="Настройки">
+  <div class="details-head">
+    <span>Настройки</span>
+    <button type="button" class="icon-btn" id="settings-close" aria-label="Закрыть настройки">×</button>
+  </div>
+  <div class="settings-body" id="settings-body">
+    <section class="set-section">
+      <h3>Индекс</h3>
+      <label class="set-row">
+        <span>Следить за файлами<small>Обновлять индекс при изменениях</small></span>
+        <input type="checkbox" id="set-watch">
+      </label>
+      <label class="set-row">
+        <span>Только в простое<small>Не мешать, когда вы печатаете</small></span>
+        <input type="checkbox" id="set-idle">
+      </label>
+    </section>
+    <section class="set-section">
+      <h3>Запуск</h3>
+      <label class="set-row">
+        <span>Автозапуск<small>Запускать вместе с системой</small></span>
+        <input type="checkbox" id="set-autostart">
+      </label>
+    </section>
+    <section class="set-section">
+      <h3>Конфиденциальность</h3>
+      <label class="set-row">
+        <span>Фильтр приватных файлов<small>Ключи, пароли, кошельки</small></span>
+        <input type="checkbox" id="set-privacy">
+      </label>
+      <div class="set-cats" id="set-categories"></div>
+      <button type="button" class="set-action" id="set-purge">Удалить приватное из индекса</button>
+    </section>
+    <section class="set-section">
+      <h3>Интерфейс</h3>
+      <label class="set-row">
+        <span>Светлая тема<small>Тот же переключатель, что в шапке</small></span>
+        <input type="checkbox" id="set-theme">
+      </label>
+    </section>
+  </div>
+</aside>
+
 <script src="/minimal.js"></script>
 </body>
 </html>

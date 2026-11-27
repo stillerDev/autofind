@@ -197,12 +197,154 @@ function storedTheme() {
   try { return localStorage.getItem(THEME_KEY) === "light"; } catch (error) { return false; }
 }
 
+function setTheme(light) {
+  applyTheme(light);
+  const sync = $("set-theme");
+  if (sync) sync.checked = light;
+  try { localStorage.setItem(THEME_KEY, light ? "light" : "dark"); } catch (error) { /* session only */ }
+}
+
 applyTheme(storedTheme());
 
 $("theme-btn").addEventListener("click", () => {
-  const light = document.documentElement.dataset.theme !== "light";
-  applyTheme(light);
-  try { localStorage.setItem(THEME_KEY, light ? "light" : "dark"); } catch (error) { /* session only */ }
+  setTheme(document.documentElement.dataset.theme !== "light");
+});
+
+/* --------------------------------------------------------------- settings */
+
+const prefs = {
+  watch: false,
+  idle: true,
+  roots: [],
+  privacy: false,
+  categories: [],
+};
+
+async function postJSON(path, payload) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload),
+  });
+  let body = null;
+  try { body = await response.json(); } catch (error) { body = null; }
+  if (!response.ok) throw new Error((body && body.error) || `HTTP ${response.status}`);
+  return body || {};
+}
+
+function openSettings(open) {
+  $("settings-panel").hidden = !open;
+  if (open) loadSettings();
+}
+
+async function loadSettings() {
+  const [watch, autostart, privacy] = await Promise.all([
+    api("/api/watch").catch(() => null),
+    api("/api/autostart").catch(() => null),
+    api("/api/privacy").catch(() => null),
+  ]);
+  prefs.watch = Boolean(watch && watch.running);
+  prefs.idle = !watch || watch.idle_only !== false;
+  if (watch && watch.roots && watch.roots.length) prefs.roots = watch.roots;
+  prefs.privacy = Boolean(privacy && privacy.enabled);
+  prefs.categories = (privacy && privacy.categories) || [];
+
+  $("set-watch").checked = prefs.watch;
+  $("set-idle").checked = prefs.idle;
+  $("set-autostart").checked = Boolean(autostart && autostart.enabled);
+  $("set-autostart").disabled = !autostart || !autostart.supported;
+  $("set-autostart").title = !autostart || !autostart.supported
+    ? "Автозапуск не поддерживается этой системой" : "";
+  $("set-privacy").checked = prefs.privacy;
+  $("set-theme").checked = document.documentElement.dataset.theme === "light";
+  $("set-categories").innerHTML = prefs.categories.map((item) =>
+    `<label><input type="checkbox" data-cat="${esc(item.id)}"${item.enabled ? " checked" : ""}> ${esc(item.id)}</label>`
+  ).join("") || `<span class="empty">Категорий нет</span>`;
+  $("set-purge").textContent = "Удалить приватное из индекса";
+  $("set-purge").classList.remove("confirm");
+}
+
+async function applyWatch() {
+  try {
+    const data = await postJSON("/api/watch", {
+      enabled: prefs.watch,
+      roots: prefs.roots,
+      idle_only: prefs.idle,
+      allow_remote: false,
+    });
+    if (data.roots && data.roots.length) prefs.roots = data.roots;
+    $("set-watch").checked = Boolean(data.running);
+  } catch (error) {
+    $("set-watch").checked = !prefs.watch;
+    $("status").textContent = `Ошибка: ${error.message}`;
+  }
+}
+
+async function applyPrivacy() {
+  try {
+    const chosen = [...$("set-categories").querySelectorAll("input:checked")]
+      .map((box) => box.dataset.cat);
+    await postJSON("/api/privacy/categories", {
+      enabled: prefs.privacy,
+      categories: chosen,
+    });
+  } catch (error) {
+    $("status").textContent = `Ошибка: ${error.message}`;
+  }
+}
+
+$("set-watch").addEventListener("change", (event) => {
+  prefs.watch = event.target.checked;
+  applyWatch();
+});
+
+$("set-idle").addEventListener("change", (event) => {
+  prefs.idle = event.target.checked;
+  if (prefs.watch) applyWatch();
+});
+
+$("set-autostart").addEventListener("change", async (event) => {
+  const wanted = event.target.checked;
+  try {
+    await postJSON("/api/autostart", { enabled: wanted });
+  } catch (error) {
+    event.target.checked = !wanted;
+    $("status").textContent = `Ошибка: ${error.message}`;
+  }
+});
+
+$("set-privacy").addEventListener("change", (event) => {
+  prefs.privacy = event.target.checked;
+  applyPrivacy();
+});
+
+$("set-categories").addEventListener("change", applyPrivacy);
+$("set-theme").addEventListener("change", (event) => setTheme(event.target.checked));
+$("settings-close").addEventListener("click", () => openSettings(false));
+
+$("set-purge").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  if (!button.classList.contains("confirm")) {
+    button.textContent = "Точно удалить?";
+    button.classList.add("confirm");
+    setTimeout(() => {
+      button.textContent = "Удалить приватное из индекса";
+      button.classList.remove("confirm");
+    }, 4000);
+    return;
+  }
+  button.disabled = true;
+  try {
+    await postJSON("/api/privacy/purge", {});
+    button.textContent = "Готово";
+    load();
+  } catch (error) {
+    $("status").textContent = `Ошибка: ${error.message}`;
+  } finally {
+    button.disabled = false;
+    button.classList.remove("confirm");
+    setTimeout(() => { button.textContent = "Удалить приватное из индекса"; }, 2000);
+  }
 });
 
 /* ------------------------------------------------------------------ wiring */
@@ -264,7 +406,7 @@ $("menu").addEventListener("click", (event) => {
   else if (action === "folder") {
     $("status").textContent = "Папка индекса: ~/.autofind";
   } else if (action === "settings") {
-    location.href = "/";
+    openSettings(true);
   } else if (action === "classic") {
     location.href = "/";
   }
@@ -277,6 +419,7 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   const inField = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
   if (event.key === "Escape") {
+    if (!$("settings-panel").hidden) { openSettings(false); return; }
     if (!$("details").hidden) { closeDetails(); return; }
     if (!$("menu").hidden) { openMenu(false); return; }
     return;
