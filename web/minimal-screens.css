@@ -192,33 +192,99 @@
   background: var(--bg);
   color: var(--text);
   text-align: left;
+  transition: transform 140ms cubic-bezier(.23, 1, .32, 1), border-color 140ms ease;
 }
 .mode-card.selected { border-color: var(--green); }
+
+/* Hover is feedback, not decoration: movement only on fine pointers, and the
+   first-run screen is rare, so the lift stays under 3px. */
+@media (hover: hover) and (pointer: fine) {
+  .mode-card:hover { transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mode-card { transition: border-color 140ms ease; }
+  .mode-card:hover { transform: none; }
+}
 .mode-card .mini-window, .mode-card .mini-launcher {
+  position: relative;
   display: block;
-  height: 76px;
-  margin-bottom: 12px;
+  height: 104px;
+  margin-bottom: 11px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Window: title bar with traffic lights, content, taskbar with an active app. */
+.mode-card .mini-window { display: flex; flex-direction: column; background: var(--surface); }
+.win-bar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 14px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
   background: var(--surface-hover);
 }
-.mode-card .mini-window::before {
-  content: "";
-  display: block;
+.win-bar i { width: 4px; height: 4px; border-radius: 50%; background: var(--muted-dim); }
+.win-bar i:nth-child(1) { background: #e05c5c; }
+.win-bar i:nth-child(2) { background: #e0b45c; }
+.win-bar i:nth-child(3) { background: #5cc07e; }
+.win-bar b { margin-left: 5px; color: var(--muted); font-size: 6px; font-weight: 600; }
+.win-body { flex: 1; padding: 7px 8px; }
+.win-search { display: block; width: 80%; height: 6px; border: 1px solid var(--border); border-radius: 4px; }
+.win-rows { display: grid; gap: 5px; margin-top: 8px; }
+.win-rows i { height: 5px; border-radius: 3px; background: var(--surface-hover); }
+.win-rows i:nth-child(2) { width: 70%; }
+.win-task {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   height: 12px;
-  border-bottom: 1px solid var(--border);
-  background: linear-gradient(90deg, #e05c5c 0 5px, #e0b45c 5px 10px, #5cc07e 10px 15px, transparent 15px);
+  border-top: 1px solid var(--border);
+  background: var(--surface-hover);
 }
-.mode-card .mini-launcher::before {
-  content: "";
-  display: block;
-  width: 60%;
-  height: 8px;
-  margin: 12px auto;
-  border-radius: 5px;
-  background: var(--border);
+.win-task i { width: 7px; height: 7px; border-radius: 2px; background: var(--muted-dim); opacity: .45; }
+.win-task i:first-child { background: var(--green); opacity: 1; }
+
+/* Launcher: dimmed desktop, floating palette, hotkey chip and tray icon. */
+.mode-card .mini-launcher {
+  background: repeating-linear-gradient(135deg, transparent 0 8px,
+    rgba(127, 127, 135, .05) 8px 9px), var(--bg);
 }
-.mode-card b { display: block; margin-bottom: 6px; font-size: 13px; }
+.palette {
+  position: absolute;
+  top: 14px;
+  left: 10%;
+  width: 80%;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .45);
+}
+.pal-search { display: block; width: 100%; height: 6px; border: 1px solid var(--muted-dim); border-radius: 4px; }
+.pal-rows { display: grid; gap: 4px; margin-top: 7px; }
+.pal-rows i { height: 4px; border-radius: 3px; background: var(--surface-hover); }
+.pal-rows i:nth-child(3) { width: 60%; }
+.hotkey-mini {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-hover);
+  color: var(--muted);
+  font: 7px var(--font);
+}
+.tray { position: absolute; right: 8px; bottom: 9px; display: flex; gap: 4px; }
+.tray i { width: 4px; height: 4px; border-radius: 50%; background: var(--muted-dim); }
+.tray i:last-child { background: var(--green); }
+
+.mode-kind { display: block; margin-bottom: 4px; color: var(--muted-dim); font-size: 9px; letter-spacing: .3px; }
+.mode-card b { display: block; margin-bottom: 5px; font-size: 13px; }
 .mode-card small { display: block; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .mode-card .radio {
   position: absolute;

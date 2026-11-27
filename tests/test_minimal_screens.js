@@ -45,6 +45,12 @@ check("menu styles are visual previews", html.includes('class="preview minimal-p
   html.includes('class="preview detailed-preview"'));
 check("window card selection is applied",
   js.includes('classList.add("selected")') || js.includes('toggle("selected"'));
+check("mode mockups are recognizable",
+  html.includes('class="win-bar"') && html.includes('class="win-task"') &&
+  html.includes('class="palette"') && html.includes('class="hotkey-mini"') &&
+  html.includes('class="tray"'));
+check("mockups are styled in both themes",
+  css.includes(".win-task i:first-child") && css.includes(".palette"));
 check("first run shows the overlay", js.includes("autofind.minimal.onboarded") &&
   js.includes('showScreen("launcher")'));
 check("detailed cards are styled", css.includes(".grid.detailed") ||
