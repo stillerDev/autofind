@@ -6,6 +6,7 @@
   <title>AutoFind — минимальное меню</title>
   <link rel="icon" href="/icon.png">
   <link rel="stylesheet" href="/minimal.css">
+  <link rel="stylesheet" href="/minimal-screens.css">
 </head>
 <body>
 <div class="app">
@@ -41,7 +42,9 @@
       <div id="menu" class="menu" role="menu" aria-label="Меню" hidden>
         <button type="button" role="menuitem" data-action="refresh">Обновить</button>
         <button type="button" role="menuitem" data-action="folder">Папка индекса</button>
-        <button type="button" role="menuitem" data-action="settings">Настройки</button>
+        <button type="button" role="menuitem" data-action="settings-screen">Настройки</button>
+        <button type="button" role="menuitem" data-action="launcher-screen">Лаунчер</button>
+        <button type="button" role="menuitem" data-action="settings">Быстрые настройки</button>
         <button type="button" role="menuitem" data-action="classic">Классический вид</button>
       </div>
     </div>
@@ -61,6 +64,10 @@
       <span class="dot" aria-hidden="true"></span>
       <span id="status">Индекс загружается…</span>
       <button type="button" class="text-btn" id="refresh">Обновить</button>
+    </div>
+    <div class="theme-switch" role="group" aria-label="Тема">
+      <button type="button" data-theme-set="light">Светлая</button>
+      <button type="button" data-theme-set="dark" class="on">Тёмная</button>
     </div>
     <div class="hotkeys" aria-label="Горячие клавиши">
       <span><kbd>Space</kbd> Открыть</span>
@@ -113,15 +120,167 @@
       <button type="button" class="set-action" id="set-purge">Удалить приватное из индекса</button>
     </section>
     <section class="set-section">
-      <h3>Интерфейс</h3>
+      <h3>Кастомизация</h3>
+      <label class="set-row">
+        <span>Минималистичное меню<small>Выключите, чтобы вернуться в классический вид</small></span>
+        <input type="checkbox" id="set-minimal-menu" checked>
+      </label>
       <label class="set-row">
         <span>Светлая тема<small>Тот же переключатель, что в шапке</small></span>
         <input type="checkbox" id="set-theme">
+      </label>
+      <label class="set-row">
+        <span>Компактные карточки<small>Больше файлов на экране</small></span>
+        <input type="checkbox" id="set-compact">
+      </label>
+      <label class="set-row">
+        <span>Показывать расширения<small>Подпись на карточке</small></span>
+        <input type="checkbox" id="set-ext" checked>
       </label>
     </section>
   </div>
 </aside>
 
+<section class="screen" id="settings-screen" hidden aria-label="Настройки">
+  <div class="set-shell">
+    <nav class="set-side" aria-label="Разделы настроек">
+      <h2>Настройки</h2>
+      <button type="button" class="side-item active" data-set-page="general">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"></path><circle cx="16" cy="7" r="2"></circle><circle cx="8" cy="17" r="2"></circle></svg>Общие
+      </button>
+      <button type="button" class="side-item" data-set-page="folders">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 6h6l2 2h10v10H3z"></path></svg>Папки
+      </button>
+      <button type="button" class="side-item" data-set-page="exclusions">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg>Исключения
+      </button>
+      <button type="button" class="side-item" data-set-page="search">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M16 16l5 5"></path></svg>Поиск
+      </button>
+      <button type="button" class="side-item" data-set-page="semantic">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"></path></svg>Семантический поиск
+      </button>
+      <button type="button" class="side-item" data-set-page="agents">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="3"></circle><path d="M5 20c0-4 3-6 7-6s7 2 7 6"></path></svg>Агенты
+      </button>
+      <button type="button" class="side-item" data-set-page="state">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"></path></svg>Состояние
+      </button>
+      <button type="button" class="side-item" data-set-page="about">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7h.01"></path></svg>О программе
+      </button>
+    </nav>
+    <div class="set-main">
+      <button type="button" class="screen-close" id="settings-screen-close" aria-label="Закрыть настройки">×</button>
+      <div class="set-page" data-set-content="general">
+        <h1>Общие</h1>
+        <p class="lead">Внешний вид, вызов и поведение при запуске.</p>
+        <div class="set-group-title">Внешний вид</div>
+        <div class="theme-cards">
+          <button type="button" class="theme-card" data-theme-choice="light">
+            <span class="mock"><span class="mock-bar"></span><span class="mock-search"></span><span class="mock-grid"><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+            <span class="label">Светлая</span>
+          </button>
+          <button type="button" class="theme-card selected" data-theme-choice="dark">
+            <span class="mock"><span class="mock-bar"></span><span class="mock-search"></span><span class="mock-grid"><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+            <span class="label">Тёмная</span>
+          </button>
+        </div>
+        <div class="set-line">
+          <span>Язык</span>
+          <select id="screen-lang">
+            <option value="auto">Авто (системный)</option>
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
+            <option value="zh">中文</option>
+          </select>
+        </div>
+        <div class="set-group-title" style="margin-top:24px">Окно</div>
+        <div class="set-card">
+          <b>Режим</b>
+          <p>Лаунчер скрывается по Esc или клику вне окна. Режим окна — обычное окно приложения. Оба продолжают работать в трее, пока вы не измените это ниже.</p>
+          <div class="mode-row">
+            <button type="button" data-mode="window">Окно</button>
+            <button type="button" data-mode="launcher" class="on">Лаунчер</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="set-bottom">
+    <span class="live"><i></i> Актуально</span>
+    <button type="button" id="settings-save-reindex">Сохранить и переиндексировать</button>
+    <button type="button" id="settings-save">Сохранить</button>
+  </div>
+</section>
+
+<section class="screen launcher" id="launcher-screen" hidden aria-label="Лаунчер">
+  <div class="launcher-left">
+    <span class="brand">AutoFind</span>
+    <div class="jp">検索</div>
+    <div class="tagline">чтобы искать.</div>
+    <span class="step">03 / 03</span>
+  </div>
+  <div class="launcher-right">
+    <div class="ln-head">
+      <button type="button" id="launcher-theme" aria-label="Переключить тему">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M22 12h-2M4 12H2M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4M19.1 19.1l-1.4-1.4M6.3 6.3 4.9 4.9"></path></svg>
+      </button>
+      <button type="button" id="launcher-min" aria-label="Свернуть">—</button>
+    </div>
+    <div class="ln-card">
+      <h1>Как должен открываться AutoFind?</h1>
+      <p class="lead">Это можно изменить в любой момент в настройках.</p>
+      <div class="mode-cards">
+        <button type="button" class="mode-card" data-open-mode="window">
+          <span class="mini-window"></span>
+          <b>Окно</b>
+          <small>Обычное окно на панели задач. Закрытие завершает AutoFind.</small>
+          <span class="radio"></span>
+        </button>
+        <button type="button" class="mode-card selected" data-open-mode="launcher">
+          <span class="mini-launcher"></span>
+          <b>Лаунчер</b>
+          <small>Нажмите сочетание, чтобы открыть. Если клик вне окна — скрыть. Живёт в трее.</small>
+          <span class="radio"></span>
+        </button>
+      </div>
+      <p class="ln-hint">Закрытие скрывает его — AutoFind остаётся в трее.</p>
+      <div class="hotkey-row">
+        <span>Сочетание открытия</span>
+        <span class="keys"><kbd>Alt</kbd><kbd>Space</kbd></span>
+        <button type="button" id="hotkey-change">Изменить</button>
+      </div>
+      <p class="fine">В Wayland назначить сочетание не получится, если клиент не поддерживает глобальные горячие клавиши.</p>
+      <div class="ln-foot">
+        <span>Всё остаётся на этом компьютере.</span>
+        <div>
+          <button type="button" id="launcher-back">← Назад</button>
+          <button type="button" id="launcher-start">Начать индексацию →</button>
+        </div>
+      </div>
+    </div>
+    <div class="bottom-theme">
+      <span>Светлая</span>
+      <button type="button" id="bottom-theme-toggle" role="switch" aria-checked="false" aria-label="Светлая тема"><i></i></button>
+      <span>Тёмная</span>
+    </div>
+  </div>
+</section>
+
+<section class="progress" id="idx-progress" hidden aria-label="Ход индексации">
+  <div class="progress-left">
+    <div class="pct" id="idx-percent">0%</div>
+    <div class="eta" id="idx-eta">~ 1 с</div>
+  </div>
+  <div class="progress-right">
+    <div class="progress-track"><span id="idx-bar"></span></div>
+    <div class="progress-count" id="idx-count">0 / 0 файлов</div>
+    <div class="progress-status" id="idx-status"></div>
+  </div>
+</section>
+
 <script src="/minimal.js"></script>
+<script src="/minimal-screens.js"></script>
 </body>
 </html>

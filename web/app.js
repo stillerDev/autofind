@@ -3471,6 +3471,19 @@ function wire() {
     }
   });
   $("replay-onboarding").addEventListener("click", replayOnboarding);
+  // Customization → minimal menu. The choice lives in this browser so the
+  // minimal page can offer the way back without a server setting.
+  const minimalMode = $("minimal-mode");
+  if (minimalMode) {
+    try { minimalMode.checked = localStorage.getItem("autofind.minimal.enabled") === "1"; }
+    catch (error) { /* storage blocked: the button below still works */ }
+    minimalMode.addEventListener("change", () => {
+      try { localStorage.setItem("autofind.minimal.enabled", minimalMode.checked ? "1" : "0"); }
+      catch (error) { /* session only */ }
+      if (minimalMode.checked) location.href = "/minimal.html";
+    });
+  }
+  $("minimal-open")?.addEventListener("click", () => { location.href = "/minimal.html"; });
 
   // bulk bar
   $("bulk-pin").addEventListener("click", async () => {

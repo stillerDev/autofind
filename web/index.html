@@ -956,6 +956,8 @@ warning 3</textarea></label>
               role="tab" data-i18n="settings.tab.general">General</button>
       <button type="button" class="settings-tab" data-tab="data"
               role="tab" data-i18n="settings.tab.data">Data</button>
+      <button type="button" class="settings-tab" data-tab="custom"
+              role="tab" data-i18n="settings.tab.custom">Кастомизация</button>
     </div>
     <div class="settings-body">
       <div class="settings-pane active" data-pane="general">
@@ -969,6 +971,18 @@ warning 3</textarea></label>
         </div>
         <p class="settings-note" data-i18n="settings.languageNote"></p>
       </section>
+      </div>
+      <div class="settings-pane" data-pane="custom">
+        <section class="settings-section">
+          <h4 data-i18n="settings.minimal.title">Минималистичное меню</h4>
+          <p class="settings-note" data-i18n="settings.minimal.note"></p>
+          <label class="stat-row privacy-master">
+            <span><span data-i18n="settings.minimal.switch">Использовать минималистичное меню</span></span>
+            <input type="checkbox" id="minimal-mode">
+          </label>
+          <button type="button" class="btn mini settings-replay" id="minimal-open"
+                  data-i18n="settings.minimal.open">Открыть меню</button>
+        </section>
       </div>
       <div class="settings-pane" data-pane="data">
       <section class="settings-section">

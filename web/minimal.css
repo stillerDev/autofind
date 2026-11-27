@@ -192,6 +192,11 @@ svg { display: block; }
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: 20px 16px;
 }
+.grid.compact { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px 10px; }
+.grid.compact .thumb { aspect-ratio: 1.5; }
+.grid.compact .ext { font-size: 18px; padding-left: 9px; }
+.grid.compact .name { font-size: 12px; }
+.grid.no-ext .ext { display: none; }
 
 .card {
   min-width: 0;
@@ -293,6 +298,17 @@ svg { display: block; }
   font-size: 11px;
 }
 .text-btn:hover { background: var(--surface-hover); color: var(--text); }
+
+.theme-switch {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.theme-switch button { padding: 3px 9px; border-radius: 5px; color: var(--muted); font-size: 10px; }
+.theme-switch button.on { background: var(--surface-hover); color: var(--text); }
 
 .hotkeys { display: flex; align-items: center; gap: 16px; flex: 0 0 auto; }
 .hotkeys span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }

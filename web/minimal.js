@@ -219,6 +219,50 @@ $("theme-btn").addEventListener("click", () => {
   setTheme(document.documentElement.dataset.theme !== "light");
 });
 
+/* ---------------------------------------------------------- customization */
+
+const CUSTOM_KEY = "autofind.minimal.custom";
+const custom = { compact: false, showExt: true };
+
+function applyCustom() {
+  const grid = $("grid");
+  grid.classList.toggle("compact", custom.compact);
+  grid.classList.toggle("no-ext", !custom.showExt);
+}
+
+function loadCustom() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CUSTOM_KEY) || "null");
+    if (saved && typeof saved === "object") {
+      custom.compact = Boolean(saved.compact);
+      custom.showExt = saved.showExt !== false;
+    }
+  } catch (error) { /* a broken save keeps the defaults */ }
+  applyCustom();
+}
+
+function saveCustom() {
+  try { localStorage.setItem(CUSTOM_KEY, JSON.stringify(custom)); } catch (error) { /* session only */ }
+}
+
+loadCustom();
+
+$("set-minimal-menu").addEventListener("change", (event) => {
+  if (!event.target.checked) location.href = "/";
+});
+
+$("set-compact").addEventListener("change", (event) => {
+  custom.compact = event.target.checked;
+  applyCustom();
+  saveCustom();
+});
+
+$("set-ext").addEventListener("change", (event) => {
+  custom.showExt = event.target.checked;
+  applyCustom();
+  saveCustom();
+});
+
 /* --------------------------------------------------------------- settings */
 
 const prefs = {
@@ -280,6 +324,9 @@ async function loadSettings() {
     ? "Автозапуск не поддерживается этой системой" : "";
   $("set-privacy").checked = prefs.privacy;
   $("set-theme").checked = document.documentElement.dataset.theme === "light";
+  $("set-minimal-menu").checked = true;
+  $("set-compact").checked = custom.compact;
+  $("set-ext").checked = custom.showExt;
   $("set-categories").innerHTML = prefs.categories.map((item) =>
     `<label><input type="checkbox" data-cat="${esc(item.id)}"${item.enabled ? " checked" : ""}> ${esc(item.id)}</label>`
   ).join("") || `<span class="empty">Категорий нет</span>`;
