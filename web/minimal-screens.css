@@ -158,6 +158,63 @@
 .set-bottom #settings-save-reindex { background: var(--surface-hover); color: var(--muted); }
 .set-bottom #settings-save { background: var(--surface-active); }
 
+/* The switch itself (`.set-row input[type="checkbox"]`) and the category chips
+   come from minimal.css; only the pieces the fullscreen pages add live here. */
+
+.set-page .set-row { max-width: 560px; min-height: 44px; padding: 6px 0; }
+.set-page .set-action { margin-top: 14px; }
+.set-line b { font-weight: 650; }
+.set-line .keys { display: flex; gap: 6px; }
+.settings-note { margin: 10px 0 0; color: var(--muted-dim); font-size: 11px; }
+.save-note { margin: 10px 0 0; color: #e05c5c; font-size: 12px; }
+
+.root-list .set-row { cursor: pointer; }
+.root-list .root-path { font-size: 12px; word-break: break-all; }
+.root-list .root-path small { font-size: 10px; }
+
+.scr-textarea {
+  width: 100%;
+  max-width: 560px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px/1.6 var(--font);
+  resize: vertical;
+}
+.scr-textarea:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  max-width: 560px;
+  margin-bottom: 18px;
+}
+.stats-grid .stat {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.stats-grid .stat span { display: block; color: var(--muted); font-size: 11px; }
+.stats-grid .stat b { font-size: 14px; }
+
+.scr-report {
+  max-height: 170px;
+  max-width: 560px;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 /* ---------------------------------------------------------------- launcher */
 
 #launcher-screen {

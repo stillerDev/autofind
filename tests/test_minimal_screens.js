@@ -31,10 +31,45 @@ for (const label of ["Как должен открываться AutoFind?", "С
 check("no copied launcher branding", !["03 / 03", "検索", "чтобы искать.", "Wayland",
   "Всё остаётся на этом компьютере."].some((label) => html.includes(label)));
 
-for (const item of ["Общие", "Папки", "Исключения", "Поиск", "Семантический поиск",
-                    "Агенты", "Состояние", "О программе"]) {
+for (const item of ["Общие", "Вид", "Индексация", "Запуск", "Конфиденциальность",
+                    "Исключения", "Состояние", "О программе"]) {
   check(`sidebar has ${item}`, html.includes(item));
 }
+
+// Every toggle the app really has lives on the settings screen, grouped into
+// sections that all carry real content instead of "see the classic window".
+for (const id of ["scr-watch", "scr-idle", "scr-autostart", "scr-privacy",
+                  "scr-cats", "scr-purge", "scr-minimal-menu", "scr-compact",
+                  "scr-ext", "scr-detailed", "scr-roots", "scr-exclusions",
+                  "scr-stats", "scr-version", "scr-selftest", "scr-replay"]) {
+  check(`settings screen has #${id}`, html.includes(`id="${id}"`));
+}
+check("placeholder sections are gone",
+  !["data-set-page=\"search\"", "data-set-page=\"semantic\"", "data-set-page=\"agents\""]
+    .some((marker) => html.includes(marker)));
+check("every section has real content",
+  ["general", "appearance", "index", "startup", "privacy", "exclusions", "state", "about"]
+    .every((page) => html.includes(`data-set-page="${page}"`) &&
+                     html.includes(`data-set-content="${page}"`)));
+check("every section carries an icon",
+  (html.match(/data-set-page="[a-z]+">\s*<svg/g) || []).length === 8);
+check("screen toggles reuse the switch style",
+  css.includes(".set-row") ||
+  fs.readFileSync(path.join(root, "web/minimal.css"), "utf8").includes(".set-row input[type=\"checkbox\"]"));
+check("roots toggles are wired to rules",
+  js.includes("/api/rules") && js.includes("scr-roots"));
+check("exclusions editor is wired",
+  js.includes("/api/exclusions") && js.includes("scr-exclusions"));
+check("service toggles reuse the quick-panel logic",
+  js.includes("applyWatch") && js.includes("applyPrivacy") && js.includes("/api/autostart"));
+check("customization toggles save", js.includes("saveCustom") && js.includes("applyCustom"));
+check("privacy purge is wired", js.includes("/api/privacy/purge"));
+check("state shows real stats", js.includes("/api/stats") && js.includes("scr-stats"));
+check("about shows the real version", js.includes("scr-version") && js.includes("/api/status"));
+check("onboarding can be replayed",
+  js.includes("/api/onboarding/reset") && js.includes("scr-replay"));
+check("self-test is available", js.includes("/api/self-test") && js.includes("scr-selftest"));
+check("save applies pending rules", js.includes("savePending"));
 
 check("bottom light/dark control in the status bar", html.includes('data-theme-set="light"') &&
   html.includes('data-theme-set="dark"'));
