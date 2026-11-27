@@ -31,8 +31,11 @@
   --green: #1f9d68;
 }
 
-/* In light mode the same sun stays, just without its rays. */
-[data-theme="light"] .sun-rays { display: none; }
+/* One icon, two faces: the moon is the same circle with a bite taken out. */
+.moon-core { display: none; }
+[data-theme="light"] .sun-rays,
+[data-theme="light"] .sun-core { display: none; }
+[data-theme="light"] .moon-core { display: block; }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 

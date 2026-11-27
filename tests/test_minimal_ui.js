@@ -42,6 +42,7 @@ check("theme button exists", html.includes('id="theme-btn"'));
 check("theme button is labelled", html.includes('aria-label="Светлая тема"'));
 check("theme button keeps the sun and can hide its rays",
   html.includes('class="icon-sun"') && html.includes('class="sun-rays"'));
+check("theme button carries a crescent for light mode", html.includes('class="moon-core"'));
 check("theme button precedes gear", html.indexOf("theme-btn") < html.indexOf('id="gear"'));
 check("light theme tokens", css.includes('[data-theme="light"]'));
 check("theme choice is persisted", js.includes("autofind.minimal.theme"));
@@ -59,6 +60,7 @@ for (const route of ["/api/watch", "/api/autostart", "/api/privacy/categories",
   check(`settings calls ${route}`, js.includes(route));
 }
 check("switches are styled", css.includes('.set-row input[type="checkbox"]'));
-check("light theme drops the sun rays", css.includes(".sun-rays { display: none"));
+check("light theme drops the sun rays", css.includes(".sun-core { display: none"));
+check("light theme shows the crescent", css.includes("[data-theme=\"light\"] .moon-core { display: block"));
 check("search pauses while settings are open", js.includes("searchSuspended()"));
 check("settings swallow the wheel", js.includes('"wheel"'));
