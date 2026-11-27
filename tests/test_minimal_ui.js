@@ -45,4 +45,5 @@ check("theme button has sun and moon icons",
 check("theme button precedes gear", html.indexOf("theme-btn") < html.indexOf('id="gear"'));
 check("light theme tokens", css.includes('[data-theme="light"]'));
 check("theme choice is persisted", js.includes("autofind.minimal.theme"));
-check("gear is a standard filled cog", html.includes("M19.14 12.94c"));
+check("gear is a thin hollow outline cog",
+  html.includes("M19.40 12.00") && html.includes('stroke-width="1.3"'));
