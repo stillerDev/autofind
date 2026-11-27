@@ -146,17 +146,24 @@ def run_index(
         pass  # maintenance must never block indexing
     blocked: list[tuple[str, str]] = []
     scan_started = time.perf_counter()
-    entries = list(
-        iter_entries(
-            roots,
-            excluded_dirs=config.excluded_dirs,
-            max_bytes=config.max_file_bytes,
-            min_bytes=config.min_file_bytes,
-            privacy=config.privacy and not config.allow_sensitive,
-            skipped=blocked,
-            categories=config.privacy_categories,
-        )
-    )
+    # The walk reports itself as a scan phase with no total: no percent can
+    # be honest before the corpus size is known, so the UI shows found
+    # files instead of a bar racing to 100%.
+    entries: list = []
+    for entry in iter_entries(
+        roots,
+        excluded_dirs=config.excluded_dirs,
+        max_bytes=config.max_file_bytes,
+        min_bytes=config.min_file_bytes,
+        privacy=config.privacy and not config.allow_sensitive,
+        skipped=blocked,
+        categories=config.privacy_categories,
+    ):
+        entries.append(entry)
+        if progress and len(entries) % 250 == 0:
+            progress(len(entries), 0, "scan", entry.path)
+    if progress:
+        progress(len(entries), 0, "scan", "")
     stats = IndexStats(scanned=len(entries), sensitive=len(blocked), sensitive_examples=blocked[:5])
     stats.timings["scan"] = time.perf_counter() - scan_started
     seen: set[str] = set()
@@ -232,6 +239,10 @@ def run_index(
     stats.timings["extract_wall"] = time.perf_counter() - extract_started
 
     finalize_started = time.perf_counter()
+    if progress:
+        # every file is processed; what remains is commit, backfills and the
+        # sealed sidecar - the bar must hold below 100% through it all
+        progress(len(entries), len(entries), "finalize", "")
     if prune:
         stats.pruned = store.prune(seen)
     store.commit()
@@ -251,8 +262,14 @@ def run_index(
     # milliseconds on the first query, and the resident reader keeps it warm.
     if store.sealed:
         # Paranoid mode: FTS was dropped from disk, so the in-RAM BM25 sidecar
-        # is the only content index - re-encrypt it with the fresh corpus.
-        store.reseal_bm25()
+        # is the only content index - re-encrypt it with the fresh corpus. The
+        # sidecar is a cache, not index truth: a live reader that blocks the
+        # rewrite is recorded, and the next cold load discards the stale file
+        # by fingerprint.
+        try:
+            store.reseal_bm25()
+        except Exception as exc:
+            stats.errors.append(("bm25seal", f"{type(exc).__name__}: {exc}"))
     stats.timings["finalize"] = time.perf_counter() - finalize_started
     stats.seconds = time.perf_counter() - started
     return stats

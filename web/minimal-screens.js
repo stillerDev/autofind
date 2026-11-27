@@ -432,23 +432,57 @@ function fmtEta(seconds) {
   return `~ ${(seconds / 3600).toFixed(1)} ч`;
 }
 
-function setProgress(position, total, elapsed, status) {
+const STATUS_RU = {
+  scan: "Сканирование папок",
+  unchanged: "Без изменений",
+  duplicate: "Дубликат",
+  "same-content": "Дубликат",
+  "seen-image": "Дубликат",
+  "name-only": "Только имя",
+  "no-text": "Без текста",
+  undecodable: "Не читается",
+  error: "Ошибка чтения",
+  finalize: "Финализация",
+};
+
+let hideProgressTimer = 0;
+
+function hideProgressSoon() {
+  clearTimeout(hideProgressTimer);
+  hideProgressTimer = setTimeout(() => { $("idx-progress").hidden = true; }, 3000);
+}
+
+function setProgress(position, total, elapsed, status, running) {
   const done = Number(position) || 0;
   const all = Number(total) || 0;
-  const pct = all > 0 ? Math.min(100, Math.round((done / all) * 100)) : 0;
+  const label = STATUS_RU[status] || status || "";
+  if (!all) {
+    // The filesystem walk runs before any percent can be honest: show found
+    // files instead of a bar racing to 100%.
+    $("idx-percent").textContent = "…";
+    $("idx-bar").style.width = "24%";
+    $("idx-count").textContent = `${done.toLocaleString("ru-RU")} найдено`;
+    $("idx-eta").textContent = "~ —";
+    $("idx-status").textContent = label;
+    return;
+  }
+  // 100% means the job is really done; the finalize tail (commit, backfills,
+  // sealed sidecar) holds the bar at 99% instead of claiming completion.
+  const pct = running ? Math.min(99, Math.round((done / all) * 100)) : 100;
   $("idx-percent").textContent = `${pct}%`;
   $("idx-count").textContent =
     `${done.toLocaleString("ru-RU")} / ${all.toLocaleString("ru-RU")} файлов`;
   $("idx-bar").style.width = `${pct}%`;
   const rate = done > 0 ? (Number(elapsed) || 0) / done : 0;
   $("idx-eta").textContent = fmtEta(all > done ? rate * (all - done) : 0);
-  $("idx-status").textContent = status || "";
+  $("idx-status").textContent = label;
 }
 
 async function startIndex() {
   remember("autofind.minimal.onboarded", "1");
+  clearTimeout(hideProgressTimer);
   $("idx-progress").hidden = false;
-  setProgress(0, 0, 0, "запуск индексации");
+  setProgress(0, 0, 0, "scan", true);
   try {
     const status = await api("/api/status");
     await postJSON("/api/index", { roots: (status && status.default_roots) || [], prune: false });
@@ -460,10 +494,17 @@ async function startIndex() {
   progressTimer = setInterval(async () => {
     try {
       const job = await api("/api/progress");
-      setProgress(job.position || 0, job.total || 0, job.elapsed || 0, job.status || "");
+      setProgress(job.position || 0, job.total || 0, job.elapsed || 0, job.status || "", job.running);
       if (!job.running) {
         clearInterval(progressTimer);
-        $("idx-status").textContent = job.error ? `Ошибка: ${job.error}` : "Готово";
+        $("idx-bar").style.width = "100%";
+        $("idx-percent").textContent = "100%";
+        if (job.error) {
+          $("idx-status").textContent = `Ошибка: ${job.error}`;
+        } else {
+          $("idx-status").textContent = "Готово";
+          hideProgressSoon();
+        }
       }
     } catch (error) {
       clearInterval(progressTimer);

@@ -21,6 +21,7 @@ from __future__ import annotations
 import io
 import math
 import mmap
+import os
 import re
 import struct
 import time
@@ -286,12 +287,20 @@ class InRamBM25:
 
 
 
-def write_sealed_segments(path, index: "InRamBM25", vault, seg_postings: int = SEG_POSTINGS) -> None:
+def write_sealed_segments(path, index: "InRamBM25", vault, seg_postings: int = SEG_POSTINGS,
+                          retire=None) -> None:
     """Write `index` as an AFS2 sidecar: sealed JSON/npz header + sealed segments.
 
     Layout: `SEG_MAGIC | u64 header_len | sealed_header | (u64 len | sealed_seg)*`.
     The segment plaintext is `pos_part (4*n bytes) || tfs_part (2*n bytes)`, so
     a posting range inside a segment is two aligned byte slices.
+
+    The payload lands in a temp file and swaps in with os.replace: a live
+    reader keeps the previous sidecar mapped, and Windows refuses to truncate
+    or replace a mapped path — the mmap'd AFS2 server used to die here with
+    `Errno 22` at the end of every reindex. `retire` is the cached reader to
+    close between retries; by the time it is closed the search cache already
+    serves the fresh RAM index, so no query reads from a closed mapping.
     """
     total = int(len(index.flat_pos))
     pos_bytes = np.ascontiguousarray(index.flat_pos).tobytes()
@@ -330,13 +339,41 @@ def write_sealed_segments(path, index: "InRamBM25", vault, seg_postings: int = S
     if _zstd is not None:
         header_plain = _zstd.ZstdCompressor(level=3).compress(header_plain)
     sealed_header = vault.seal(header_plain)
-    with open(path, "wb") as out:
+    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+    with open(tmp, "wb") as out:
         out.write(SEG_MAGIC)
         out.write(struct.Struct("<Q").pack(len(sealed_header)))
         out.write(sealed_header)
         for sealed in sealed_segments:
             out.write(struct.Struct("<Q").pack(len(sealed)))
             out.write(sealed)
+        out.flush()
+        os.fsync(out.fileno())
+    for _ in range(25):
+        try:
+            os.replace(tmp, path)
+            return
+        except OSError:
+            # the previous sidecar is still mapped: retire the cached reader
+            # (a live BufferError means a slice is in flight; it passes) and
+            # give the swap another chance
+            if retire is not None:
+                try:
+                    retire.close()
+                except (BufferError, OSError, ValueError):
+                    pass
+                retire = None
+            time.sleep(0.2)
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        # the reader never went away; keep the stale sidecar (its fingerprint
+        # discards it on the next cold load) and stop littering the directory
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 class _SegLRU:

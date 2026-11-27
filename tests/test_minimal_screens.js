@@ -143,3 +143,14 @@ check("screens scroll with a quiet thin bar, not the fat default",
   css.includes("::-webkit-scrollbar-track { background: transparent; }"));
 check("the eye icon is replaced by the menu-layout tiles",
   !html.includes('M2 12s3.5-6.5') && (html.match(/rx="1\.5"/g) || []).length === 12);
+
+// Progress tells the truth: statuses are localized, the scan phase shows
+// found files instead of a percent, the bar holds 99% until the run really
+// finishes, and the panel dismisses itself on success.
+check("progress statuses are localized",
+  js.includes("STATUS_RU") && js.includes('undecodable: "Не читается"') &&
+  js.includes('finalize: "Финализация"'));
+check("the bar holds 99% until the job really finishes", js.includes("Math.min(99"));
+check("the scan phase shows found files, not a percent", js.includes("найдено"));
+check("the panel dismisses itself after success",
+  js.includes("hideProgressTimer") && js.includes('"Готово"'));

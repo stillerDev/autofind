@@ -2355,17 +2355,42 @@ class Store:
 
         return _Path(str(self.path) + ".bm25seal")
 
-    def _write_sealed_bm25(self, index) -> None:
+    def _write_sealed_bm25(self, index, fp=None) -> None:
         """Serialize the CSR and write `<db>.bm25seal`.
 
         AFS2 segment format: small arrays in one sealed header, postings split
         into independently sealed segments — a cold CLI decrypts its header and
         only the segments its terms touch, and a sealed server keeps the
         ciphertext file-backed instead of the whole index in private RAM.
-        Called after every index run so the next cold load is fast."""
+        Called after every index run so the next cold load is fast.
+
+        A live reader keeps the previous sidecar mapped, and Windows refuses
+        to truncate or replace a mapped path — that is exactly how a UI
+        reindex died at 100% with `Errno 22` on the sidecar. The cache is
+        switched to the fresh RAM index first, so searches never read from a
+        closed mapping, and the retired reader frees the path for an atomic
+        temp-file swap inside `write_sealed_segments`."""
         from .bm25 import write_sealed_segments
 
-        write_sealed_segments(self._sealed_bm25_path(), index, self._vault_or_raise())
+        with _BM25_LOCK:
+            retired = (
+                _BM25.get("index")
+                if isinstance(_BM25.get("index"), bm25mod.SealedSegmentBM25)
+                else None
+            )
+            if retired is not None:
+                _BM25["index"] = index
+                _BM25["key"] = (str(self.path), *self._stamps())
+                _BM25["fp"] = fp if fp is not None else _BM25.get("fp")
+        try:
+            write_sealed_segments(
+                self._sealed_bm25_path(), index, self._vault_or_raise(), retire=retired)
+        finally:
+            if retired is None:
+                with _BM25_LOCK:
+                    _BM25["index"] = index
+                    _BM25["key"] = (str(self.path), *self._stamps())
+                    _BM25["fp"] = fp if fp is not None else _BM25.get("fp")
 
     def _vault_or_raise(self):
         vault = vault_mod.current()
@@ -2408,11 +2433,7 @@ class Store:
         index = bm25mod.InRamBM25.build(_iter_chunk_texts(self.conn))
         fp = self._chunks_fingerprint()
         index.fingerprint = fp
-        self._write_sealed_bm25(index)
-        with _BM25_LOCK:
-            _BM25["index"] = index
-            _BM25["key"] = (str(self.path), *self._stamps())
-            _BM25["fp"] = fp
+        self._write_sealed_bm25(index, fp)
 
     def seal_index(self, progress=None) -> None:
         """Encrypt every content blob at rest and drop FTS from disk.
