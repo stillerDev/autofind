@@ -66,6 +66,7 @@ function cardMarkup(item, index) {
     <div class="file">
       <div class="name">${esc(item.name)}</div>
       <div class="meta">${esc(when)}</div>
+      <div class="details-line">${esc(item.kind || "")} · ${esc(size(item.size))}<br>${esc(item.path)}</div>
     </div>
   </div>`;
 }
@@ -222,11 +223,12 @@ $("theme-btn").addEventListener("click", () => {
 /* ---------------------------------------------------------- customization */
 
 const CUSTOM_KEY = "autofind.minimal.custom";
-const custom = { compact: false, showExt: true };
+const custom = { compact: false, showExt: true, detailed: false };
 
 function applyCustom() {
   const grid = $("grid");
-  grid.classList.toggle("compact", custom.compact);
+  grid.classList.toggle("detailed", custom.detailed);
+  grid.classList.toggle("compact", custom.compact && !custom.detailed);
   grid.classList.toggle("no-ext", !custom.showExt);
 }
 
@@ -236,6 +238,7 @@ function loadCustom() {
     if (saved && typeof saved === "object") {
       custom.compact = Boolean(saved.compact);
       custom.showExt = saved.showExt !== false;
+      custom.detailed = Boolean(saved.detailed);
     }
   } catch (error) { /* a broken save keeps the defaults */ }
   applyCustom();
@@ -259,6 +262,12 @@ $("set-compact").addEventListener("change", (event) => {
 
 $("set-ext").addEventListener("change", (event) => {
   custom.showExt = event.target.checked;
+  applyCustom();
+  saveCustom();
+});
+
+$("set-detailed").addEventListener("change", (event) => {
+  custom.detailed = event.target.checked;
   applyCustom();
   saveCustom();
 });
@@ -327,6 +336,7 @@ async function loadSettings() {
   $("set-minimal-menu").checked = true;
   $("set-compact").checked = custom.compact;
   $("set-ext").checked = custom.showExt;
+  $("set-detailed").checked = custom.detailed;
   $("set-categories").innerHTML = prefs.categories.map((item) =>
     `<label><input type="checkbox" data-cat="${esc(item.id)}"${item.enabled ? " checked" : ""}> ${esc(item.id)}</label>`
   ).join("") || `<span class="empty">Категорий нет</span>`;

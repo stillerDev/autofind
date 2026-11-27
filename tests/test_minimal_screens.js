@@ -35,8 +35,15 @@ for (const item of ["Общие", "Папки", "Исключения", "Пои�
   check(`sidebar has ${item}`, html.includes(item));
 }
 
-check("bottom light/dark control", html.includes('data-theme-set="light"') &&
+check("bottom light/dark control in the status bar", html.includes('data-theme-set="light"') &&
   html.includes('data-theme-set="dark"'));
+check("launcher offers minimal vs detailed menu", html.includes('data-menu-style="minimal"') &&
+  html.includes('data-menu-style="detailed"'));
+check("menu style is wired", js.includes("data-menu-style") && js.includes("custom.detailed"));
+check("first run shows the overlay", js.includes("autofind.minimal.onboarded") &&
+  js.includes('showScreen("launcher")'));
+check("detailed cards are styled", css.includes(".grid.detailed") ||
+  fs.readFileSync(path.join(root, "web/minimal.css"), "utf8").includes(".grid.detailed"));
 check("theme preview cards", html.includes('data-theme-choice="light"') &&
   html.includes('data-theme-choice="dark"'));
 

@@ -137,6 +137,10 @@
         <span>Показывать расширения<small>Подпись на карточке</small></span>
         <input type="checkbox" id="set-ext" checked>
       </label>
+      <label class="set-row">
+        <span>Детализированное меню<small>Тип, размер и путь на карточке</small></span>
+        <input type="checkbox" id="set-detailed">
+      </label>
     </section>
   </div>
 </aside>
@@ -260,10 +264,9 @@
         </div>
       </div>
     </div>
-    <div class="bottom-theme">
-      <span>Светлая</span>
-      <button type="button" id="bottom-theme-toggle" role="switch" aria-checked="false" aria-label="Светлая тема"><i></i></button>
-      <span>Тёмная</span>
+    <div class="bottom-style" role="group" aria-label="Вид меню">
+      <button type="button" data-menu-style="minimal" class="on">Минималист меню</button>
+      <button type="button" data-menu-style="detailed">Детализированное</button>
     </div>
   </div>
 </section>

@@ -13,6 +13,7 @@ function anyScreenOpen() {
 function hideScreens() {
   $("settings-screen").hidden = true;
   $("launcher-screen").hidden = true;
+  remember("autofind.minimal.onboarded", "1");
 }
 
 function syncThemeControls() {
@@ -24,7 +25,13 @@ function syncThemeControls() {
   document.querySelectorAll("[data-theme-set]").forEach((node) => {
     node.classList.toggle("on", node.dataset.themeSet === wanted);
   });
-  $("bottom-theme-toggle").setAttribute("aria-checked", String(light));
+}
+
+function syncMenuStyle() {
+  const detailed = Boolean(custom.detailed);
+  document.querySelectorAll("[data-menu-style]").forEach((node) => {
+    node.classList.toggle("on", (node.dataset.menuStyle === "detailed") === detailed);
+  });
 }
 
 function showScreen(name) {
@@ -32,7 +39,18 @@ function showScreen(name) {
   $("settings-screen").hidden = name !== "settings";
   $("launcher-screen").hidden = name !== "launcher";
   syncThemeControls();
+  syncMenuStyle();
 }
+
+document.querySelectorAll("[data-menu-style]").forEach((node) => {
+  node.addEventListener("click", () => {
+    custom.detailed = node.dataset.menuStyle === "detailed";
+    saveCustom();
+    applyCustom();
+    syncMenuStyle();
+    remember("autofind.minimal.menuStyle", custom.detailed ? "detailed" : "minimal");
+  });
+});
 
 /* Keyboard shortcuts of the search view must not fire behind these screens. */
 document.addEventListener("keydown", (event) => {
@@ -69,11 +87,6 @@ document.querySelectorAll("[data-theme-set]").forEach((node) => {
     setTheme(node.dataset.themeSet === "light");
     syncThemeControls();
   });
-});
-
-$("bottom-theme-toggle").addEventListener("click", () => {
-  setTheme(document.documentElement.dataset.theme !== "light");
-  syncThemeControls();
 });
 
 $("launcher-theme").addEventListener("click", () => {
@@ -182,6 +195,7 @@ function setProgress(position, total, elapsed, status) {
 }
 
 async function startIndex() {
+  remember("autofind.minimal.onboarded", "1");
   $("idx-progress").hidden = false;
   setProgress(0, 0, 0, "запуск индексации");
   try {
@@ -220,3 +234,10 @@ $("settings-save-reindex").addEventListener("click", () => {
 $("settings-save").addEventListener("click", hideScreens);
 
 syncThemeControls();
+syncMenuStyle();
+
+// On the very first launch the setup overlay sits on top of the search view:
+// window vs launcher, the open hotkey, and the minimal/detailed menu choice.
+let onboarded = false;
+try { onboarded = localStorage.getItem("autofind.minimal.onboarded") === "1"; } catch (error) { /* show it */ }
+if (!onboarded) showScreen("launcher");

@@ -275,36 +275,25 @@ kbd { padding: 3px 7px; border: 1px solid #3a3a40; border-radius: 5px; backgroun
 #launcher-start { background: #f4f4f6; color: #17171b; font-weight: 650; }
 #launcher-start:disabled { opacity: .5; cursor: default; }
 
-.bottom-theme {
+.bottom-style {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
   max-width: 500px;
   margin: 0 auto;
+}
+.bottom-style button {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid #3a3a40;
+  border-radius: 999px;
   color: #8a8a92;
   font-size: 11px;
 }
-.bottom-theme button {
-  position: relative;
-  width: 38px;
-  height: 20px;
-  border: 1px solid #3a3a40;
-  border-radius: 10px;
-  background: #26262a;
-}
-.bottom-theme button i {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #8a8a92;
-  transition: transform 140ms ease;
-}
-.bottom-theme button[aria-checked="true"] i { transform: translateX(18px); background: #3ecf8e; }
+.bottom-style button:hover { color: #f4f4f6; }
+.bottom-style button.on { border-color: #3ecf8e; color: #3ecf8e; background: #1b1b1e; }
 
 /* ---------------------------------------------------------------- progress */
 

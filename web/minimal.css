@@ -198,6 +198,19 @@ svg { display: block; }
 .grid.compact .name { font-size: 12px; }
 .grid.no-ext .ext { display: none; }
 
+/* Detailed menu: same flat palette, one extra line of honest file metadata. */
+.grid.detailed { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px 18px; }
+.grid.detailed .thumb { aspect-ratio: 1.9; }
+.grid.detailed .details-line {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted-dim);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.details-line { display: none; }
+
 .card {
   min-width: 0;
   padding: 4px;
