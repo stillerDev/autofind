@@ -274,22 +274,49 @@
     <div class="menu-style-cards" role="group" aria-label="Вид меню">
       <button type="button" class="menu-style-card on" data-menu-style="minimal">
         <span class="preview minimal-preview">
-          <i></i><i></i><i></i><i></i><i></i><i></i>
+          <span class="m-tile"><b>.js</b><i>app.js</i></span>
+          <span class="m-tile"><b>.py</b><i>api.py</i></span>
+          <span class="m-tile"><b>.json</b><i>config</i></span>
         </span>
+        <span class="mode-kind">Без лишнего · плитка</span>
         <b>Минималист меню</b>
-        <small>Расширение и имя файла</small>
+        <small>Крупное расширение, имя и время. Никаких подробностей.</small>
       </button>
       <button type="button" class="menu-style-card" data-menu-style="detailed">
         <span class="preview detailed-preview">
-          <i></i><i></i><i></i><i></i>
+          <span class="d-card">
+            <b>app.js</b>
+            <i>C:\Docs\app.js</i>
+            <i>code · 12 КБ · 2 ч. назад</i>
+          </span>
+          <span class="d-card">
+            <b>api.py</b>
+            <i>C:\Docs\api.py</i>
+            <i>code · 4 КБ · 3 ч. назад</i>
+          </span>
         </span>
+        <span class="mode-kind">Всё сразу · строка</span>
         <b>Детализированное</b>
-        <small>Тип, размер и путь</small>
+        <small>Имя, путь, тип, размер и время на каждой карточке.</small>
       </button>
     </div>
     <div class="ln-foot">
-      <button type="button" id="launcher-back">← Назад</button>
-      <button type="button" id="launcher-start">Начать индексацию →</button>
+      <button type="button" id="launcher-back">
+        <svg class="arrow-icon" viewBox="0 0 24 24" width="15" height="15" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M19 12H5M11 6l-6 6 6 6"></path>
+        </svg>
+        Назад
+      </button>
+      <button type="button" id="launcher-start">
+        Начать индексацию
+        <svg class="arrow-icon" viewBox="0 0 24 24" width="15" height="15" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 12h14M13 6l6 6-6 6"></path>
+        </svg>
+      </button>
     </div>
   </div>
 </section>

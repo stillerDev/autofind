@@ -51,6 +51,14 @@ check("mode mockups are recognizable",
   html.includes('class="tray"'));
 check("mockups are styled in both themes",
   css.includes(".win-task i:first-child") && css.includes(".palette"));
+check("menu previews show the actual difference",
+  html.includes('class="m-tile"') && html.includes('class="d-card"') &&
+  html.includes("C:\\Docs\\app.js") && html.includes("code · 12 КБ"));
+check("buttons use SVG arrows, not text glyphs",
+  (html.match(/class="arrow-icon"/g) || []).length === 2 &&
+  !html.includes("←") && !html.includes("→"));
+check("arrow hover is gated and reduced-motion safe",
+  css.includes("#launcher-start:hover .arrow-icon") && css.includes("prefers-reduced-motion"));
 check("first run shows the overlay", js.includes("autofind.minimal.onboarded") &&
   js.includes('showScreen("launcher")'));
 check("detailed cards are styled", css.includes(".grid.detailed") ||

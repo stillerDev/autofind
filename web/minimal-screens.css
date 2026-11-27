@@ -333,40 +333,90 @@ kbd {
   text-align: left;
 }
 .menu-style-card.on { border-color: var(--green); }
-.menu-style-card b { display: block; margin-top: 10px; font-size: 12px; }
+.menu-style-card b { display: block; margin-top: 6px; font-size: 12px; }
 .menu-style-card.on b { color: var(--green); }
-.menu-style-card small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+.menu-style-card small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.4; }
 
 .preview {
   display: grid;
-  gap: 4px;
-  height: 62px;
+  gap: 5px;
+  height: 78px;
   padding: 8px;
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--surface-hover);
-}
-.preview i { display: block; border: 1px solid var(--border); border-radius: 3px; background: var(--surface); }
-.minimal-preview { grid-template-columns: repeat(3, 1fr); }
-.minimal-preview i { height: 100%; }
-.detailed-preview { grid-template-columns: repeat(2, 1fr); }
-.detailed-preview i { position: relative; height: 100%; }
-.detailed-preview i::after {
-  content: "";
-  position: absolute;
-  left: 4px;
-  right: 4px;
-  bottom: 4px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--muted-dim);
-  opacity: .5;
+  overflow: hidden;
 }
 
+/* Minimal: flat tiles, one big extension and one short name. */
+.minimal-preview { grid-template-columns: repeat(3, 1fr); }
+.m-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.m-tile b { margin: 0; color: var(--text); font-size: 12px; font-weight: 700; line-height: 1; }
+.m-tile i {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 6px;
+  font-style: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Detailed: each row carries name, path and metadata. */
+.detailed-preview { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+.d-card {
+  display: grid;
+  gap: 2px;
+  align-content: center;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.d-card b { margin: 0; color: var(--text); font-size: 8px; font-weight: 650; line-height: 1.1; }
+.d-card i {
+  color: var(--muted);
+  font-size: 6px;
+  font-style: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.d-card i:last-child { color: var(--muted-dim); }
+
 .ln-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-.ln-foot button { min-height: 38px; padding: 0 16px; border-radius: 8px; font-size: 12px; }
+.ln-foot button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-size: 12px;
+}
 #launcher-back { border: 1px solid var(--border); color: var(--muted); }
 #launcher-start { background: var(--text); color: var(--bg); font-weight: 650; }
 #launcher-start:disabled { opacity: .5; cursor: default; }
+
+/* One outline arrow family, decorative beside the visible label. */
+.arrow-icon { flex: 0 0 auto; transition: transform 140ms cubic-bezier(.23, 1, .32, 1); }
+@media (hover: hover) and (pointer: fine) {
+  #launcher-back:hover .arrow-icon { transform: translateX(-3px); }
+  #launcher-start:hover .arrow-icon { transform: translateX(3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .arrow-icon { transition: none; }
+  #launcher-back:hover .arrow-icon, #launcher-start:hover .arrow-icon { transform: none; }
+}
 
 /* ---------------------------------------------------------------- progress */
 
