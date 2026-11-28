@@ -367,13 +367,29 @@ svg { display: block; }
   font-size: 11px;
   word-break: break-all;
 }
-.hover-preview .hv-thumb {
+.hover-preview .hv-thumb,
+.hv-thumb {
   display: block;
   max-width: 100%;
-  max-height: 170px;
+  max-height: 190px;
   margin: 8px 0 0;
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+/* The searched word framed right on the screenshot: a white marker stroke
+   over the matched OCR boxes, dark ink in the light theme. */
+.hv-shot { position: relative; display: block; }
+.hv-box {
+  position: absolute;
+  border: 2px solid #f4f4f6;
+  background: rgba(244, 244, 246, .3);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .45);
+}
+[data-theme="light"] .hv-box {
+  border-color: #101012;
+  background: rgba(16, 16, 18, .22);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .55);
 }
 .hover-preview .hv-text {
   margin-top: 8px;

@@ -167,3 +167,10 @@ check("the bar holds 99% until the job really finishes", js.includes("Math.min(9
 check("the scan phase shows found files, not a percent", js.includes("найдено"));
 check("the panel dismisses itself after success",
   js.includes("hideProgressTimer") && js.includes('"Готово"'));
+check("hover preview marks matched words on the screenshot",
+  mjs.includes("/api/ocr-boxes") && mjs.includes("hv-box"));
+check("details render the screenshot with the marker boxes",
+  mjs.includes("hv-shot") && mjs.includes("paintOcrBoxes"));
+check("the marker boxes are white ink",
+  (css.includes(".hv-box") ||
+   fs.readFileSync(path.join(root, "web/minimal.css"), "utf8").includes(".hv-box")));

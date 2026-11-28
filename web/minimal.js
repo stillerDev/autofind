@@ -18,6 +18,7 @@ const state = {
   pending: false,
   hoverTimer: 0,
   hoverId: 0,
+  detailsSeq: 0,
 };
 
 // While the settings pane is open (or under the pointer) the result grid must
@@ -204,6 +205,7 @@ async function showDetails() {
   const item = current();
   if (!item) return;
   closeHover();
+  const seq = ++state.detailsSeq;
   const panel = $("details");
   panel.hidden = false;
   const body = $("details-body");
@@ -211,8 +213,14 @@ async function showDetails() {
     <p>Загрузка…</p>`;
   try {
     const data = await api(`/api/preview?id=${item.file_id}&chars=1400`);
+    if (seq !== state.detailsSeq) return;
+    const shot = (data.image?.thumb || item.kind === "image")
+      ? ocrShotMarkup(item.file_id, state.query,
+          data.image?.thumb || `/api/thumb?id=${item.file_id}`)
+      : "";
     body.innerHTML = `<h2>${esc(data.name || item.name)}</h2>
       <p class="path">${esc(data.path || item.path)}</p>
+      ${shot}
       <dl>
         <dt>Тип</dt><dd>${esc(data.kind || item.kind || "—")}</dd>
         <dt>Размер</dt><dd>${esc(size(data.size ?? item.size))}</dd>
@@ -220,6 +228,7 @@ async function showDetails() {
         <dt>Открытий</dt><dd>${esc(data.opens ?? 0)}</dd>
       </dl>
       <pre>${esc(String(data.text || data.image?.ocr || "").slice(0, 1400) || "Текст не извлечён")}</pre>`;
+    paintOcrBoxes(body, () => seq === state.detailsSeq);
   } catch (error) {
     body.innerHTML = `<h2>${esc(item.name)}</h2><p class="path">${esc(item.path)}</p>
       <p>Предпросмотр недоступен: ${esc(error.message)}</p>`;
@@ -528,6 +537,37 @@ function closeHover() {
   if (host) host.hidden = true;
 }
 
+function ocrShotMarkup(id, query, thumbUrl) {
+  // The searched word is framed on the screenshot itself: the boxes come
+  // from /api/ocr-boxes and are painted after the image reaches the DOM.
+  return `<div class="hv-shot" data-shot-id="${Number(id) || 0}"
+      data-shot-q="${esc(String(query || ""))}">
+    <img class="hv-thumb" src="${esc(thumbUrl)}" alt="">
+  </div>`;
+}
+
+async function paintOcrBoxes(root, isCurrent) {
+  for (const shot of root.querySelectorAll(".hv-shot[data-shot-id]")) {
+    const id = Number(shot.dataset.shotId || 0);
+    const query = shot.dataset.shotQ || "";
+    if (!id || !query) continue;
+    try {
+      const data = await api(`/api/ocr-boxes?id=${id}&q=${encodeURIComponent(query)}`);
+      if (!isCurrent()) return;
+      if (!data.boxes?.length || !data.width || !data.height) continue;
+      shot.insertAdjacentHTML("beforeend", data.boxes.map((box) => {
+        const left = (Number(box.x) / data.width) * 100;
+        const top = (Number(box.y) / data.height) * 100;
+        const width = (Number(box.w) / data.width) * 100;
+        const height = (Number(box.h) / data.height) * 100;
+        return `<span class="hv-box" style="left:${left}%;top:${top}%;width:${width}%;height:${height}%"></span>`;
+      }).join(""));
+    } catch (error) {
+      /* a failed overlay must never break the preview */
+    }
+  }
+}
+
 function wireHover() {
   const host = $("hover-preview");
   if (!host) return;
@@ -554,11 +594,12 @@ async function showHover(id, cardNode) {
     const data = await api(`/api/preview?id=${id}&chars=500`);
     if (id !== state.hoverId || !cardNode.isConnected) return;
     const body = data.image
-      ? `${data.image.thumb ? `<img class="hv-thumb" src="${esc(data.image.thumb)}" alt="">` : ""}
+      ? `${data.image.thumb ? ocrShotMarkup(id, state.query, data.image.thumb) : ""}
          ${data.image.ocr ? `<div class="hv-text">${highlight(String(data.image.ocr).slice(0, 300), state.query, 2)}</div>` : ""}`
       : `<div class="hv-text">${highlight(String(data.text || "").slice(0, 600), state.query, 2)}</div>`;
     host.innerHTML = `<div class="hv-head">${highlight(String(data.name || ""), state.query, 2)}</div>
       <div class="hv-path">${esc(data.path || "")}</div>${body}`;
+    paintOcrBoxes(host, () => id === state.hoverId && cardNode.isConnected);
     const rect = cardNode.getBoundingClientRect();
     host.hidden = false;
     const left = Math.min(rect.right + 10, window.innerWidth - host.offsetWidth - 10);
