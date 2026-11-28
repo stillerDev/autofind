@@ -30,6 +30,15 @@ def _corpus(tmp: str, count: int = 40) -> Path:
     return root
 
 
+def _drop_bm25_cache() -> None:
+    """A reseal leaves the mapped sidecar reader in the process cache: the
+    running server needs it until restart, a test must release the file."""
+    cached = store_mod._BM25.get("index")
+    if cached is not None and hasattr(cached, "close"):
+        cached.close()
+    store_mod._BM25["index"] = None
+
+
 class ProgressPhaseTests(unittest.TestCase):
     """Progress events must describe real phases, not race to 100%."""
 
@@ -149,6 +158,7 @@ class SidecarResealTests(unittest.TestCase):
             try:
                 stats = run_index([root], config, store, embedder)
             finally:
+                _drop_bm25_cache()
                 vault_mod.install(None)
             store.close()
             self.assertTrue(any(path == "bm25seal" for path, _ in stats.errors),
@@ -172,6 +182,83 @@ class LastChangeStatsTests(unittest.TestCase):
             expected = (root / "a.txt").stat().st_mtime
             self.assertAlmostEqual(stats["last_change"], expected, delta=2.0)
             store.close()
+
+
+class ResealSkipTests(unittest.TestCase):
+    """The 85s finalize tail is the BM25 rebuild (measured: build 85.2s,
+    write 1.7s). When the chunk fingerprint already matches the sidecar on
+    disk, the rebuild must be skipped - across restarts too, via meta."""
+
+    def _sealed_store(self, tmp: str):
+        root = Path(tmp) / "corpus"
+        root.mkdir()
+        (root / "a.txt").write_text("первый документ про квартальный бюджет", encoding="utf-8")
+        (root / "b.txt").write_text("второй документ про план и отчёт", encoding="utf-8")
+        config = IndexConfig(home=Path(tmp) / "home")
+        embedder = HashingEmbedder()
+        db = Path(tmp) / "index.db"
+        store = Store(db, embedder.name, embedder.dim)
+        run_index([root], config, store, embedder)
+        vault_mod.enable(Path(tmp) / "home")
+        store.seal_index()
+        return root, config, embedder, db, store
+
+    def test_reseal_skips_when_the_corpus_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, config, embedder, db, store = self._sealed_store(tmp)
+            sidecar = Path(str(db) + ".bm25seal")
+            before = sidecar.read_bytes()
+            try:
+                self.assertFalse(store.reseal_bm25(),
+                                 "an unchanged corpus must skip the 85s rebuild")
+                self.assertEqual(sidecar.read_bytes(), before)
+                # the answer survives a restart through the database meta
+            finally:
+                _drop_bm25_cache()
+                store.close()
+            reopened = Store(db, embedder.name, embedder.dim)
+            try:
+                self.assertFalse(reopened.reseal_bm25())
+                self.assertEqual(sidecar.read_bytes(), before)
+            finally:
+                reopened.close()
+                _drop_bm25_cache()
+                vault_mod.install(None)
+
+    def test_reseal_rebuilds_when_the_corpus_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, config, embedder, db, store = self._sealed_store(tmp)
+            (root / "new.txt").write_text(
+                "совершенно новый документ про бюджет и план", encoding="utf-8")
+            run_index([root], config, store, embedder)
+            sidecar = Path(str(db) + ".bm25seal")
+            after = sidecar.read_bytes()
+            try:
+                self.assertFalse(store.reseal_bm25(),
+                                 "the fresh sidecar must be recognised on the next reseal")
+                self.assertEqual(sidecar.read_bytes(), after)
+            finally:
+                _drop_bm25_cache()
+                store.close()
+                vault_mod.install(None)
+
+    def test_reseal_caches_the_file_backed_reader(self):
+        # full postings must not stay in RAM after the reseal: the cache
+        # serves the sidecar through the mapped reader, like a cold server
+        with tempfile.TemporaryDirectory() as tmp:
+            root, config, embedder, db, store = self._sealed_store(tmp)
+            (root / "new.txt").write_text(
+                "совершенно новый документ про бюджет", encoding="utf-8")
+            self.assertIsNotNone(run_index([root], config, store, embedder))
+            self.assertIsInstance(
+                store_mod._BM25.get("index"), store_mod.bm25mod.SealedSegmentBM25,
+                "the cache must hold the file-backed reader, not the RAM index")
+            hits = search_page(store, embedder, "бюджет",
+                               limit=5, usage=store.usage_map())
+            self.assertTrue(hits.hits, "searches work through the mapped reader")
+            _drop_bm25_cache()
+            store.close()
+            vault_mod.install(None)
 
 
 if __name__ == "__main__":

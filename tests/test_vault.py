@@ -6,12 +6,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from core import store as store_mod
 from core import vault as vault_mod
 from core.config import IndexConfig
 from core.embed.hashing import HashingEmbedder
 from core.indexer import run_index
 from core.search import search_page
 from core.store import Store
+
+
+def _drop_bm25_cache() -> None:
+    """A reseal leaves a mapped sidecar reader in the process cache: it
+    outlives stores by design (the server reuses it across requests), a
+    finished test releases the file so the temp directory can go."""
+    cached = store_mod._BM25.get("index")
+    if cached is not None and hasattr(cached, "close"):
+        cached.close()
+    store_mod._BM25["index"] = None
 
 
 def _make_screenshots(root: Path, count: int = 4) -> None:
@@ -197,6 +208,7 @@ class SealMigrationTests(unittest.TestCase):
             fts_rows = store.conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
             self.assertEqual(fts_rows, 2)  # postings rebuilt from decrypted text
             store.close()
+            _drop_bm25_cache()
             vault_mod.install(None)
             # NOTE: file_texts.data stays zlib-compressed by design - the raw
             # file never contained the plaintext in either state.
@@ -216,6 +228,7 @@ class SealMigrationTests(unittest.TestCase):
                 store.text_of(digest)
 
             store.close()
+            _drop_bm25_cache()
             vault_mod.install(None)
 
 
